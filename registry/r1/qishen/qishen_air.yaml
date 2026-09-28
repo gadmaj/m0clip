@@ -1,0 +1,54 @@
+# R1 FSM 701: Qishen get-up (lying: face-down clip then face-up clip), Stance + L2+X long
+name: qishen/qishen_air
+robot: r1_air
+family: r1_fw
+source: ai_sport 1.0.2.154 r1_controller (OTA 1.4.2.8)
+control: {step_dt: 0.02, sim_dt: 0.002}
+policy: {path: assets/policies/r1/motions/qishen/r1_air_tangqi_faceup.onnx, num_act: 20}
+r1:
+  firmware: true
+  fsm_id: 701
+  models: [air]
+  obs_scheme: track
+  anchor: gravity
+  joint_names: [left_hip_pitch_joint, left_shoulder_pitch_joint, right_hip_pitch_joint, right_shoulder_pitch_joint, left_hip_roll_joint,
+    left_shoulder_roll_joint, right_hip_roll_joint, right_shoulder_roll_joint, left_hip_yaw_joint, left_shoulder_yaw_joint,
+    right_hip_yaw_joint, right_shoulder_yaw_joint, left_knee_joint, left_elbow_joint, right_knee_joint, right_elbow_joint,
+    left_ankle_pitch_joint, right_ankle_pitch_joint, left_ankle_roll_joint, right_ankle_roll_joint]
+  default_joint_pos: [-0.1, 0.35, -0.1, 0.35, 0.0, 0.18, 0.0, -0.18, 0.0, 0.0, 0.0, 0.0, 0.3, 0.87, 0.3, 0.87, -0.2, -0.2,
+    0.0, 0.0]
+  action_scale: [0.15, 0.375, 0.15, 0.375, 0.15, 0.375, 0.15, 0.375, 0.15, 0.4125, 0.15, 0.4125, 0.15, 0.4125, 0.15, 0.4125,
+    0.3125, 0.3125, 0.3125, 0.3125]
+  stiffness: [100, 40, 100, 40, 100, 40, 100, 40, 100, 20, 100, 20, 100, 20, 100, 20, 40, 40, 40, 40]
+  damping: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 2.0, 2.0, 2.0]
+  action_clip: 100.0
+  blend_s: 0.5
+  safety_rad: 1.0
+  segments:
+  - motion: facedown
+    net: facedown
+    fps: 50
+    start: 0.0
+    end: 7.0
+    switch_at: 4.1
+    stiffness: [80, 40, 80, 40, 80, 40, 80, 40, 80, 20, 80, 20, 80, 20, 80, 20, 40, 40, 40, 40]
+    damping: [5.0, 2.0, 5.0, 2.0, 5.0, 2.0, 5.0, 2.0, 5.0, 1.0, 5.0, 1.0, 5.0, 1.0, 5.0, 1.0, 2.0, 2.0, 2.0, 2.0]
+    action_scale: [0.1875, 0.375, 0.1875, 0.375, 0.1875, 0.375, 0.1875, 0.375, 0.1875, 0.4125, 0.1875, 0.4125, 0.1875, 0.4125,
+      0.1875, 0.4125, 0.3125, 0.3125, 0.3125, 0.3125]
+  - motion: faceup
+    fps: 50
+    start: 0.0
+    end: 3.5
+    stiffness: [100, 40, 100, 40, 100, 40, 100, 40, 100, 20, 100, 20, 100, 20, 100, 20, 40, 40, 40, 40]
+    damping: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 2.0, 2.0, 2.0]
+    action_scale: [0.15, 0.375, 0.15, 0.375, 0.15, 0.375, 0.15, 0.375, 0.15, 0.4125, 0.15, 0.4125, 0.15, 0.4125, 0.15, 0.4125,
+      0.3125, 0.3125, 0.3125, 0.3125]
+  start_pose: facedown
+  hold_joints:
+    waist_roll_joint: [0.0, 300, 5]
+    waist_yaw_joint: [0.0, 300, 5]
+    left_wrist_roll_joint: [0.0, 50, 2]
+    right_wrist_roll_joint: [0.0, 50, 2]
+  aux_models: {facedown: assets/policies/r1/motions/qishen/r1_air_tangqi_facedown.onnx}
+  aux_files: {facedown: assets/policies/r1/trajs/qishen/r1_air_tangqi_facedown.csv, faceup: assets/policies/r1/trajs/qishen/r1_air_tangqi_faceup.csv}
+  next_policy: locomotion_20dofs/locomotion_20dofs

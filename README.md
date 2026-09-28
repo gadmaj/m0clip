@@ -1,105 +1,65 @@
 # unitree-mujoco-web
 
-Run Unitree RL control policies **entirely in the browser** — MuJoCo compiled
-to WebAssembly for physics, onnxruntime-web for policy inference, Three.js for
-rendering. An on-robot-style safety FSM (ZeroTorque / Damping / Lock / Stance /
-Policy), live policy switching, and gamepad teleop.
+Run Unitree RL control policies **entirely in the browser**. MuJoCo compiled to
+WebAssembly runs the physics, onnxruntime-web runs the policies, and Three.js
+renders the scene.
 
-![unitree-mujoco-web](docs/media/hero.png)
+![Unitree MuJoCo web — R1 walking on the park terrain](docs/media/hero.png)
 
-| R1 · straight-knee walk | R1 · kung fu |
-|---|---|
-| ![R1 straight-knee walk](docs/media/r1-straight-knee.gif) | ![R1 kung fu](docs/media/r1-kungfu.gif) |
+**Supported robots:** R1 (24 and 20 DOF), Go2, and G1 (29 and 23 DOF). Per-policy notes:
+[G1](docs/G1_FIRMWARE_POLICIES.md) · [R1](docs/R1_FIRMWARE_POLICIES.md) · [Go2](docs/GO2_FIRMWARE_POLICIES.md).
 
-| Go2 · hind-leg stand | Go2 · jump |
-|---|---|
-| ![Go2 backstand](docs/media/go2-backstand.gif) | ![Go2 jump](docs/media/go2-jump.gif) |
+## Gallery
 
-**Two robot families today — R1 (covers R1 and R1 Air, which share one model)
-and Go2; G1 support is planned.** All six R1 on-robot policy families are
-supported (motion tracking, concat & split locomotion, AMP split, armsdk,
-mimic), plus every runnable Go2 family: locomotion (concat & split-gait),
-recovery, flip maneuvers, and vision — LIDAR obstacle avoidance, with the
-861-cell occupancy map ray-cast from the live terrain each step. The selected
-policy decides the exact spec — picking a 20-DOF Air policy under the R1
-family just works.
+Recorded in the browser app, flat terrain, hoist off, real time. The number is the FSM id the policy runs as on the robot.
 
-**The repo ships no robot-derived files** — no models, no policy weights, no
-motion clips. You bring a model bundle for your robot, and import policies
-*in the app* as zip **policy packs**. This project is a neutral evaluator, not
-a policy distributor.
+### R1
+
+<table>
+<tr><td align="center" width="33%"><img src="docs/media/r1_walk.gif" alt="Walk · 811 amp_locomotion"><br><sub>Walk · 811 amp_locomotion</sub></td><td align="center" width="33%"><img src="docs/media/r1_flip.gif" alt="Somersault · 804 actor (Take 125)"><br><sub>Somersault · 804 actor (Take 125)</sub></td><td align="center" width="33%"><img src="docs/media/r1_kick.gif" alt="Side kicks · 805 fight mode"><br><sub>Side kicks · 805 fight mode</sub></td></tr>
+<tr><td align="center" width="33%"><img src="docs/media/r1_dance.gif" alt="Dance · 608 jiequandao"><br><sub>Dance · 608 jiequandao</sub></td><td align="center" width="33%"><img src="docs/media/r1_getup.gif" alt="Lie down and rise · qishen1 floor routine"><br><sub>Lie down and rise · qishen1 floor routine</sub></td></tr>
+</table>
+
+### Go2
+
+<table>
+<tr><td align="center" width="33%"><img src="docs/media/go2_walk.gif" alt="Walk · 1003 FreeWalk"><br><sub>Walk · 1003 FreeWalk</sub></td><td align="center" width="33%"><img src="docs/media/go2_backflip.gif" alt="Back flip · 2013"><br><sub>Back flip · 2013</sub></td><td align="center" width="33%"><img src="docs/media/go2_leftflip.gif" alt="Left flip · 2014"><br><sub>Left flip · 2014</sub></td></tr>
+<tr><td align="center" width="33%"><img src="docs/media/go2_tripleflip.gif" alt="Triple flip · ContinuousFlipX3"><br><sub>Triple flip · ContinuousFlipX3</sub></td><td align="center" width="33%"><img src="docs/media/go2_handstand.gif" alt="Hand stand · 2011"><br><sub>Hand stand · 2011</sub></td></tr>
+</table>
+
+### G1
+
+<table>
+<tr><td align="center" width="33%"><img src="docs/media/g1_run.gif" alt="Run · 802 CpyWalkRun (high speed)"><br><sub>Run · 802 CpyWalkRun (high speed)</sub></td><td align="center" width="33%"><img src="docs/media/g1_kick.gif" alt="Kicks · 505 punch mode"><br><sub>Kicks · 505 punch mode</sub></td><td align="center" width="33%"><img src="docs/media/g1_leap.gif" alt="Walk-jump leap · 813"><br><sub>Walk-jump leap · 813</sub></td></tr>
+<tr><td align="center" width="33%"><img src="docs/media/g1_dance.gif" alt="Bruce Lee take · 503 human mimic"><br><sub>Bruce Lee take · 503 human mimic</sub></td><td align="center" width="33%"><img src="docs/media/g1_getup.gif" alt="Get up from the floor · 1001"><br><sub>Get up from the floor · 1001</sub></td></tr>
+</table>
 
 ## Quick start
 
 ```bash
-npm install                 # also copies the mujoco wasm runtime into public/
-# put your robot's model bundle under public/assets/models/<robot>/ (see below)
-npm run dev                 # open the printed URL (Chrome recommended)
+npm install     # also copies the mujoco wasm runtime into public/
+npm run dev     # open the printed URL (Chrome recommended)
 ```
 
-Then, in the app: **📦 Policy manager → Import pack / bundle (.zip)** and pick
-your pack files (or one per-model bundle). Imported policies persist locally in
-your browser (IndexedDB) and survive reloads — as do your robot, terrain and
-policy selections.
+The robot models are included in the repo. The policies are not, so download
+them separately:
 
-**📥 Policy packs download:** <https://disk.yandex.com/d/TDS0JYh1GSjXow> —
-grab `r1-all.zip` / `go2-all.zip` (or individual packs) and import them via the
-Policy manager.
+1. Get the policy packs from <https://disk.yandex.com/d/TDS0JYh1GSjXow>
+   (`g1-all.zip`, `r1-all.zip`, `go2-all.zip`, or individual packs).
+2. In the app, open **Packs** (panel header) → **Import .zip…** and pick the files.
 
-## Robot models
+Imported policies are stored in your browser (IndexedDB) and survive reloads.
+Pack format: [policy-packs/README.md](policy-packs/README.md).
 
-The engine expects one bundle per robot model under
-`public/assets/models/<name>/`:
+## Features
 
-```
-scene.xml            entry MJCF (may <include> others)
-…                    everything scene.xml references (xml, meshes, textures)
-manifest.json        {"files": ["scene.xml", "assets/trunk.obj", …]}
-```
-
-`manifest.json` lists every file of the bundle; the app copies them into the
-wasm filesystem before compiling. `public/assets/` is gitignored — extract the
-bundle from your own robot.
-
-## Policy packs
-
-A **pack** is a self-contained `.zip`: `config.yaml` (obs scheme, gains,
-family) + one or more `.onnx` checkpoints sharing that scheme + an optional
-`traj.csv` reference clip. A **bundle** is a `.zip` of packs — one file per
-robot model, convenient for file-host distribution. The importer auto-detects
-which one you gave it. Format spec: [policy-packs/README.md](policy-packs/README.md).
-
-## What it does
-
-1. **Physics in-page** — the official MuJoCo WASM bindings compile the same
-   MJCF + mesh bundle used on the desktop; PD control at 500 Hz, policy at
-   50 Hz.
-2. **Policy player** — switching policies hot-swaps the driver without
-   reloading the page; the picker groups every policy by obs scheme.
-3. **FSM** — ZeroTorque / Damping / Lock / Stance / Policy, same semantics as
-   the on-robot controller's safety states.
-4. **Gamepad** — left stick → vx/vy, right stick → yaw for velocity-command
-   policies, plus on-robot-style combos (LT+dpad-up → Stance, LT+B → Damping,
-   RT+A → Policy, RT+dpad ◀▶ → prev/next policy).
-5. **Terrain presets** — flat / rough / slope / stairs / park (an obstacle
-   playground with slopes, stairs and rough patches).
-6. **MuJoCo-style scene** — checker groundplane with a real mirror pass; the
-   robot renders as two-tone plastic (clearcoat + studio environment).
-7. **Robot painter** — `/painter.html` (🎨 in the panel): click a part to
-   color / hide / switch glossy-matte. Overrides persist and restyle the
-   running sim live, across tabs.
-8. **Reference-motion playback** — *Motion (mimic)* → load a retargeted mocap
-   CSV (`pos(3), quat_xyzw(4), joint_pos` per row) and preview it
-   kinematically — no physics, no policy — before training a tracker.
-9. **Policy manager** — slide-out column: import packs/bundles, see the active
-   family's imports, remove any pack with its 🗑.
-10. **Policy inspector** — the left column streams the active policy's live
-    observations (every obs term, dims, sample values, frame topology) and the
-    action → joint targets with diverging bars.
-11. **Capture** — 📷 screenshot and ⏺ canvas recording (webm) straight from
-    the panel.
-12. **Session restore** — robot, terrain and policy selections persist across
-    reloads (localStorage).
+- **Safety FSM** — ZeroTorque / Damping / Lock / Stance / Policy, like the on-robot controller.
+- **Live policy switching** without reloading the page.
+- **Gamepad and keyboard teleop**, including the robot remote's button combos.
+- **Terrains** — flat, rough, slope, stairs, park.
+- **Policy inspector** — live observations and action → joint targets.
+- **Reference-clip playback** — preview a retargeted mocap CSV kinematically.
+- **Capture** — screenshot (PNG) and recording (webm) of the viewport.
 
 ## Controls
 
@@ -107,43 +67,38 @@ which one you gave it. Format spec: [policy-packs/README.md](policy-packs/README
 |---|---|
 | `0`–`4` | FSM state (ZeroTorque, Damping, Lock, Stance, Policy) |
 | `[` / `]` | previous / next policy |
-| `W A S D` / `Q E` | nudge vx / yaw / vy command |
-| `R` / `C` / `Space` | reset pose / recenter / stop + re-zero pad neutral |
-| left stick, right stick | vx+vy, yaw (locomotion policies) |
+| `W A S D` / `Q E` | move: vx / yaw / vy (hold Shift for full speed) |
+| `R` / `C` / `Space` | reset pose / recenter / stop |
+| `H` | hoist on / off |
+| `G` / `Shift+G` | next / previous move |
+| left stick, right stick | vx+vy, yaw |
 | LT+dpad-up, LT+B, LT+Y, LT+X | Stance, Damping, ZeroTorque, Lock |
 | RT+A, RT+B, RT+dpad ◀▶ | Policy, reset, switch policy |
+| LB / RB / LT / RT + buttons | the active policy's remote combos |
 
 ## Architecture
 
-The **entire simulation runs in a Web Worker** — MuJoCo wasm, onnxruntime,
-drivers, FSM. This is required, not optional: MuJoCo's wasm build is
-pthread-enabled and blocking on the browser main thread deadlocks it. The main
-thread only renders (Three.js), draws the panel, and reads the keyboard /
-gamepad; the two sides exchange messages (`src/sim/protocol.ts`): model
-description + geom transforms out, commands in. Model compilation additionally
-forces `<compiler usethread="false"/>` — threaded MJCF compile blocks on
-pthread workers that can't boot while the caller is blocked.
+The whole simulation (MuJoCo, onnxruntime, drivers, FSM) runs in a **Web
+Worker**, because MuJoCo's pthread-enabled wasm deadlocks on the main thread.
+The main thread only renders and handles input. The two sides talk through
+`src/sim/protocol.ts`.
 
 ```
 src/
-  worker/      sim.worker.ts — owns the engine, FSM, drivers, control loop
-  core/        math, obs builders, onnx wrappers, drivers (per policy family)
-  packs/       policy-pack parsing, IndexedDB store, blob-URL resolution
-  sim/         engine (mujoco wasm + MEMFS), FSM, terrain presets, protocol
-  render/      Three.js scene built from the worker's model description
-  input/       Gamepad API → command + combos
-  robots/      per-robot specs (joint order, anchor body, model bundle)
-  ui/          control panel + policy manager (plain DOM)
-policy-packs/  pack format docs; built packs/bundles are gitignored
+  worker/      sim worker: engine, FSM, drivers, control loop
+  core/        math, onnx wrappers, per-robot policy drivers
+  packs/       policy-pack parsing and IndexedDB store
+  sim/         mujoco engine, FSM, terrain presets, protocol
+  render/      Three.js scene
+  input/       gamepad → commands
+  robots/      per-robot specs
+  ui/          control panel
+public/assets/models/<robot>/   MJCF + meshes + manifest.json
 ```
 
 ## Notes
 
-- Hosting a production build needs **COOP/COEP headers** (the mujoco wasm uses
-  SharedArrayBuffer): `Cross-Origin-Opener-Policy: same-origin` and
-  `Cross-Origin-Embedder-Policy: require-corp`. Dev and preview servers set
-  them already.
-- onnxruntime-web runs single-threaded (`numThreads=1`) via its self-contained
-  bundle build — don't set `ort.env.wasm.wasmPaths`, it breaks under vite.
-- Browser support: Chrome/Edge/Firefox current; Safari 16.4+ (nested workers —
-  untested).
+- A production build must be served with **COOP/COEP headers** (the mujoco wasm
+  uses SharedArrayBuffer): `Cross-Origin-Opener-Policy: same-origin` and
+  `Cross-Origin-Embedder-Policy: require-corp`. The dev and preview servers already set them.
+- Browsers: current Chrome, Edge and Firefox. Safari 16.4+ is untested.

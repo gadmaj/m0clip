@@ -1,0 +1,36 @@
+# R1 FSM 602: Dance 602 with the earlier policy_37k checkpoint (unreferenced, ships next to the hard net) (48.56-61.50 s of the clip @ 30 fps)
+name: dances/602_dance1_subject2_segment2-policy_37k
+robot: r1
+family: r1_fw
+source: ai_sport 1.0.2.154 r1_controller (OTA 1.4.2.8)
+control: {step_dt: 0.02, sim_dt: 0.002}
+policy: {path: assets/policies/r1/motions/dances/dance1_subject2/policy_37k.onnx, num_act: 24}
+r1:
+  firmware: true
+  fsm_id: 602
+  models: [edu]
+  obs_scheme: track
+  anchor: ori6
+  joint_names: [left_hip_pitch_joint, right_hip_pitch_joint, waist_roll_joint, left_hip_roll_joint, right_hip_roll_joint,
+    waist_yaw_joint, left_hip_yaw_joint, right_hip_yaw_joint, left_shoulder_pitch_joint, right_shoulder_pitch_joint, left_knee_joint,
+    right_knee_joint, left_shoulder_roll_joint, right_shoulder_roll_joint, left_ankle_pitch_joint, right_ankle_pitch_joint,
+    left_shoulder_yaw_joint, right_shoulder_yaw_joint, left_ankle_roll_joint, right_ankle_roll_joint, left_elbow_joint, right_elbow_joint,
+    left_wrist_roll_joint, right_wrist_roll_joint]
+  csv_joint_perm: [0, 6, 12, 1, 7, 13, 2, 8, 14, 19, 3, 9, 15, 20, 4, 10, 16, 21, 5, 11, 17, 22, 18, 23]
+  default_joint_pos: [-0.312, -0.312, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.2, 0.669, 0.669, 0.2, -0.2, -0.363, -0.363, 0.0,
+    -0.0, 0.0, 0.0, 0.6, 0.6, -0.0, 0.0]
+  action_scale: [0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.398,
+    0.398, 0.525, 0.525, 0.398, 0.398, 0.525, 0.525, 0.525, 0.525]
+  action_offset: [-0.302, -0.319, 0.00124, 0.000442, 0.00489, 0.00191, 0.00929, 0.00796, 0.205, 0.203, 0.67, 0.669, 0.202,
+    -0.205, -0.355, -0.369, 0.00447, -0.00644, 0.00976, 0.00258, 0.6, 0.605, -0.00448, 0.00818]
+  stiffness: [84.3, 84.3, 84.3, 84.3, 84.3, 84.3, 84.3, 84.3, 84.3, 84.3, 84.3, 84.3, 84.3, 84.3, 31.4, 31.4, 15.7, 15.7,
+    31.4, 31.4, 15.7, 15.7, 15.7, 15.7]
+  damping: [5.37, 5.37, 5.37, 5.37, 5.37, 5.37, 5.37, 5.37, 5.37, 5.37, 5.37, 5.37, 5.37, 5.37, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0,
+    1.0, 1.0, 1.0, 1.0]
+  action_clip: 10.0
+  segments:
+  - {motion: motion, fps: 30, start: 48.56, end: 61.5}
+  aux_files: {motion: assets/policies/r1/trajs/dances/dance1_subject2/R1_edu_lh_dance1_subject2.bvh_30hz.csv}
+  next_policy: amp_locomotion/amp_locomotion
+  upz_safety: [0.8, 3]
+  ref_waist: [12, 13]

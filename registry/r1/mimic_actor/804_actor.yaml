@@ -1,0 +1,68 @@
+# R1 FSM 804: MimicActor: three mocap takes (X / B / A), then back to the walk
+name: mimic_actor/804_actor
+robot: r1
+family: r1_fw
+source: ai_sport 1.0.2.154 r1_controller (OTA 1.4.2.8)
+control: {step_dt: 0.02, sim_dt: 0.002}
+policy: {path: assets/policies/r1/motions/mimic_actor/2025-08-04_20-57-13_actor_new/exported/model.onnx, num_act: 24}
+r1:
+  firmware: true
+  fsm_id: 804
+  models: [edu]
+  obs_scheme: mimic
+  joint_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint,
+    right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint,
+    waist_roll_joint, waist_yaw_joint, left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint,
+    left_wrist_roll_joint, right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint,
+    right_wrist_roll_joint]
+  mimic:
+    mimic_name: actor
+    default_dof_pos: [-0.305, 0.04, -0.14, 0.41, -0.137, -0.06, -0.305, -0.04, 0.14, 0.41, -0.137, 0.06, 0.0, 0.0, 0.2, 0.2,
+      -0.0, 0.8, 0.0, 0.2, -0.2, 0.0, 0.8, 0.0]
+    kp: [100, 100, 100, 150, 40, 40, 100, 100, 100, 150, 40, 40, 100, 100, 60, 60, 40, 40, 40, 60, 60, 40, 40, 40]
+    kd: [3, 3, 3, 4, 2, 2, 3, 3, 3, 4, 2, 2, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+    action_scale: 1
+    limits_joint_idx: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    dof_lower_limits: [-2.6581, -0.9032, -2.4662, -0.0367, -0.8002, -0.2356, -2.6581, -1.6886, -2.4662, -0.0366, -0.8002,
+      -0.2356, -0.4712, -2.2777, -2.8798, -0.0916, -1.885, -0.8176, -0.8247, -2.8798, -2.3431, -1.885, -0.8176, -0.8247]
+    dof_upper_limits: [2.2742, 1.6886, 2.4662, 2.4452, 0.5035, 0.2356, 2.2742, 0.9032, 2.4662, 2.4452, 0.5035, 0.2356, 0.4712,
+      2.2777, 1.8326, 2.3431, 1.885, 2.0271, 0.8247, 1.8325, 0.0916, 1.885, 2.0271, 0.8247]
+    obs_scale: [0.2, 1.0, 1.0, 0.05, 1.0]
+    twist:
+      scale: [1.0, 1.0, 1.5]
+      offset: [0.05, 0.0, 0.0]
+      min: [0.2, 0.4, 0.5]
+      decay: 0.025
+      fc: 0.18
+      fs: 50.0
+    clips:
+      vq_default: {file: vq_default, rot_detect: 0, cool: 0.0}
+      vq_actor_Take_111_skeleton_0: {file: vq_actor_Take_111_skeleton_0, rot_detect: 0, cool: 0.0}
+      vq_actor_Take_125_skeleton_0: {file: vq_actor_Take_125_skeleton_0, rot_detect: 0, cool: 0.0}
+      vq_actor_Take_142_skeleton_0: {file: vq_actor_Take_142_skeleton_0, rot_detect: 1, cool: 0.0}
+    default_traj: vq_default
+    front_get_up: null
+    back_get_up: null
+    fall_down_length: 1.0
+    front_down_jpos: [-0.285133, 0.261554, -0.211369, 0.139072, 0.575354, -0.257638, -0.201578, -0.19978, -0.101467, 0.150181,
+      0.283328, 0.076668, -0.022661, -0.047465, 0.101516, 0.535406, -0.525695, 1.407141, 0.132639, 0.104849, -0.540453, 0.55598,
+      1.477011, -0.075339]
+    back_down_jpos: [-0.255182, 0.211286, -0.175125, 0.37352, 0.015421, -0.016643, -0.172145, -0.25485, -0.307219, 0.384031,
+      -0.134551, 0.120919, -0.020468, 0.02326, 0.101773, 0.566324, 0.342572, 1.287867, 0.907451, 0.084839, -0.63297, 0.144188,
+      1.440844, -0.33599]
+    transit_length: 0.5
+    buttons: {X: vq_actor_Take_111_skeleton_0, B: vq_actor_Take_125_skeleton_0, A: vq_actor_Take_142_skeleton_0}
+  aux_files: {vq_default: assets/policies/r1/trajs/mimic_actor/vq_default.csv, vq_actor_Take_111_skeleton_0: assets/policies/r1/trajs/mimic_actor/vq_actor_Take_111_skeleton_0.csv,
+    vq_actor_Take_125_skeleton_0: assets/policies/r1/trajs/mimic_actor/vq_actor_Take_125_skeleton_0.csv, vq_actor_Take_142_skeleton_0: assets/policies/r1/trajs/mimic_actor/vq_actor_Take_142_skeleton_0.csv}
+  switch_combos: {R2+A: amp_locomotion/amp_locomotion}
+  next_policy: amp_locomotion/amp_locomotion
+control_ui:
+  actions:
+  - group: Moves
+    items:
+    - {combo: X, label: Flip / somersault (Take 111)}
+    - {combo: B, label: Flip / somersault 2 (Take 125)}
+    - {combo: A, label: Show move (Take 142)}
+  - group: Mode
+    items:
+    - {combo: Start, label: Stop move (Start ×2)}

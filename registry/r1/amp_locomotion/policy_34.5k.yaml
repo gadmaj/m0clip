@@ -1,0 +1,29 @@
+# R1 FSM 815: 1.0.2.223 AmpLocomotion (alternative net 2026-03-08_10-22-41/policy_34.5k.onnx): the simpler 223 core — cmd = sticks × (2.5, 1.0, 1.57), one net, no speed profiles (FSM id 815 in that build)
+name: amp_locomotion/policy_34.5k
+robot: r1
+family: r1_fw
+source: ai_sport 1.0.2.223 r1_controller (package 1.0.0.4 R1 Edu Pro)
+control: {step_dt: 0.02, sim_dt: 0.002}
+policy: {path: assets/policies/r1/1.0.2.223/motions/amp_locomotion/2026-03-08_10-22-41/policy_34.5k.onnx, num_act: 24}
+r1:
+  firmware: true
+  fsm_id: 815
+  models: [edu]
+  obs_scheme: amp_loco
+  joint_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint,
+    right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint,
+    waist_roll_joint, waist_yaw_joint, left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint,
+    left_wrist_roll_joint, right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint,
+    right_wrist_roll_joint]
+  memory: 10
+  action_idx: [0, 3, 6, 10, 14, 18, 1, 4, 7, 11, 15, 19, 2, 5, 8, 12, 16, 20, 22, 9, 13, 17, 21, 23]
+  default_joint_pos: [-0.312, -0.312, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.2, 0.669, 0.669, 0.2, -0.2, -0.363, -0.363, 0.0,
+    -0.0, 0.0, 0.0, 0.669, 0.669, -0.0, 0.0]
+  action_scale: [0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.398,
+    0.398, 0.525, 0.525, 0.398, 0.398, 0.525, 0.525, 0.525, 0.525]
+  stiffness: [84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335,
+    31.413, 31.413, 15.706, 15.706, 31.413, 31.413, 15.706, 15.706, 15.706, 15.706]
+  damping: [5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 2, 2, 1, 1,
+    2, 2, 1, 1, 1, 1]
+  cmd: {}
+  raw_max: [2.5, 1.0, 1.57]

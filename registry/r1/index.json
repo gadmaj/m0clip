@@ -1,0 +1,1312 @@
+{
+  "robot": "r1",
+  "policies": [
+    {
+      "name": "dances/602_dance1_subject2_segment2",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/dance1_subject2/dance1_subject2_hard_80k-120k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/602_dance1_subject2_segment2.yaml",
+      "note": "Dance dance1_subject2_segment2, from 811 via R1+Left (48.56-61.50 s of the clip @ 30 fps)",
+      "fsm_id": 602,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "dances/602_dance1_subject2_segment2-new_urdf_25k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/dance1_subject2/new_urdf/policy_25k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/602_dance1_subject2_segment2-new_urdf_25k.yaml",
+      "note": "Dance dance1_subject2_segment2 with the alternative net dances/dance1_subject2/new_urdf/policy_25k.onnx (commented in dances.yaml) (48.56-61.50 s of the clip @ 30 fps)",
+      "fsm_id": 602,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/603_dance1_subject2_segment3",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/dance1_subject2/dance1_subject2_hard_80k-120k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/603_dance1_subject2_segment3.yaml",
+      "note": "Dance dance1_subject2_segment3, from 811 via R1+Right (79.15-100.00 s of the clip @ 30 fps)",
+      "fsm_id": 603,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "dances/603_dance1_subject2_segment3-new_urdf_25k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/dance1_subject2/new_urdf/policy_25k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/603_dance1_subject2_segment3-new_urdf_25k.yaml",
+      "note": "Dance dance1_subject2_segment3 with the alternative net dances/dance1_subject2/new_urdf/policy_25k.onnx (commented in dances.yaml) (79.15-100.00 s of the clip @ 30 fps)",
+      "fsm_id": 603,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/604_niuniuwu",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dance_niuniu/policy.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/604_niuniuwu.yaml",
+      "note": "Dance niuniuwu, from 811 via R2+Left (0.0-26.66 s of the clip @ 60 fps)",
+      "fsm_id": 604,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "dances/607_gongfu",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/gongfu_jiequandao/policy_80k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/607_gongfu.yaml",
+      "note": "Dance gongfu, from 811 via R1+Select (17.47-25.54 s of the clip @ 30 fps)",
+      "fsm_id": 607,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "dances/608_jiequandao",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/gongfu_jiequandao/policy_80k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/608_jiequandao.yaml",
+      "note": "Dance jiequandao, from 811 via R1+Down (3.39-26.40 s of the clip @ 60 fps)",
+      "fsm_id": 608,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "dances/601_dance1_subject2_segment1",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/dance1_subject2_niuniuwu/policy_80k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/601_dance1_subject2_segment1.yaml",
+      "note": "Dance dance1_subject2_segment1 (entry commented out in dances.yaml; R1+Up) (5.63-23.50 s of the clip @ 30 fps)",
+      "fsm_id": 601,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/601_dance1_subject2_segment1-0602_20k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/dance1_subject2/0602/dance1subject2.20k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/601_dance1_subject2_segment1-0602_20k.yaml",
+      "note": "Dance dance1_subject2_segment1 (entry commented out in dances.yaml; R1+Up) (5.63-23.50 s of the clip @ 50 fps)",
+      "fsm_id": 601,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/607_gongfu-0602_20_5k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/gongfu/0602/gongfu.20.5k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/607_gongfu-0602_20_5k.yaml",
+      "note": "Dance gongfu (entry commented out in dances.yaml; R1+Select) (17.47-25.54 s of the clip @ 50 fps)",
+      "fsm_id": 607,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/608_jiequandao-0602_16k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/jiequandao/0602/jiequandao.16k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/608_jiequandao-0602_16k.yaml",
+      "note": "Dance jiequandao (entry commented out in dances.yaml; R1+Down) (3.39-34.20 s of the clip @ 50 fps)",
+      "fsm_id": 608,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/605_weibosite",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dance_weibosite/policy.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/605_weibosite.yaml",
+      "note": "Dance weibosite — wired in 1.0.2.223 (L1+A), assets only in 1.0.2.154 (3.02-7.50 s of the clip @ 50 fps)",
+      "fsm_id": 605,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/606_weibosite_CJJ",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/weibosite/policy_23k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/606_weibosite_CJJ.yaml",
+      "note": "Dance weibosite (CJJ retarget) — commented entry of 1.0.2.223 (L1+B) (3.02-7.50 s of the clip @ 50 fps)",
+      "fsm_id": 606,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/602_dance1_subject2_segment2-policy_37k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/dance1_subject2/policy_37k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/602_dance1_subject2_segment2-policy_37k.yaml",
+      "note": "Dance 602 with the earlier policy_37k checkpoint (unreferenced, ships next to the hard net) (48.56-61.50 s of the clip @ 30 fps)",
+      "fsm_id": 602,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/607_gongfu-hard_80k-110k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/gongfu_jiequandao/gongfu_jiequandao_hard_80k-110k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/607_gongfu-hard_80k-110k.yaml",
+      "note": "Dance 607 gongfu with the gongfu_jiequandao hard_80k-110k checkpoint (unreferenced) (17.47-25.54 s of the clip @ 30 fps)",
+      "fsm_id": 607,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/607_gongfu-new_urdf_50k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/gongfu_jiequandao/new_urdf/policy_50k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/607_gongfu-new_urdf_50k.yaml",
+      "note": "Dance 607 gongfu with the new_urdf policy_50k checkpoint (unreferenced) (17.47-25.54 s of the clip @ 30 fps)",
+      "fsm_id": 607,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/608_jiequandao-hard_80k-110k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/gongfu_jiequandao/gongfu_jiequandao_hard_80k-110k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/608_jiequandao-hard_80k-110k.yaml",
+      "note": "Dance 608 jiequandao with the gongfu_jiequandao hard_80k-110k checkpoint (unreferenced) (3.39-26.40 s of the clip @ 60 fps)",
+      "fsm_id": 608,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/604_niuniuwu-0602_15k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/niuniu/0602/niuniu.15k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/604_niuniuwu-0602_15k.yaml",
+      "note": "Dance niuniuwu, 0602 re-train (niuniu.15k) on its 50 Hz clip (unreferenced; the 0602 pairing of the other commented entries) (0.0-29.10 s of the clip @ 50 fps)",
+      "fsm_id": 604,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/gunfanqishen",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/gunfanqishen/policy_80k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/gunfanqishen.yaml",
+      "note": "Gunfanqishen (滚翻起身, roll over + get up): 185 s floor routine — rolls, crawls, spins, get-ups; no build wires it — run as trained (no ±10 clamp / up-z safety, see docs) (0.0-184.91 s of the clip @ 30 fps)",
+      "fsm_id": null,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/gunfanqishen-hard_80k-100k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/gunfanqishen/gunfanqishen_hard_80k-100k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/gunfanqishen-hard_80k-100k.yaml",
+      "note": "Gunfanqishen with the hard_80k-100k checkpoint — run as trained (no ±10 clamp / up-z safety, see docs) (0.0-184.91 s of the clip @ 30 fps)",
+      "fsm_id": null,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances/qishen1",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/dances/qishen1/qishen1_25k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances/qishen1.yaml",
+      "note": "Qishen1: sit down to the floor, lie back and stand up again (14 s clip); no build wires it — run as trained (no ±10 clamp / up-z safety, see docs) (0.0-14.01 s of the clip @ 60 fps)",
+      "fsm_id": null,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances_air/602_dance1_subject2_segment2",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/dances_air/dance1_subject2/new_policy_30k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances_air/602_dance1_subject2_segment2.yaml",
+      "note": "Dance dance1_subject2_segment2, from 830 via R1+Left (48.56-61.50 s of the clip @ 30 fps)",
+      "fsm_id": 602,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "dances_air/602_dance1_subject2_segment2-edu_fix_20k",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/dances_air/dance1_subject2/edu_fix_20k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances_air/602_dance1_subject2_segment2-edu_fix_20k.yaml",
+      "note": "Dance dance1_subject2_segment2 with the alternative net dances_air/dance1_subject2/edu_fix_20k.onnx (commented in dances_air.yaml) (48.56-61.50 s of the clip @ 30 fps)",
+      "fsm_id": 602,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances_air/604_niuniuwu",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/dances_air/dance1_subject2_niuniuwu/air_urdf_40k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances_air/604_niuniuwu.yaml",
+      "note": "Dance niuniuwu, from 830 via R2+Left (0.0-29.11 s of the clip @ 60 fps)",
+      "fsm_id": 604,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "dances_air/607_gongfu",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/dances_air/gongfu/new_policy_25k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances_air/607_gongfu.yaml",
+      "note": "Dance gongfu, from 830 via R1+Select (17.47-25.54 s of the clip @ 50 fps)",
+      "fsm_id": 607,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "dances_air/607_gongfu-edu_fix_15k",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/dances_air/gongfu/edu_fix_15k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances_air/607_gongfu-edu_fix_15k.yaml",
+      "note": "Dance gongfu with the alternative net dances_air/gongfu/edu_fix_15k.onnx (commented in dances_air.yaml) (17.47-25.54 s of the clip @ 50 fps)",
+      "fsm_id": 607,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances_air/601_dance1_subject2_segment1",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/dances_air/dance1_subject2/new_policy_30k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances_air/601_dance1_subject2_segment1.yaml",
+      "note": "Dance dance1_subject2_segment1 (entry commented out in dances_air.yaml; R1+Up) (5.63-23.50 s of the clip @ 30 fps)",
+      "fsm_id": 601,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances_air/603_dance1_subject2_segment3",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/dances_air/dance1_subject2/new_policy_30k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances_air/603_dance1_subject2_segment3.yaml",
+      "note": "Dance dance1_subject2_segment3 (entry commented out in dances_air.yaml; R1+Right) (79.15-100.00 s of the clip @ 30 fps)",
+      "fsm_id": 603,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances_air/608_jiequandao",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/dances_air/jiequandao/new_policy_20k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances_air/608_jiequandao.yaml",
+      "note": "Dance jiequandao (entry commented out in dances_air.yaml; R1+Down) (3.39-26.00 s of the clip @ 50 fps)",
+      "fsm_id": 608,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances_air/605_weibosite",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/dances_air/weibosite/policy_new_10k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances_air/605_weibosite.yaml",
+      "note": "Air weibosite (policy_new_10k) — no dances_air entry; window of the EDU 605 entry (3.02-7.50 s of the clip @ 50 fps)",
+      "fsm_id": 605,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances_air/605_weibosite-policy_12k",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/dances_air/weibosite/policy_12k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances_air/605_weibosite-policy_12k.yaml",
+      "note": "Air weibosite, policy_12k checkpoint (3.02-7.50 s of the clip @ 50 fps)",
+      "fsm_id": 605,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "dances_air/608_jiequandao-edu_fix_15k",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/dances_air/jiequandao/edu_fix_15k.onnx",
+      "runnable": true,
+      "config": "registry/r1/dances_air/608_jiequandao-edu_fix_15k.yaml",
+      "note": "Air jiequandao, edu_fix_15k checkpoint (the entry names a new_edu_fix_20k that does not ship) (3.39-26.00 s of the clip @ 50 fps)",
+      "fsm_id": 608,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "amp_locomotion/amp_locomotion",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/amp_locomotion/2026-04-07_13-42-10/policy_42.5.onnx",
+      "runnable": true,
+      "config": "registry/r1/amp_locomotion/amp_locomotion.yaml",
+      "note": "AmpLocomotion — EDU default walk/run (Start / R2+A); turn + run nets switch by command",
+      "fsm_id": 811,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "amp_locomotion/811_main_policy_17k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/amp_locomotion/2026-04-01_14-10-14/policy_17k.onnx",
+      "runnable": true,
+      "config": "registry/r1/amp_locomotion/811_main_policy_17k.yaml",
+      "note": "811 AmpLocomotion with policy_17k as the main net (a commented `model:` line of amp_locomotion.yaml), run / turn nets as configured",
+      "fsm_id": 811,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "amp_locomotion/811_main_policy_40k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/amp_locomotion/2026-04-03_09-11-48/policy_40k.onnx",
+      "runnable": true,
+      "config": "registry/r1/amp_locomotion/811_main_policy_40k.yaml",
+      "note": "811 AmpLocomotion with policy_40k as the main net (a commented `model:` line of amp_locomotion.yaml; the firmware uses it as the turn net), run / turn nets as configured",
+      "fsm_id": 811,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "amp_locomotion/811_main_policy_36k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/amp_locomotion/2026-04-07_13-24-17/policy_36k.onnx",
+      "runnable": true,
+      "config": "registry/r1/amp_locomotion/811_main_policy_36k.yaml",
+      "note": "811 AmpLocomotion with policy_36k as the main net (a commented `model:` line of amp_locomotion.yaml; the firmware uses it as the run net), run / turn nets as configured",
+      "fsm_id": 811,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "amp_motion/amp_motion",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/amp_motion/20250722_14-33-53__30600/actor.onnx",
+      "runnable": true,
+      "config": "registry/r1/amp_motion/amp_motion.yaml",
+      "note": "AmpMotion 18-joint walk (SetFsmId 812, EDU)",
+      "fsm_id": 812,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "amp_motion_22dof/amp_motion_22dof",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/amp_motion_22dof/20250915_15-25-57__58600/actor.onnx",
+      "runnable": true,
+      "config": "registry/r1/amp_motion_22dof/amp_motion_22dof.yaml",
+      "note": "AmpMotion22Dof (SetFsmId 815, EDU): stance net until the first step, then the walk net",
+      "fsm_id": 815,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "locomotion_20dofs/locomotion_20dofs",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/20500amp6_26to20_rough.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/locomotion_20dofs.yaml",
+      "note": "Locomotion20Dofs — Air default walk (Start; 811 redirects here on Air)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "locomotion_20dofs/830_20500amp1_r1air_walkrun_indelay",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/20500amp1_r1air_walkrun_indelay.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_20500amp1_r1air_walkrun_indelay.yaml",
+      "note": "830 Locomotion20Dofs with the 20500amp1_r1air_walkrun_indelay net (ships in net/motions/locomotion_20dofs; not referenced by locomotion_20dofs.yaml); identity joint order — note: drifts forward at zero command",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_20500r1air_rough",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/20500r1air_rough.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_20500r1air_rough.yaml",
+      "note": "830 Locomotion20Dofs with the 20500r1air_rough net (ships in net/motions/locomotion_20dofs; not referenced by locomotion_20dofs.yaml)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_22500amp1_r1air_walkrun_indelay",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/22500amp1_r1air_walkrun_indelay.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_22500amp1_r1air_walkrun_indelay.yaml",
+      "note": "830 Locomotion20Dofs with the 22500amp1_r1air_walkrun_indelay net (ships in net/motions/locomotion_20dofs; commented in locomotion_20dofs.yaml); identity joint order — note: drifts forward at zero command",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_23500r1air_rough",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/23500r1air_rough.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_23500r1air_rough.yaml",
+      "note": "830 Locomotion20Dofs with the 23500r1air_rough net (ships in net/motions/locomotion_20dofs; not referenced by locomotion_20dofs.yaml)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_29000r1air_rough",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/29000r1air_rough.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_29000r1air_rough.yaml",
+      "note": "830 Locomotion20Dofs with the 29000r1air_rough net (ships in net/motions/locomotion_20dofs; not referenced by locomotion_20dofs.yaml)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_30000r1air_rough",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/30000r1air_rough.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_30000r1air_rough.yaml",
+      "note": "830 Locomotion20Dofs with the 30000r1air_rough net (ships in net/motions/locomotion_20dofs; not referenced by locomotion_20dofs.yaml)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_63000r1air_rough",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/63000r1air_rough.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_63000r1air_rough.yaml",
+      "note": "830 Locomotion20Dofs with the 63000r1air_rough net (ships in net/motions/locomotion_20dofs; not referenced by locomotion_20dofs.yaml)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_87500r1air_rough",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/87500r1air_rough.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_87500r1air_rough.yaml",
+      "note": "830 Locomotion20Dofs with the 87500r1air_rough net (ships in net/motions/locomotion_20dofs; not referenced by locomotion_20dofs.yaml)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_amp1_rottorso_r1air_locomotion_rough",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/amp1_rottorso_r1air_locomotion_rough.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_amp1_rottorso_r1air_locomotion_rough.yaml",
+      "note": "830 Locomotion20Dofs with the amp1_rottorso_r1air_locomotion_rough net (ships in net/motions/locomotion_20dofs; commented in locomotion_20dofs.yaml)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_amp3_hardrough_r1air_locomotion_rough",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/amp3_hardrough_r1air_locomotion_rough.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_amp3_hardrough_r1air_locomotion_rough.yaml",
+      "note": "830 Locomotion20Dofs with the amp3_hardrough_r1air_locomotion_rough net (ships in net/motions/locomotion_20dofs; commented in locomotion_20dofs.yaml)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_amp6_26to20_r1air_locomotion_new",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/amp6_26to20_r1air_locomotion_new.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_amp6_26to20_r1air_locomotion_new.yaml",
+      "note": "830 Locomotion20Dofs with the amp6_26to20_r1air_locomotion_new net (ships in net/motions/locomotion_20dofs; commented in locomotion_20dofs.yaml)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_amp6_26to20_rough",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/amp6_26to20_rough.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_amp6_26to20_rough.yaml",
+      "note": "830 Locomotion20Dofs with the amp6_26to20_rough net (ships in net/motions/locomotion_20dofs; commented in locomotion_20dofs.yaml)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_amp7_r1air_locomotion_rough",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/amp7_r1air_locomotion_rough.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_amp7_r1air_locomotion_rough.yaml",
+      "note": "830 Locomotion20Dofs with the amp7_r1air_locomotion_rough net (ships in net/motions/locomotion_20dofs; commented in locomotion_20dofs.yaml)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_r1air_locomotion_new",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/r1air_locomotion_new.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_r1air_locomotion_new.yaml",
+      "note": "830 Locomotion20Dofs with the r1air_locomotion_new net (ships in net/motions/locomotion_20dofs; commented in locomotion_20dofs.yaml)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_r1air_locomotion_old",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/r1air_locomotion_old.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_r1air_locomotion_old.yaml",
+      "note": "830 Locomotion20Dofs with the r1air_locomotion_old net (ships in net/motions/locomotion_20dofs; commented in locomotion_20dofs.yaml)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/830_r1air_locomotion_rough",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_20dofs/r1air_locomotion_rough.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/830_r1air_locomotion_rough.yaml",
+      "note": "830 Locomotion20Dofs with the r1air_locomotion_rough net (ships in net/motions/locomotion_20dofs; commented in locomotion_20dofs.yaml)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_gait/locomotion_gait",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_gait/policy.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_gait/locomotion_gait.yaml",
+      "note": "LocomotionGait (Stance R2+X), gait-clock walk",
+      "fsm_id": 832,
+      "models": [
+        "air",
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "locomotion_armsdk_gait/locomotion_armsdk_gait",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_armsdk_gait/policy.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_armsdk_gait/locomotion_armsdk_gait.yaml",
+      "note": "LocomotionArmsdkGait (Stance R2+Y), gait walk + random-arm demo on Start",
+      "fsm_id": 833,
+      "models": [
+        "air",
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "qishen/qishen_edu",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/qishen/r1_air_tangqi_faceup.onnx",
+      "runnable": true,
+      "config": "registry/r1/qishen/qishen_edu.yaml",
+      "note": "Qishen get-up (lying: face-down clip then face-up clip), Stance + L2+X long — EDU: Air-trained nets, the firmware offers it but it aborts on the EDU body (as on the robot)",
+      "fsm_id": 701,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "tangxia/tangxia_edu",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/tangxia/r1_tangxia_qili.onnx",
+      "runnable": true,
+      "config": "registry/r1/tangxia/tangxia_edu.yaml",
+      "note": "Tangxia: lie down on the back (from loco: L2+X long), ends in Damping — EDU: Air-trained nets, the firmware offers it but it aborts on the EDU body (as on the robot)",
+      "fsm_id": 702,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "qishen/qishen_air",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/qishen/r1_air_tangqi_faceup.onnx",
+      "runnable": true,
+      "config": "registry/r1/qishen/qishen_air.yaml",
+      "note": "Qishen get-up (lying: face-down clip then face-up clip), Stance + L2+X long",
+      "fsm_id": 701,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "tangxia/tangxia_air",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/tangxia/r1_tangxia_qili.onnx",
+      "runnable": true,
+      "config": "registry/r1/tangxia/tangxia_air.yaml",
+      "note": "Tangxia: lie down on the back (from loco: L2+X long), ends in Damping",
+      "fsm_id": 702,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "locomotion_24dof/813_straight_knee",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/locomotion_24dof_straight_knee/2026-02-01_02-39-41_25000/actor.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_24dof/813_straight_knee.yaml",
+      "note": "Locomotion24DofStraightKnee: 24-joint walk, straight-knee gait (registered, but no transition reaches it)",
+      "fsm_id": 813,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_24dof/814_walk",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/locomotion_24dof_walk/2026-02-02_09-46-55_16800/actor.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_24dof/814_walk.yaml",
+      "note": "Locomotion24DofWalk: 24-joint walk (registered, but no transition reaches it)",
+      "fsm_id": 814,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "arm_sdk_locomotion/816_arm_sdk",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/arm_sdk_locomotion/2026-04-07_13-26-00/policy_37k.onnx",
+      "runnable": true,
+      "config": "registry/r1/arm_sdk_locomotion/816_arm_sdk.yaml",
+      "note": "ArmSdkLocomotion (SetFsmId 816, EDU): legs + waist net, arms from rt/arm_sdk",
+      "fsm_id": 816,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "locomotion_armsdk/831_alljoint",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_armsdk/r1air_armsdk_loco_new_alljoint.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_armsdk/831_alljoint.yaml",
+      "note": "LocomotionArmsdk (Air; 816 on Air): all-joint net, arm SDK",
+      "fsm_id": 831,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": true
+    },
+    {
+      "name": "mimic_punch/805_fight",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/mimic_punch/2025-07-30_08-26-56_norm_adapt_l_speed/exported/model.onnx",
+      "runnable": true,
+      "config": "registry/r1/mimic_punch/805_fight.yaml",
+      "note": "MimicPunch fight mode: twist-net guard walk + 21 VQ-latent moves on one net, remote/API driven",
+      "fsm_id": 805,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "mimic_actor/804_actor",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/mimic_actor/2025-08-04_20-57-13_actor_new/exported/model.onnx",
+      "runnable": true,
+      "config": "registry/r1/mimic_actor/804_actor.yaml",
+      "note": "MimicActor: three mocap takes (X / B / A), then back to the walk",
+      "fsm_id": 804,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "mimic_actor/804_actor-actor2_resume",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/mimic_actor/2025-07-08_17-33-53_actor2_resume/exported/model.onnx",
+      "runnable": true,
+      "config": "registry/r1/mimic_actor/804_actor-actor2_resume.yaml",
+      "note": "MimicActor with the earlier actor2_resume net (ships, not referenced). Its graph lacks the cmd L2-normalisation the configured nets carry (ReduceL2 → Div), so the pack normalises the clip row before feeding it",
+      "fsm_id": 804,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "simple_motion/hello",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/motions/simple_motion/r1_mimic_hello1_Sep06_17-15-29_model_50000.onnx",
+      "runnable": true,
+      "config": "registry/r1/simple_motion/hello.yaml",
+      "note": "SimpleMotion 'hello' — left-arm wave (3.5 s); no r1_controller build implements it: obs reconstructed from the net weights + a layout sweep (the only layout that tracks), unverifiable on the robot",
+      "fsm_id": null,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_armsdk/831_legs_new",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_armsdk/r1air_armsdk_loco_new.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_armsdk/831_legs_new.yaml",
+      "note": "LocomotionArmsdk legs-only net r1air_armsdk_loco_new (1.0.2.154 ships it; runs under the 1.0.2.223 core + config)",
+      "fsm_id": 831,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_armsdk/831_legs_old",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/motions/locomotion_armsdk/r1air_armsdk_loco_old.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_armsdk/831_legs_old.yaml",
+      "note": "LocomotionArmsdk legs-only net r1air_armsdk_loco_old (1.0.2.154 ships it; runs under the 1.0.2.223 core + config)",
+      "fsm_id": 831,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "amp_locomotion/policy_10k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/1.0.2.223/motions/amp_locomotion/2026-03-08_10-22-41/policy_10k.onnx",
+      "runnable": true,
+      "config": "registry/r1/amp_locomotion/policy_10k.yaml",
+      "note": "1.0.2.223 AmpLocomotion (configured net 2026-03-08_10-22-41/policy_10k.onnx): the simpler 223 core — cmd = sticks × (2.5, 1.0, 1.57), one net, no speed profiles (FSM id 815 in that build)",
+      "fsm_id": 815,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "amp_locomotion/policy_34.5k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/1.0.2.223/motions/amp_locomotion/2026-03-08_10-22-41/policy_34.5k.onnx",
+      "runnable": true,
+      "config": "registry/r1/amp_locomotion/policy_34.5k.yaml",
+      "note": "1.0.2.223 AmpLocomotion (alternative net 2026-03-08_10-22-41/policy_34.5k.onnx): the simpler 223 core — cmd = sticks × (2.5, 1.0, 1.57), one net, no speed profiles (FSM id 815 in that build)",
+      "fsm_id": 815,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/22500amp6_cwdata_015",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/1.0.2.223/motions/locomotion_20dofs/22500amp6_cwdata_015.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/22500amp6_cwdata_015.yaml",
+      "note": "1.0.2.223 Locomotion20Dofs (commented net 22500amp6_cwdata_015.onnx) with that build's config (vx 1.1 / R2+Up 2.7 m/s, coupling 0.7, its slew defaults)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/25000amp6_cwdata_011",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/1.0.2.223/motions/locomotion_20dofs/25000amp6_cwdata_011.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/25000amp6_cwdata_011.yaml",
+      "note": "1.0.2.223 Locomotion20Dofs (configured net 25000amp6_cwdata_011.onnx) with that build's config (vx 1.1 / R2+Up 2.7 m/s, coupling 0.7, its slew defaults)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/25500amp6_cwdata_015",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/1.0.2.223/motions/locomotion_20dofs/25500amp6_cwdata_015.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/25500amp6_cwdata_015.yaml",
+      "note": "1.0.2.223 Locomotion20Dofs (commented net 25500amp6_cwdata_015.onnx) with that build's config (vx 1.1 / R2+Up 2.7 m/s, coupling 0.7, its slew defaults)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/61000amp5_cwdata_011",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/1.0.2.223/motions/locomotion_20dofs/61000amp5_cwdata_011.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/61000amp5_cwdata_011.yaml",
+      "note": "1.0.2.223 Locomotion20Dofs (commented net 61000amp5_cwdata_011.onnx) with that build's config (vx 1.1 / R2+Up 2.7 m/s, coupling 0.7, its slew defaults)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/amp2_olddata_015",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/1.0.2.223/motions/locomotion_20dofs/amp2_olddata_015.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/amp2_olddata_015.yaml",
+      "note": "1.0.2.223 Locomotion20Dofs (unreferenced net amp2_olddata_015.onnx) with that build's config (vx 1.1 / R2+Up 2.7 m/s, coupling 0.7, its slew defaults)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/amp3_cwdata_025",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/1.0.2.223/motions/locomotion_20dofs/amp3_cwdata_025.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/amp3_cwdata_025.yaml",
+      "note": "1.0.2.223 Locomotion20Dofs (unreferenced net amp3_cwdata_025.onnx) with that build's config (vx 1.1 / R2+Up 2.7 m/s, coupling 0.7, its slew defaults)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/amp6_cwdata_015",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/1.0.2.223/motions/locomotion_20dofs/amp6_cwdata_015.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/amp6_cwdata_015.yaml",
+      "note": "1.0.2.223 Locomotion20Dofs (commented net amp6_cwdata_015.onnx) with that build's config (vx 1.1 / R2+Up 2.7 m/s, coupling 0.7, its slew defaults)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/r1_20dofs_loco",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/1.0.2.223/motions/locomotion_20dofs/r1_20dofs_loco.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/r1_20dofs_loco.yaml",
+      "note": "1.0.2.223 Locomotion20Dofs (commented; pose / gains / vel_range from the mcf fsm_r1_air_ck_walk.yaml they ship with net r1_20dofs_loco.onnx) with that build's config (vx 1.1 / R2+Up 2.7 m/s, coupling 0.7, its slew defaults)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/r1_20dofs_loco_reset",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/1.0.2.223/motions/locomotion_20dofs/r1_20dofs_loco_reset.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/r1_20dofs_loco_reset.yaml",
+      "note": "1.0.2.223 Locomotion20Dofs (commented; pose / gains / vel_range from the mcf fsm_r1_air_ck_walk.yaml they ship with net r1_20dofs_loco_reset.onnx) with that build's config (vx 1.1 / R2+Up 2.7 m/s, coupling 0.7, its slew defaults)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/r1_20dofs_loco_stair",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/1.0.2.223/motions/locomotion_20dofs/r1_20dofs_loco_stair.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/r1_20dofs_loco_stair.yaml",
+      "note": "1.0.2.223 Locomotion20Dofs (commented; pose / gains / vel_range from the mcf fsm_r1_air_ck_walk.yaml they ship with net r1_20dofs_loco_stair.onnx) with that build's config (vx 1.1 / R2+Up 2.7 m/s, coupling 0.7, its slew defaults)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_20dofs/r1air_amp_walkrun10000",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/1.0.2.223/motions/locomotion_20dofs/r1air_amp_walkrun10000.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_20dofs/r1air_amp_walkrun10000.yaml",
+      "note": "1.0.2.223 Locomotion20Dofs (commented net r1air_amp_walkrun10000.onnx) with that build's config (vx 1.1 / R2+Up 2.7 m/s, coupling 0.7, its slew defaults)",
+      "fsm_id": 830,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "arm_sdk_locomotion/816_policy_32.5k",
+      "family": "r1_fw",
+      "robot": "r1",
+      "dof": 24,
+      "policy": "assets/policies/r1/1.0.2.223/motions/arm_sdk_locomotion/2026-03-08_14-35-18/policy_32.5k.onnx",
+      "runnable": true,
+      "config": "registry/r1/arm_sdk_locomotion/816_policy_32.5k.yaml",
+      "note": "1.0.2.223 ArmSdkLocomotion (policy_32.5k): walks with the sticks in that build",
+      "fsm_id": 816,
+      "models": [
+        "edu"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_armsdk/r1_armsdk_loco",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/1.0.2.223/motions/locomotion_armsdk/r1_armsdk_loco.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_armsdk/r1_armsdk_loco.yaml",
+      "note": "1.0.2.223 LocomotionArmsdk legs-only net r1_armsdk_loco.onnx (with the mcf ck_walk pose / gains)",
+      "fsm_id": 831,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    },
+    {
+      "name": "locomotion_armsdk/r1air_armsdk_loco23000",
+      "family": "r1_fw",
+      "robot": "r1_air",
+      "dof": 20,
+      "policy": "assets/policies/r1/1.0.2.223/motions/locomotion_armsdk/r1air_armsdk_loco23000.onnx",
+      "runnable": true,
+      "config": "registry/r1/locomotion_armsdk/r1air_armsdk_loco23000.yaml",
+      "note": "1.0.2.223 LocomotionArmsdk legs-only net r1air_armsdk_loco23000.onnx",
+      "fsm_id": 831,
+      "models": [
+        "air"
+      ],
+      "reachable_on_1_0_2_154": false
+    }
+  ]
+}

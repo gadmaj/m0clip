@@ -1,0 +1,43 @@
+# ai_sport 1.5.4 FsmFaceupGetup (FSM 702, L2+X from damping while lying), EDU path. Decompiled humanoid
+# (fsm_faceup_getup.cpp) + bench captures (captures_154/probe5: every captured rt/lowcmd sample of the
+# face-down try, interp and lay-to-squat script is reproduced to <1e-4). Driver: src/core/drivers/g1_faceup.ts.
+#   check: pitch < -1.4 -> face-up path; pitch >= 0.7 / in [-1.4,-1.05] -> scripted face-down try (<= 2 tries)
+#   interp 2 s -> getup_init_joint_q (kp ramps 0 -> getup_joint_kp), lay-to-squat script (period_angle_newtest_29,
+#   7 segments, 6.1 s), squat_safe_check pitch in (0,1), then the post-train VQ decoder (squat2stand_new_decoder,
+#   p_obs 10x93 + latent row cmd; row 200 held while kp ramps over 120 ticks, then +2 rows/tick, 600->800,
+#   900->1000), 50 ticks later the FSM hands over to 802. The 13-DOF net named in policy_file is loaded by the
+#   firmware but never run on 1.5.4.
+# faceup.assist: MuJoCo cannot reproduce the real arm push-off of the script (the pelvis stops at pitch ~-0.55 and
+# falls back, on the emulator bench as well), so the web adds a pelvis pitch assist during script segments 3-7
+# (0 = firmware only; then squat_safe_check fails and the robot is left in damping, as on the bench).
+# decoder_every: the decompiled loop runs the decoder every 10 ms tick (706 runs its copy at 50 Hz) - not yet
+# confirmed by a capture; both rates stand the robot up in sim.
+name: faceup_getup/20241130_214351_200000
+robot: g1
+family: g1_getup
+control: {step_dt: 0.01, sim_dt: 0.0005, duration: 20.0}
+policy: {path: assets/policies/g1/one_key_break/squat2stand_new_decoder.mnn, arch: vq, num_obs: 930, num_act: 29}
+g1:
+  models: [edu]   # the Air (machinetype 4) path uses the 23dof table + a 137-dim-cmd decoder (not modelled)
+  fsm_id: 702   # ai_sport FSM id on the robot
+  next_policy: cpy_walk_run_29dofs/actor   # 702 hands over to 802 50 ticks after latent row 1000
+  obs_scheme: faceup
+  ground_start: face_up
+  control_joints: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+  num_obs: 93
+  num_act: 29
+  memory_size: 10
+  maneuver: true
+  # default_joint_q_test (decoder stage); the other gains/poses are the firmware constants in the driver
+  default_dof_pos: [-0.3, 0.0, 0.0, 0.6, -0.3, 0.0, -0.3, 0.0, 0.0, 0.6, -0.3, 0.0, 0.0, 0.0, 0.0,
+    0.3, 0.3, 0.0, 0.97, 0.0, 0.0, 0.0, 0.3, -0.3, 0.0, 0.97, 0.0, 0.0, 0.0]
+  action_scale: 1.0
+  tau: [88, 88, 88, 139, 50, 50, 88, 88, 88, 139, 50, 50, 88, 50, 50, 25, 25, 25, 25, 25, 5, 5,
+    25, 25, 25, 25, 25, 5, 5]
+  aux_files:
+    latent: assets/policies/g1/one_key_break/latents/vq_squat2stand_multi_data_syc_3_1_1_29dof_insert_new_traj.csv
+  faceup:
+    table: "29"
+    assist: 40
+    decoder_every: 1
+    settle_s: 0.5

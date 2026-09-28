@@ -15,6 +15,13 @@ export const JOINT_NAMES = [
   "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint",
 ];
 
+/** Ankle pitch/roll → the two ankle motors of each foot (bench slot table / basic_service FK, joint = m · motor);
+ * see RobotSpec.ankle_pairs. Shared by the Air specs (same legs). */
+export const R1_ANKLE_PAIRS: RobotSpec["ankle_pairs"] = [
+  { joints: ["left_ankle_pitch_joint", "left_ankle_roll_joint"], m: [-0.3663, 0.3658, 0.5716, 0.5710] },
+  { joints: ["right_ankle_pitch_joint", "right_ankle_roll_joint"], m: [0.3663, -0.3658, 0.5716, 0.5710] },
+];
+
 export const R1: RobotSpec = {
   robot: "r1",
   anchor_body: "torso_link",
@@ -25,4 +32,5 @@ export const R1: RobotSpec = {
   model_dir: "/assets/models/r1",
   fall_height: 0.40,
   sim_dt: 0.002,
+  ankle_pairs: R1_ANKLE_PAIRS,
 };

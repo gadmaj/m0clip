@@ -24,6 +24,18 @@ async function createSession(url: string): Promise<ort.InferenceSession> {
   return ort.InferenceSession.create(buf, { executionProviders: ["wasm"] });
 }
 
+/** The model's own static shape for input `name` when it holds exactly `len` elements, else `dims`.
+ * Shape-faithful conversions (scripts/mnn_graph_to_onnx.py) keep inputs like p_obs [1, 10, 93] or
+ * obs [1, 5, 76]; drivers that pass a flat [1, N] still work because the data is contiguous. */
+function declaredDims(sess: ort.InferenceSession, name: string, len: number, dims: number[]): number[] {
+  const meta = (sess as unknown as { inputMetadata?: { name: string; shape?: (number | string)[] }[] })
+    .inputMetadata?.find((m) => m.name === name);
+  const shp = meta?.shape;
+  if (!shp || !shp.length || !shp.every((d) => typeof d === "number" && d > 0)) return dims;
+  const n = (shp as number[]).reduce((a, b) => a * b, 1);
+  return n === len ? (shp as number[]) : dims;
+}
+
 /** Single-input policy: obs vector in, action vector out. */
 export class OnnxPolicy {
   private constructor(
@@ -41,7 +53,7 @@ export class OnnxPolicy {
 
   async run(obs: Float32Array): Promise<Float32Array> {
     const feeds: Record<string, ort.Tensor> = {
-      [this.inName]: new ort.Tensor("float32", obs, [1, obs.length]),
+      [this.inName]: new ort.Tensor("float32", obs, declaredDims(this.sess, this.inName, obs.length, [1, obs.length])),
     };
     const out = await this.sess.run(feeds);
     const first = out[this.sess.outputNames[0]];
@@ -65,7 +77,7 @@ export class OnnxSession {
     for (const name of this.sess.inputNames) {
       const t = feeds[name];
       if (!t) throw new Error(`missing ONNX input '${name}'`);
-      f[name] = new ort.Tensor("float32", t.data, t.dims);
+      f[name] = new ort.Tensor("float32", t.data, declaredDims(this.sess, name, t.data.length, t.dims));
     }
     const out = await this.sess.run(f);
     return out[this.sess.outputNames[0]].data as Float32Array;

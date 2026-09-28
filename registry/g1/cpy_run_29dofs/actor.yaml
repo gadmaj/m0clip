@@ -1,0 +1,53 @@
+name: cpy_run_29dofs/actor
+robot: g1
+family: g1_locomotion
+control: {step_dt: 0.02, sim_dt: 0.0005, duration: 12.0}
+policy: {path: assets/policies/g1/cpy_run_29dofs/actor.mnn, arch: split, num_obs: 69,
+  num_act: 21}
+g1:
+  models: [air, edu]   # G1 variants it runs on (Air = machinetype 4, EDU = 5)
+  fsm_id: 801   # ai_sport FSM id on the robot
+  obs_scheme: split
+  control_joints: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17, 18, 22, 23,
+    24, 25]
+  num_obs: 69
+  num_act: 21
+  memory_size: 5
+  dof_pos_rel: false
+  default_dof_pos: [-0.15, 0.0, 0.0, 0.3, -0.15, 0.0, -0.15, 0.0, 0.0, 0.3, -0.15,
+    0.0, 0.0, 0.0, 0.0, 0.26, 0.3, -0.09, 0.8, 0.0, 0.0, 0.0, 0.26, -0.3, 0.09, 0.8,
+    0.0, 0.0, 0.0]
+  action_scale: 0.25
+  action_clip: 100.0
+  obs_clip: 100.0
+  ang_vel_scale: 1.0
+  dof_pos_scale: 1.0
+  dof_vel_scale: 1.0
+  dt: 0.02
+  cmd_in_obs: false
+  has_phase: false
+  kp: [100, 100, 100, 150, 60, 60, 100, 100, 100, 150, 60, 60, 200, 200.0, 200.0,
+    60, 60, 60, 60, 40.0, 40.0, 40.0, 60, 60, 60, 60, 40.0, 40.0, 40.0]
+  kd: [4, 4, 4, 5, 3, 3, 4, 4, 4, 5, 3, 3, 6, 6.0, 6.0, 3, 3, 3, 3, 3.0, 3.0, 3.0,
+    3, 3, 3, 3, 3.0, 3.0, 3.0]
+  vel_range: [-1.0, 1.0, -0.6, 0.6, -1.0, 1.0]
+  maneuver: false
+  tau: [88, 88, 88, 139, 50, 50, 88, 88, 88, 139, 50, 50, 88, 50.0, 50.0, 25, 25,
+    25, 25, 25.0, 5.0, 5.0, 25, 25, 25, 25, 25.0, 5.0, 5.0]
+  # remote speed (fsm_cpy_*.cpp, bench-checked on 802 2026-09-25): hold R2, then press Up = high, Down = low
+  # (the level at entry), Right / Left = +/-0.1 m/s of the forward limit (capped at high_speed + 1);
+  # full stick forward = the limit, backwards is the raw stick (max -1 m/s, 0 above -0.3)
+  speed:
+    levels: {low: {vx: 1.5}, middle: {vx: 2.0}, high: {vx: 2.7}, ultra: {vx: 3.0}}
+    initial: low
+    combos: {"R2+Up": high, "R2+Down": low, "R2+Right": 0.1, "R2+Left": -0.1}
+    vx_cap: 3.7
+    back_stick: true
+control_ui:
+  actions:
+    - group: "Speed"
+      items:
+        - {combo: "R2+Up", label: "High speed (2.7 m/s)"}
+        - {combo: "R2+Down", label: "Low speed (1.5 m/s)"}
+        - {combo: "R2+Right", label: "Faster (+0.1 m/s)"}
+        - {combo: "R2+Left", label: "Slower (-0.1 m/s)"}

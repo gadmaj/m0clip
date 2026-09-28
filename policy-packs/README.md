@@ -14,8 +14,9 @@ A pack is a `.zip` containing:
 pack.json                 manifest (see below)
 config.yaml               the policy config (obs scheme, gains, family, robot)
 checkpoints/<id>.onnx …   one or more weight checkpoints (SAME obs scheme)
-traj.csv                  optional reference clip (motion-tracking families)
-walker.onnx               optional aux low-level walker net (vision family)
+aux/<role>.onnx …         optional extra networks the driver runs (manifest `aux`)
+aux/<role>.csv|… …        optional data files: motion / latent clips, tables (manifest `auxFiles`)
+motion_clip.csv           optional reference clip (G1 mimic, manifest `clip`)
 ```
 
 All checkpoints in a pack share `config.yaml`; only the weights differ. Each
@@ -28,21 +29,20 @@ weights must be converted to `.onnx` before packing.
 ```json
 {
   "schemaVersion": 1,
-  "group": "R1 motion-tracking · 24dof",
-  "robot": "r1",
-  "family": "motion_tracking",
-  "baseName": "dances/gongfu",
+  "group": "cpy_walk_run_29dofs",
+  "robot": "g1",
+  "family": "g1_locomotion",
+  "baseName": "cpy_walk_run_29dofs/actor",
   "config": "config.yaml",
-  "traj": "traj.csv",
   "checkpoints": [
-    { "id": "80k",  "file": "checkpoints/80k.onnx" },
-    { "id": "120k", "file": "checkpoints/120k.onnx" }
-  ]
+    { "id": "actor", "file": "checkpoints/actor.onnx" }
+  ],
+  "aux": { "stance": "aux/stance.onnx" }
 }
 ```
 
-- `robot` — `r1`, `r1_air` or `go2`. The r1 family shares one model; the app
-  adopts the right spec from the selected policy automatically.
+- `robot` — `g1`, `r1`, `r1_air` or `go2`. Air and EDU variants share one robot
+  slot; the app adopts the right model from the selected policy automatically.
 - `group` — the obs-scheme label the picker clusters policies under.
 - `baseName` — the pack id and policy display name (`baseName@id` when a pack
   holds several checkpoints).
@@ -50,7 +50,8 @@ weights must be converted to `.onnx` before packing.
 ## Bundles (share a whole set)
 
 A **bundle** is simply a `.zip` whose entries are pack `.zip`s — one file per
-robot model (e.g. `r1-all.zip`, `go2-all.zip`). Upload it to any file host;
+robot model (`g1-all.zip`, `r1-all.zip`, `go2-all.zip`, built by
+`node scripts/build-packs.mjs --robot <g1|r1|go2>`). Upload it to any file host;
 whoever downloads it imports the **one** file and gets every pack at once. The
 importer auto-detects single pack vs bundle (a bundle has no top-level
 `pack.json`).

@@ -1,0 +1,38 @@
+# R1 FSM 812: AmpMotion 18-joint walk (SetFsmId 812, EDU)
+name: amp_motion/amp_motion
+robot: r1
+family: r1_fw
+source: ai_sport 1.0.2.154 r1_controller (OTA 1.4.2.8)
+control: {step_dt: 0.02, sim_dt: 0.002}
+policy: {path: assets/policies/r1/motions/amp_motion/20250722_14-33-53__30600/actor.onnx, num_act: 24}
+r1:
+  firmware: true
+  fsm_id: 812
+  models: [edu]
+  obs_scheme: amp_motion
+  joint_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint,
+    right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint,
+    waist_roll_joint, waist_yaw_joint, left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint,
+    left_wrist_roll_joint, right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint,
+    right_wrist_roll_joint]
+  memory: 5
+  dof_activated_idx: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 17, 19, 22]
+  default_dof_pos: [-0.23, 0.03, -0.11, 0.22, -0.02, -0.04, -0.23, -0.03, 0.11, 0.22, -0.02, 0.04, 0.0, 0.0, 0.25, 0.2, -0.0,
+    0.8, 0.0, 0.25, -0.2, 0.0, 0.8, 0.0]
+  action_scale: 0.25
+  kp: [100, 100, 100, 150, 40, 40, 100, 100, 100, 150, 40, 40, 200, 200, 60, 60, 60, 40, 40, 60, 60, 60, 40, 40]
+  kd: [4, 4, 4, 5, 3, 3, 4, 4, 4, 5, 3, 3, 6, 6, 3, 3, 2, 2, 3, 3, 3, 2, 2, 3]
+  limits_joint_idx: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+  dof_lower_limits: [-2.6581, -0.9032, -2.4662, -0.0367, -0.8002, -0.2356, -2.6581, -1.6886, -2.4662, -0.0366, -0.8002, -0.2356,
+    -0.4712, -2.2777, -2.8798, -0.0916, -1.885, -0.8176, -0.8247, -2.8798, -2.3431, -1.885, -0.8176, -0.8247]
+  dof_upper_limits: [2.2742, 1.6886, 2.4662, 2.4452, 0.5035, 0.2356, 2.2742, 0.9032, 2.4662, 2.4452, 0.5035, 0.2356, 0.4712,
+    2.2777, 1.8326, 2.3431, 1.885, 2.0271, 0.8247, 1.8325, 0.0916, 1.885, 2.0271, 0.8247]
+  cmd:
+    max: [1.0, 0.6, 0.8]
+    high_vx: 2.5
+    yaw_up: 0.03
+    yaw_down: 0.1
+    vx_up: 0.02
+    vx_down: 0.05
+    vy_up: 0.02
+    vy_down: 0.01

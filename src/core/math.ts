@@ -1,5 +1,5 @@
-/** Small math helpers shared by the obs builders and drivers.
- * Ported 1:1 from the reference Python implementation — the rot6d convention
+/** Small math helpers shared by the drivers.
+ * The rot6d convention
  * and quat orders are load-bearing; a policy falls in ~0.5 s if they're wrong.
  * Matrices are number[9], row-major.
  */
@@ -25,20 +25,6 @@ export function matFromWxyz(q: ArrayLike<number>): Float64Array {
 /** xyzw (trajectory CSV order) -> wxyz (MuJoCo order). */
 export function wxyz(qXyzw: ArrayLike<number>): [number, number, number, number] {
   return [qXyzw[3], qXyzw[0], qXyzw[1], qXyzw[2]];
-}
-
-/** R^T (row-major 9-vector). */
-export function transpose(R: ArrayLike<number>): Float64Array {
-  return new Float64Array([R[0], R[3], R[6], R[1], R[4], R[7], R[2], R[5], R[8]]);
-}
-
-/** Row-major 3x3 product A@B. */
-export function matmul3(A: ArrayLike<number>, B: ArrayLike<number>): Float64Array {
-  const C = new Float64Array(9);
-  for (let i = 0; i < 3; i++)
-    for (let j = 0; j < 3; j++)
-      C[3 * i + j] = A[3 * i] * B[j] + A[3 * i + 1] * B[3 + j] + A[3 * i + 2] * B[6 + j];
-  return C;
 }
 
 /** R^T @ v for row-major R. */
@@ -75,37 +61,6 @@ export function sampleTraj(traj: Float32Array, nRows: number, nCols: number,
 
 export function clip(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
-}
-
-/** argsort of an integer permutation (inverse permutation). */
-export function argsort(a: ArrayLike<number>): Int32Array {
-  const inv = new Int32Array(a.length);
-  for (let i = 0; i < a.length; i++) inv[a[i]] = i;
-  return inv;
-}
-
-export interface GaitParams {
-  dt: number;
-  walk_cycle: number; run_cycle: number;
-  walk_air_ratio: number; run_air_ratio: number;
-  transition_speed_min: number; transition_speed_max: number;
-}
-
-/** The 6 gait-clock obs terms for the *_gait policies (disasm-confirmed):
- * two-foot antiphase clock whose cycle shortens walk->run with commanded speed.
- * Returns [newPhase, 6-vector [sin0,sin1,cos0,cos1,air,air]]. */
-export function gaitClock(phase: number, cmd: ArrayLike<number>, g: GaitParams):
-    [number, Float32Array] {
-  const speed = Math.hypot(cmd[0], cmd[1]);
-  const lo = g.transition_speed_min, hi = g.transition_speed_max;
-  const t = clip((speed - lo) / Math.max(hi - lo, 1e-6), 0, 1);
-  const air = g.walk_air_ratio + (g.run_air_ratio - g.walk_air_ratio) * t;
-  const cycle = Math.max(g.walk_cycle + (g.run_cycle - g.walk_cycle) * t, 1e-6);
-  const ph = (phase + g.dt / cycle) % 1.0;
-  const phi0 = (ph + air) % 1.0;
-  const phi1 = (ph + air + 0.5) % 1.0;         // legs antiphase
-  const a0 = 2 * Math.PI * phi0, a1 = 2 * Math.PI * phi1;
-  return [ph, new Float32Array([Math.sin(a0), Math.sin(a1), Math.cos(a0), Math.cos(a1), air, air])];
 }
 
 /** Concatenate float arrays into one Float32Array. */

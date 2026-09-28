@@ -1,0 +1,36 @@
+name: zjx_walk_jump/actor
+robot: g1
+family: g1_jump
+control: {step_dt: 0.02, sim_dt: 0.0005, duration: 3.02}
+policy: {path: assets/policies/g1/zjx_walk_jump/actor.mnn, arch: jump, num_obs: 603, num_act: 29}
+g1:
+  models: [edu]   # G1 variants it runs on (Air = machinetype 4, EDU = 5)
+  fsm_id: 900     # ai_sport FsmZjxWalkJump (R1 + R2 + →, scheduler-blocked on 1.5.4, entered from 802)
+  # decoded from fsm_zjx_walk_jump.cpp.o (see src/core/drivers/g1_jump.ts): obs = 3 x 201 frames
+  # [raw gyro, gravity, 3 x (com_z, com_v, ref gravity, ref q - default), q - default, raw dq, last action],
+  # joint vectors in IsaacLab order (slot i = motor client_joint_idx[i])
+  obs_scheme: zjx_jump
+  control_joints: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+    19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+  client_joint_idx: [0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22, 4, 10, 16, 23, 5, 11, 17, 24,
+    18, 25, 19, 26, 20, 27, 21, 28]
+  num_obs: 201
+  num_act: 29
+  memory_size: 3
+  default_dof_pos: [-0.20, 0.00, 0.0, 0.42, -0.23, 0.0, -0.20, 0.00, 0.0, 0.42, -0.23, 0.0,
+    0.00, 0.00, 0.0, 0.35, 0.18, 0.0, 0.87, 0.0, 0.0, 0.0, 0.35, -0.18, 0.0, 0.87, 0.0, 0.0, 0.0]
+  init_pose: [-0.15, 0.0, 0.0, 0.3, -0.15, 0.0, -0.15, 0.0, 0.0, 0.3, -0.15,
+    0.0, 0.0, 0.0, 0.0, 0.26, 0.14, -0.09, 0.96, 0.0, 0.0, 0.0, 0.26, -0.14, 0.09,
+    0.96, 0.0, 0.0, 0.0]   # seated in 802's stance (the FSM is entered from 802)
+  action_scale: 0.25
+  clip_start: 0
+  clip_end: 150
+  next_policy: cpy_walk_run_29dofs/actor   # done flag -> the robot goes back to 802
+  kp: [200, 150, 150, 200, 20, 20, 200, 150, 150, 200, 20, 20, 200, 200, 200,
+    100, 100, 50, 50, 40, 40, 40, 100, 100, 50, 50, 40, 40, 40]
+  kd: [5, 5, 5, 5, 2, 2, 5, 5, 5, 5, 2, 2, 5, 5, 5, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+  tau: [88, 88, 88, 139, 50, 50, 88, 88, 88, 139, 50, 50, 88, 50, 50, 25, 25, 25,
+    25, 25, 5, 5, 25, 25, 25, 25, 25, 5, 5]
+  # [frames_gen_q 36 (pos, quat xyzw, q), frames_com_p 3, frames_com_v 3] of
+  # G1_mimic_2025_0807_155630_JUMP_002_YY_50hz.yaml (210 frames)
+  motion_clip: assets/policies/g1/zjx_walk_jump/motion_clip.csv

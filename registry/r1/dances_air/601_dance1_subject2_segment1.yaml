@@ -1,0 +1,33 @@
+# R1 FSM 601: Dance dance1_subject2_segment1 (entry commented out in dances_air.yaml; R1+Up) (5.63-23.50 s of the clip @ 30 fps)
+name: dances_air/601_dance1_subject2_segment1
+robot: r1_air
+family: r1_fw
+source: ai_sport 1.0.2.154 r1_controller (OTA 1.4.2.8)
+control: {step_dt: 0.02, sim_dt: 0.002}
+policy: {path: assets/policies/r1/motions/dances_air/dance1_subject2/new_policy_30k.onnx, num_act: 20}
+r1:
+  firmware: true
+  fsm_id: 601
+  models: [air]
+  obs_scheme: track
+  anchor: ori6
+  joint_names: [left_hip_pitch_joint, left_shoulder_pitch_joint, right_hip_pitch_joint, right_shoulder_pitch_joint, left_hip_roll_joint,
+    left_shoulder_roll_joint, right_hip_roll_joint, right_shoulder_roll_joint, left_hip_yaw_joint, left_shoulder_yaw_joint,
+    right_hip_yaw_joint, right_shoulder_yaw_joint, left_knee_joint, left_elbow_joint, right_knee_joint, right_elbow_joint,
+    left_ankle_pitch_joint, right_ankle_pitch_joint, left_ankle_roll_joint, right_ankle_roll_joint]
+  csv_joint_perm: [0, 12, 6, 16, 1, 13, 7, 17, 2, 14, 8, 18, 3, 15, 9, 19, 4, 10, 5, 11]
+  default_joint_pos: [-0.312, 0.2, -0.312, 0.2, 0.0, 0.2, 0.0, -0.2, -0.0, 0.0, 0.0, -0.0, 0.669, 0.6, 0.669, 0.6, -0.363,
+    -0.363, 0.0, 0.0]
+  action_scale: [0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.525, 0.178, 0.525, 0.178, 0.525, 0.178,
+    0.525, 0.398, 0.398, 0.398, 0.398]
+  action_offset: [-0.312, 0.2, -0.312, 0.2, 0.0, 0.2, 0.0, -0.2, -0.0, 0.0, 0.0, -0.0, 0.669, 0.6, 0.669, 0.6, -0.363, -0.363,
+    0.0, 0.0]
+  stiffness: [84.3, 84.3, 84.3, 84.3, 84.3, 84.3, 84.3, 84.3, 84.3, 15.7, 84.3, 15.7, 84.3, 15.7, 84.3, 15.7, 31.4, 31.4,
+    31.4, 31.4]
+  damping: [5.37, 5.37, 5.37, 5.37, 5.37, 5.37, 5.37, 5.37, 5.37, 1.0, 5.37, 1.0, 5.37, 1.0, 5.37, 1.0, 2.0, 2.0, 2.0, 2.0]
+  action_clip: 10.0
+  segments:
+  - {motion: motion, fps: 30, start: 5.63, end: 23.5}
+  aux_files: {motion: assets/policies/r1/trajs/dances_air/dance1_subject2/R1_air_dance1_subject2.bvh_30hz.csv}
+  next_policy: locomotion_20dofs/locomotion_20dofs
+  upz_safety: [0.8, 3]

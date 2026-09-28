@@ -1,0 +1,40 @@
+# R1 FSM 831: LocomotionArmsdk (Air; 816 on Air): all-joint net, arm SDK
+name: locomotion_armsdk/831_alljoint
+robot: r1_air
+family: r1_fw
+source: ai_sport 1.0.2.154 r1_controller (OTA 1.4.2.8)
+control: {step_dt: 0.02, sim_dt: 0.002}
+policy: {path: assets/policies/r1/motions/locomotion_armsdk/r1air_armsdk_loco_new_alljoint.onnx, num_act: 20}
+r1:
+  firmware: true
+  fsm_id: 831
+  models: [air]
+  obs_scheme: gait
+  joint_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint,
+    right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint,
+    left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint, right_shoulder_pitch_joint,
+    right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint]
+  memory: 10
+  default_dof_pos: [-0.23, 0.03, -0.11, 0.22, -0.02, -0.04, -0.23, -0.03, 0.11, 0.22, -0.02, 0.04, 0.25, 0.2, -0.0, 0.8, 0.25,
+    -0.2, 0.0, 0.8]
+  action_scale: 0.25
+  kp: [50, 50, 50, 50, 30, 30, 50, 50, 50, 50, 30, 30, 40, 40, 40, 40, 40, 40, 40, 40]
+  kd: [4, 4, 4, 4, 3, 3, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+  vel_range: [-1.0, 1.2, -1.0, 1.0, -1.8, 1.8]
+  default_vx_forward_limit: 1.2
+  angular_coupling_strength: 0.6
+  joystick_deadband: 0.0
+  acc: [1000000000.0, 1000000000.0, 1000000000.0, 1000000000.0, 1000000000.0, 1000000000.0]
+  obs_joint_idx: [0, 12, 6, 16, 1, 13, 7, 17, 2, 14, 8, 18, 3, 15, 9, 19, 4, 10, 5, 11]
+  action_joint_idx: [0, 12, 6, 16, 1, 13, 7, 17, 2, 14, 8, 18, 3, 15, 9, 19, 4, 10, 5, 11]
+  arms:
+    arm_dof_idx: [12, 13, 14, 15, 16, 17, 18, 19]
+    arm_low_limit: [-3.1416, -0.22689, -1.9199, -0.97564, -3.1416, -2.47849, -1.9199, -0.97564]
+    arm_high_limit: [2.0944, 2.4784, 1.9199, 2.1852, 2.0944, 0.2268, 1.9199, 2.1852]
+    arm_resample_s: 2.0
+    arm_soft_limit: 0.9
+    arm_policy_ratio: 0.1
+    arm_random_ratio: 0.9
+    arm_return_s: 2.0
+  zero_cmd: true
+control_ui:

@@ -118,6 +118,12 @@ export function terrainTransform(preset: TerrainName, args: Record<string, numbe
       : preset === "stairs" ? stairsXml(args.width, args.height, args.length, args.n, args.start_x)
       : preset === "park" ? parkXml(args.seed)
       : slopeXml(args.angle_deg);
-    return xml.replace("</worldbody>", `  ${inject}\n  </worldbody>`);
+    // Go2/R1 scene.xml carry their own <worldbody>; G1's scene.xml is a bare
+    // <include> of g1_29dof.xml (which holds the floor), so it has none — a
+    // plain </worldbody> replace was a silent no-op there. MuJoCo merges
+    // repeated <worldbody> sections, so append a fresh one instead.
+    if (xml.includes("</worldbody>"))
+      return xml.replace("</worldbody>", `  ${inject}\n  </worldbody>`);
+    return xml.replace("</mujoco>", `  <worldbody>\n    ${inject}\n  </worldbody>\n</mujoco>`);
   };
 }

@@ -1,0 +1,60 @@
+# ai_sport FsmHumanMimic2 on the G1 Air (FSM 503) driven from the remote, as on the robot: the Air's one decoder
+# ota_dance_23dof_v1_32000 (fsm_human_mimic2_config_23dof.yaml: policy "23dof_base" = stance and
+# "ota_dance_23dof_v1_32000_decoder" = every motion - the same .mnn) stands on the stance row until a
+# motion_string_map combo is pressed, plays that motion, blends back to stance and hands over to 801.
+# Everything else (obs, 137-dim cmd, masking, gains) as in air_dance1.yaml - see the notes there.
+# This registry entry used to be a stray copy of the decoder at human_mimic/ (Jun 2025, no .onnx, no config),
+# so it was never packed; the 1.5.4 config loads human_mimic/ota_dance_23dof_v1/ (byte-identical, md5 987bf6aa).
+name: human_mimic/ota_dance_23dof_v1_32000_decoder
+robot: g1
+family: g1_mimic_vq
+control: {step_dt: 0.02, sim_dt: 0.0005, duration: 600}
+policy: {path: assets/policies/g1/human_mimic/ota_dance_23dof_v1/ota_dance_23dof_v1_32000_decoder.mnn, arch: vq, num_obs: 930, num_act: 29}
+g1:
+  models: [air]
+  obs_scheme: vq
+  fsm_id: 503
+  control_joints: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+  num_obs: 93
+  num_act: 29
+  memory_size: 10
+  default_dof_pos: [-0.3, 0.0, 0.0, 0.6, -0.3, 0.0, -0.3, 0.0, 0.0, 0.6, -0.3, 0.0, 0.0, 0.0, 0.0,
+    0.3, 0.3, 0.0, 0.97, 0.0, 0.0, 0.0, 0.3, -0.3, 0.0, 0.97, 0.0, 0.0, 0.0]
+  action_scale: 1.0
+  kp: [40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 300, 300,
+    14.3, 14.3, 14.3, 14.3, 14.3, 300, 300, 14.3, 14.3, 14.3, 14.3, 14.3, 300, 300]   # absent Air joints held rigid
+  kd: [2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 5, 5,
+    0.9, 0.9, 0.9, 0.9, 0.9, 5, 5, 0.9, 0.9, 0.9, 0.9, 0.9, 5, 5]
+  tau: [88, 88, 88, 139, 50, 30, 88, 88, 88, 139, 50, 30, 88, 60, 60, 20, 20, 20, 20, 20, 20, 20,
+    20, 20, 20, 20, 20, 20, 20]
+  # on the robot 503 exits to 801 (cpy_run_29dofs) after the motion; the web stays in 503 (stance) instead
+  aux_files:
+    stance: "assets/policies/g1/human_mimic/mimic_base_23dof/stance_new.csv"
+    dance1: "assets/policies/g1/human_mimic/ota_dance_23dof_v1/vq_dance1_subject2_2f427de1_G1_50hz_sec_1.csv"
+    lixiaolong: "assets/policies/g1/human_mimic/ota_dance_23dof_v1/vq_lixiaolong_Take_056_Skeleton0_G1_50hz_v1_2.csv"
+    classic_movie: "assets/policies/g1/human_mimic/ota_dance_23dof_v1/vq_classic_movie_Take_104_Skeleton0_G1_50hz.csv"
+  vq:
+    mode: task
+    remote: true
+    stance_latent: stance
+    transit_s: 0.5
+    auto_exit_s: 0.0
+    stance_task: track
+    masked_joints: [13, 14, 20, 21, 27, 28]
+    max_root_pos_error: 1.0
+    min_root_pos_error: 0.0
+    motions:   # motion_string_map (first key pressed while the modifier is held); sec_1/2/3 are the same file
+      - {file: "dance1", start: 5.7, end: 23.4, fps: 50, combo: "R1+Up"}
+      - {file: "dance1", start: 48.76, end: 61.5, fps: 50, combo: "R1+Left"}
+      - {file: "dance1", start: 79.24, end: 99.8, fps: 50, combo: "R1+Right"}
+      - {file: "lixiaolong", start: 3.4, end: 25.3, fps: 50, combo: "R2+Up"}
+      - {file: "classic_movie", start: 1.8, end: 23.7, fps: 50, combo: "R2+Left"}
+control_ui:
+  actions:
+    - group: "Dances"
+      items:
+        - {combo: "R1+Up", label: "Dance 1, part 1"}
+        - {combo: "R1+Left", label: "Dance 1, part 2"}
+        - {combo: "R1+Right", label: "Dance 1, part 3"}
+        - {combo: "R2+Up", label: "Jeet Kune Do (lixiaolong)"}
+        - {combo: "R2+Left", label: "Twist (classic movie)"}

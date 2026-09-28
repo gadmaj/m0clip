@@ -3,15 +3,21 @@
 import { makeDriver, type BaseDriver } from "../core/drivers";
 import { sampleTraj, wxyz } from "../core/math";
 import type { PolicyEntry, Command, EvalConfig, RobotSpec } from "../core/types";
-import { allPacks, deletePack, importAny, packEntries, resolvePackConfig,
+import { allPacks, deletePack, deleteAllPacks, importAny, packEntries, resolvePackConfig,
          revokePack, type StoredPack } from "../packs";
 import { Engine, MissingBundleError } from "../sim/engine";
 import { SimFSM, type FsmState } from "../sim/fsm";
 import { TERRAINS, terrainTransform, type TerrainName } from "../sim/terrain";
 import { getSpec, SPECS } from "../robots";
 
-/** Robot family: r1 + r1_air share one model (and one UI slot); go2 is its own. */
-const fam = (r: string) => (r.startsWith("r1") ? "r1" : r);
+/** Robot family: r1 + r1_air (+ r1_air_edu) share one UI slot (EDU 24-DOF / Air 20-DOF, two scenes of one
+ * bundle), as do g1 + g1_air; go2 is its own. */
+const fam = (r: string) => (r.startsWith("r1") ? "r1" : r.startsWith("g1") ? "g1" : r);
+/** R1 variants a pack entry runs on: its declared `models`, else from the pack robot (r1_air = Air). */
+const r1Models = (e: PolicyEntry): string[] =>
+  e.models?.length ? e.models : [e.robot === "r1_air" ? "air" : "edu"];
+/** Identity of the compiled model: specs with equal keys can swap without recompiling. */
+const modelKey = (s: RobotSpec) => `${s.model_dir}/${s.scene ?? "scene.xml"}`;
 import type { FromWorker, RenderModel, ToWorker } from "../sim/protocol";
 
 /** Kinematic-playback state: a user-supplied reference clip is set into qpos
@@ -61,12 +67,162 @@ class SimWorker {
   policies: PolicyEntry[] = [];       // pack entries for the active robot
   polIdx = 0;
   command: Command = [0, 0, 0];
+  /** The command actually handed to the driver this step (0 while the policy ignores commands). */
+  cmdNow: Command = [0, 0, 0];
   busy = true;
   rtf = 0;
+  /** simulated seconds of policy control (inspect snapshot; lets tests schedule by sim time) */
+  simT = 0;
+  /** pending scripted stimulus (message "script"), absolute simT; `stick` persists and is rescaled per tick */
+  private script: { at: number; stick?: [number, number, number]; combo?: string }[] = [];
+  private stick: [number, number, number] | null = null;
+  private scriptT0 = -1;
   playback: Playback | null = null;
   inspectOn = false;
+  private prevCmd: { target: Float64Array | null; kp: Float64Array; kd: Float64Array } | null = null;
   baseAddr = 0;                        // floating-base qpos addr (for driver-less frames)
+  private baseVaddr = 0;               // floating-base qvel addr
+  /** measured base speed [forward, lateral (heading frame), yaw rate], ~0.5 s moving average */
+  private speed: [number, number, number] = [0, 0, 0];
+  /** policy entered by an automatic hand-over (its notice popup is suppressed until picked by hand) */
+  private autoPolicy?: string;
+  hoistOn = false;                     // overhead suspension gantry support: off by default (H / button turns it on)
+  hoistZ = 0;                          // nominal standing height captured on reset
+  leash: { on: boolean; x: number; y: number } = { on: false, x: 0, y: 0 };
+  private anchorBid = 0;               // body the leash force applies to
+  private hoistBid = 0;                // body the overhead hoist holds (spec hoist_body, else anchor)
+  private hoistOff: [number, number, number] = [0, 0, 0];   // hoist point in that body's frame
+  private stallSteps = 0;              // leash taut but dog not moving
   private lastInspect = 0;
+
+  /** Leash: a capped horizontal spring pulling the "collar" (front of the
+   * trunk) toward the anchor point — the interactive form of the reference
+   * implementation's external-pull force. Runs every control step. */
+  private applyLeash() {
+    const xf = this.eng.xfrcApplied;
+    const off = 6 * this.anchorBid;
+    const drv = this.driver as (BaseDriver & { leashCapable?: boolean }) | null;
+    if (!this.leash.on || !drv?.leashCapable) {
+      if (!this.hoistOn || this.fsm.state === "policy") {
+        xf[off] = 0;
+        xf[off + 1] = 0;
+        xf[off + 5] = 0;
+      }
+      return;
+    }
+    const q = this.eng.qpos, b = drv.bqp;
+    const [w, x, y, z] = [q[b + 3], q[b + 4], q[b + 5], q[b + 6]];
+    const yaw = Math.atan2(2 * (x * y + w * z), 1 - 2 * (y * y + z * z));
+    const COLLAR = 0.25;                       // m ahead of the base
+    const cx = q[b] + Math.cos(yaw) * COLLAR;
+    const cy = q[b + 1] + Math.sin(yaw) * COLLAR;
+    // The drag policy is delicate: the reference walks under a ~10 N frontal
+    // pull and topples at 15 N+, and barely reacts to sideways force at all.
+    // So (a) the spring saturates quickly to a ~11 N cap, and (b) like a real
+    // dog on a leash, an off-axis pull mostly TURNS the dog (amplified yaw
+    // torque) until the pull is frontal — then it walks.
+    // Tension profile of a real leash: firm on a planted dog (ignition),
+    // near-slack once it walks — the predictor keeps it walking, the leash
+    // only steers. A hard constant pull drags the dog off its feet.
+    const speed0 = Math.hypot(this.eng.qvel[drv.bqv], this.eng.qvel[drv.bqv + 1]);
+    const K = 60, FMAX = speed0 > 0.15 ? 5 : 11, STEER = 5;
+    let fx = K * (this.leash.x - cx), fy = K * (this.leash.y - cy);
+    const f = Math.hypot(fx, fy);
+    if (f > FMAX) { fx *= FMAX / f; fy *= FMAX / f; }
+    xf[off] = fx;
+    xf[off + 1] = fy;
+    const rx = cx - q[b], ry = cy - q[b + 1];
+    xf[off + 5] = STEER * (rx * fy - ry * fx);
+    // Ignition: the pull-velocity predictor only sustains once the dog is
+    // STEPPING (planted feet + static friction read as pr ~ 0). When the
+    // leash is taut but the dog is stalled, clear the obs history — the
+    // cold-start transient makes the predictor kick off the first steps,
+    // the same regime the reference rollout starts in.
+    const speed = Math.hypot(this.eng.qvel[drv.bqv], this.eng.qvel[drv.bqv + 1]);
+    if (f > 0.85 * FMAX && speed < 0.08) {
+      if (++this.stallSteps > 30) {
+        // start toward the anchor: forward if it's ahead, turn first if not
+        const rel = Math.atan2(this.leash.y - q[b + 1], this.leash.x - q[b]) - yaw;
+        const cr = Math.cos(rel), sr = Math.sin(rel);
+        // turning is the drag actor's stable axis (forward walking is
+        // marginal even in the reference) — start gently, steer decisively
+        (drv as unknown as { kick?: (vx: number, wz: number) => void })
+          .kick?.(Math.max(0.12, 0.25 * cr), 1.1 * sr);
+        this.stallSteps = -60;                 // ~1.2 s cooldown
+      }
+    } else if (this.stallSteps > 0) this.stallSteps = 0;
+  }
+
+  /** Overhead hoist: vertical suspension & posture stabilization.
+   * Runs every physics substep at 500–2000 Hz.
+   * In Stance/Damping/ZeroTorque: holds nominal standing height and upright posture.
+   * In Policy: acts as a safety tether that engages only if the robot begins falling. */
+  private applyHoist() {
+    const xf = this.eng.xfrcApplied;
+    const off = 6 * this.hoistBid;
+    const leashHere = this.leash.on && this.hoistBid === this.anchorBid;
+    const slack = () => {                     // release the hoist (keep a leash on the same body)
+      xf[off + 2] = 0; xf[off + 3] = 0; xf[off + 4] = 0;
+      if (!leashHere) { xf[off] = 0; xf[off + 1] = 0; xf[off + 5] = 0; }
+    };
+    if (!this.hoistOn) return slack();
+
+    const bqp = this.driver?.bqp ?? this.baseAddr;
+    const bqv = this.driver?.bqv ?? this.baseVaddr;
+    const q = this.eng.qpos, qv = this.eng.qvel;
+    const z = q[bqp + 2], vz = qv[bqv + 2];
+    const mass = this.eng.totalMass;
+    const g = 9.81;
+
+    const isPolicy = this.fsm.state === "policy";
+    // In Policy mode, only catch if robot falls below fall threshold (~0.48m),
+    // never interfering with normal walking stride height dips (0.65-0.78m)
+    const catchZ = Math.min(0.48, this.hoistZ - 0.25);
+    const targetZ = isPolicy ? catchZ : this.hoistZ;
+
+    // Safety tether is completely slack when policy is walking upright,
+    // or executing ground-start / squat / jump maneuvers
+    if (isPolicy && (z >= targetZ || this.driver?.groundStart || this.driver?.maneuver)) return slack();
+
+    // Vertical suspension force (spring + damping + gravity compensation)
+    const Kz = 20.0 * mass;
+    const Dz = 2.5 * mass;
+    const f = [0, 0, Math.max(0, Kz * (targetZ - z) - Dz * vz + mass * g)];
+
+    // Posture stabilization torques (roll/pitch upright restoration)
+    const Krot = 5.0 * mass;
+    const Drot = 0.7 * mass;
+    const [w, x, y] = [q[bqp + 3], q[bqp + 4], q[bqp + 5]];
+    const [wx, wy, wz] = [qv[bqv + 3], qv[bqv + 4], qv[bqv + 5]];
+    const t = [-Krot * (2.0 * w * x) - Drot * wx, -Krot * (2.0 * w * y) - Drot * wy, 0];
+
+    if (!leashHere) {
+      t[2] = -Drot * wz;
+      if (!isPolicy) {
+        const home = this.driver?.homeXY ?? [0, 0];
+        const Kxy = 5.0 * mass, Dxy = 1.5 * mass;
+        f[0] = -Kxy * (q[bqp] - home[0]) - Dxy * qv[bqv];
+        f[1] = -Kxy * (q[bqp + 1] - home[1]) - Dxy * qv[bqv + 1];
+      }
+    }
+    // xfrc_applied acts at the body COM: holding the robot at the hoist point p adds (p - com) x f
+    const p = this.hoistPoint(), c = this.eng.xipos, cb = 3 * this.hoistBid;
+    const r = [p[0] - c[cb], p[1] - c[cb + 1], p[2] - c[cb + 2]];
+    t[0] += r[1] * f[2] - r[2] * f[1];
+    t[1] += r[2] * f[0] - r[0] * f[2];
+    t[2] += r[0] * f[1] - r[1] * f[0];
+    xf[off + 2] = f[2]; xf[off + 3] = t[0]; xf[off + 4] = t[1];
+    if (!leashHere) { xf[off] = f[0]; xf[off + 1] = f[1]; xf[off + 5] = t[2]; }
+  }
+
+  /** World position of the hoist point (spec hoist_body + hoist_offset). */
+  private hoistPoint(): [number, number, number] {
+    const b = this.hoistBid, o = this.hoistOff, xp = this.eng.xpos, R = this.eng.xmat;
+    const m = 9 * b;
+    return [xp[3 * b] + R[m] * o[0] + R[m + 1] * o[1] + R[m + 2] * o[2],
+            xp[3 * b + 1] + R[m + 3] * o[0] + R[m + 4] * o[1] + R[m + 5] * o[2],
+            xp[3 * b + 2] + R[m + 6] * o[0] + R[m + 7] * o[1] + R[m + 8] * o[2]];
+  }
 
   async init(m: { robot?: string; terrain?: TerrainName; policy?: string }) {
     post({ t: "busy", msg: "loading imported policy packs…" });
@@ -77,15 +233,17 @@ class SimWorker {
       .filter((r) => r in SPECS);
     this.robot = m.robot && m.robot in SPECS ? m.robot
       : robots.includes("r1") ? "r1" : (robots[0] ?? "r1");
+    this.rebuildPolicies();
+    const saved = m.policy ? this.policies.findIndex((e) => e.name === m.policy) : -1;
+    const first = saved >= 0 ? saved : 0;
+    // compile the model the first policy runs on (Air-only packs → the Air model), not one to be replaced
+    if (this.policies.length) this.robot = this.specFor(this.policies[first]);
 
     post({ t: "busy", msg: "compiling MuJoCo model (wasm)…" });
     await this.buildEngine();
 
-    this.rebuildPolicies();
-    if (this.policies.length) {
-      const saved = m.policy ? this.policies.findIndex((e) => e.name === m.policy) : -1;
-      await this.loadDriver(saved >= 0 ? saved : 0);
-    } else this.driver = null;
+    if (this.policies.length) await this.loadDriver(first);
+    else this.driver = null;
     this.fsm.enter("policy");
     this.busy = false;
     post({ t: "ready" });
@@ -98,16 +256,53 @@ class SimWorker {
     return this.packs.flatMap(packEntries);
   }
 
-  /** Policy list for the active robot FAMILY (r1 covers r1_air — one model). */
+  /** Policy list for the active robot FAMILY (r1 covers r1_air, g1 covers g1_air). */
   private rebuildPolicies() {
     this.policies = this.allEntries().filter((e) => fam(e.robot) === fam(this.robot));
   }
 
+  /** The spec a pack entry runs on: its own robot, except that G1 / R1 packs pick the model by their
+   * variants (`models`) — Air-only (["air"]) → the Air model (G1 23-DOF, R1 20-DOF), anything with "edu"
+   * → the EDU one (G1 29-DOF, R1 24-DOF). R1 packs without `models` go by their robot (r1_air = Air).
+   * A 20-DOF R1 pack on the EDU model runs as `r1_air_edu` (waist / wrist roll held rigid).
+   * `keep` (auto-handover): an Air-capable next policy stays on the Air model already loaded (G1; R1 always
+   * keeps the loaded Air body for Air + EDU packs). */
+  private specFor(entry: PolicyEntry, keep = false): string {
+    if (!(entry.robot in SPECS)) return this.robot;
+    if (fam(entry.robot) === "r1") {
+      if (entry.robot !== "r1_air") return entry.robot;       // 24-DOF (or EDU partial-control) packs
+      const m = r1Models(entry);
+      // Air + EDU packs (832 / 833 …) run on the body currently loaded: Air after an Air pack (as on an Air
+      // robot, where Stance R2+X / R2+Y enter them), else EDU. `keep` is implied for R1.
+      void keep;
+      const air = (m.length === 1 && m[0] === "air") || (m.includes("air") && this.robot === "r1_air");
+      return air ? "r1_air" : "r1_air_edu";
+    }
+    if (entry.robot !== "g1") return entry.robot;
+    const m = entry.models ?? [];
+    if (m.length === 1 && m[0] === "air") return "g1_air";
+    if (keep && m.includes("air") && fam(this.robot) === "g1") return this.robot;
+    return "g1";
+  }
+
   private async buildEngine() {
-    this.eng = await Engine.create(getSpec(this.robot).model_dir,
-                                   terrainTransform(this.terrain));
+    const prev = this.eng as Engine | undefined;
+    const spec0 = getSpec(this.robot);
+    this.eng = await Engine.create(spec0.model_dir, terrainTransform(this.terrain), spec0.scene);
+    if (prev) {
+      // the old driver is bound to the old engine's model/data; every caller
+      // reloads one (or runs driverless) — drop it before freeing the wasm side
+      this.driver = null;
+      prev.dispose();
+    }
     this.eng.timestep = getSpec(this.robot).sim_dt;
     this.baseAddr = this.eng.jointQposAdr(getSpec(this.robot).floating_base_joint);
+    this.baseVaddr = this.eng.jointDofAdr(getSpec(this.robot).floating_base_joint);
+    this.anchorBid = this.eng.bodyId(getSpec(this.robot).anchor_body);
+    const spec = getSpec(this.robot);
+    this.hoistBid = spec.hoist_body ? this.eng.bodyId(spec.hoist_body) : this.anchorBid;
+    this.hoistOff = spec.hoist_offset ?? [0, 0, 0];
+    this.hoistZ = this.eng.qpos[this.baseAddr + 2];
     this.fsm = new SimFSM(this.eng);
     post({ t: "model", desc: this.renderModel() });
   }
@@ -121,6 +316,7 @@ class SimWorker {
     const vertadr: Int32Array = m.mesh_vertadr, vertnum: Int32Array = m.mesh_vertnum;
     const faceadr: Int32Array = m.mesh_faceadr, facenum: Int32Array = m.mesh_facenum;
     const vert: Float32Array = m.mesh_vert, face: Int32Array = m.mesh_face;
+    const mpos: Float64Array = m.mesh_pos, mquat: Float64Array = m.mesh_quat;
     for (let g = 0; g < ngeom; g++) {
       const mid = dataid[g];
       if (mid >= 0 && !(mid in meshes)) {
@@ -132,6 +328,8 @@ class SimWorker {
           vert: vert.slice(3 * vertadr[mid], 3 * (vertadr[mid] + vertnum[mid])),
           face: Uint32Array.from(
             face.subarray(3 * faceadr[mid], 3 * (faceadr[mid] + facenum[mid]))),
+          pos: [mpos[3 * mid], mpos[3 * mid + 1], mpos[3 * mid + 2]],
+          quat: [mquat[4 * mid], mquat[4 * mid + 1], mquat[4 * mid + 2], mquat[4 * mid + 3]],
         };
       }
     }
@@ -159,16 +357,24 @@ class SimWorker {
     return c;
   }
 
-  async loadDriver(idx: number) {
+  async loadDriver(idx: number, keepModel = false) {
     this.busy = true;
     const entry = this.policies[idx];
     post({ t: "busy", msg: `loading ${entry.name}…` });
-    // a family spans specs (r1 ↔ r1_air, same compiled model): adopt the
-    // policy's own spec so joint subset / gains / fall height match
-    if (entry.robot !== this.robot && entry.robot in SPECS &&
-        getSpec(entry.robot).model_dir === getSpec(this.robot).model_dir)
-      this.robot = entry.robot;
     try {
+      // a family spans specs: adopt the policy's own spec so joint subset / gains / fall height match
+      // (r1 ↔ r1_air_edu share the compiled model; r1 ↔ r1_air and g1 ↔ g1_air recompile — EDU vs Air)
+      const want = this.specFor(entry, keepModel);
+      if (want !== this.robot) {
+        const rebuild = modelKey(getSpec(want)) !== modelKey(getSpec(this.robot));
+        this.robot = want;
+        if (rebuild) {
+          const label = want === "g1_air" ? "G1 Air 23-DOF" : want === "r1_air" ? "R1 Air 20-DOF" : want;
+          post({ t: "busy", msg: `compiling MuJoCo model (wasm, ${label})…` });
+          await this.buildEngine();
+          post({ t: "busy", msg: `loading ${entry.name}…` });
+        }
+      }
       const cfg = await this.cfgFor(entry);
       // launch the new policy where the robot currently stands, not at the
       // origin — Recenter (C) is the explicit way back to the middle
@@ -178,7 +384,11 @@ class SimWorker {
       this.driver.homeXY = here;
       this.polIdx = idx;
       this.command = [0, 0, 0];
+      this.cmdNow = [0, 0, 0];
       this.driver.reset();
+      this.hoistZ = (this.driver.groundStart || this.driver.maneuver)
+        ? (fam(this.robot) === "g1" ? 0.78 : getSpec(this.robot).fall_height + 0.3)
+        : this.eng.qpos[this.driver.bqp + 2];
       post({ t: "ready" });
     } catch (e) {
       console.error(e);
@@ -189,18 +399,45 @@ class SimWorker {
     }
   }
 
+  /** The running policy is done (end of a clip / get-up): continue with the config's `g1.next_policy`
+   * like the robot's FSM auto-switch, WITHOUT re-seating — the new driver starts from the current pose. */
+  private async handover(cfg: EvalConfig | undefined) {
+    const drv = this.driver!;
+    drv.done = false;                       // only try once per completion
+    // a driver may name the policy itself (R1 firmware remote switch, r1_fw.ts), else the config's next_policy
+    const want = (drv as { nextPolicy?: string }).nextPolicy;
+    (drv as { nextPolicy?: string }).nextPolicy = undefined;
+    const next = want ?? cfg?.g1?.next_policy ?? (cfg?.r1?.next_policy as string | undefined);
+    const idx = next ? this.policies.findIndex((p) => p.name === next) : -1;
+    if (idx < 0) return;                    // next policy not imported: keep running this one
+    const qpos = Float64Array.from(this.eng.qpos), qvel = Float64Array.from(this.eng.qvel);
+    const eng = this.eng;
+    await this.loadDriver(idx, true);       // reset() clears the new driver's history but re-seats…
+    if (this.eng === eng) {                 // (unless the model had to change: then it stays re-seated)
+      this.eng.qpos.set(qpos); this.eng.qvel.set(qvel);   // …so put the robot back where it was
+      this.eng.forward();
+    }
+    if (this.driver) {
+      this.hoistZ = this.eng.qpos[this.driver.bqp + 2];
+      post({ t: "notice", msg: `${drv.name} finished → ${next}` });
+      this.autoPolicy = next;               // reached by hand-over: don't pop its how-to notice
+    }
+  }
+
   /** Switch robot (family), recompiling the scene when the model differs, and
    * load its first policy (or idle-preview if it has none). Callers reenter(). */
   private async setRobot(robot: string) {
-    const prevDir = getSpec(this.robot).model_dir;
+    const prevKey = modelKey(getSpec(this.robot));
     this.robot = robot;
-    if (getSpec(robot).model_dir !== prevDir) {
+    this.rebuildPolicies();
+    // compile the model policy 0 runs on (Air-only packs → the Air model)
+    if (this.policies.length) this.robot = this.specFor(this.policies[0]);
+    if (modelKey(getSpec(this.robot)) !== prevKey) {
       this.busy = true;
       post({ t: "busy", msg: "compiling MuJoCo model (wasm)…" });
       await this.buildEngine();
       this.busy = false;
     }
-    this.rebuildPolicies();
     if (this.policies.length) await this.loadDriver(0);  // posts "ready"
     else { this.driver = null; this.polIdx = 0; post({ t: "ready" }); }  // idle preview
   }
@@ -212,35 +449,33 @@ class SimWorker {
     this.sendStatus();
   }
 
-  /** Painter mode: compile the model and post its render description + one
-   * frame of the default pose. No catalog, no policies, no control loop. */
-  async initModel(robot?: string) {
-    this.robot = robot ?? "r1";
-    post({ t: "busy", msg: "compiling MuJoCo model (wasm)…" });
-    await this.buildEngine();
-    this.postFrame();
-    post({ t: "ready" });
-  }
-
   async onMessage(m: ToWorker) {
     switch (m.t) {
       case "init": return this.init(m);
-      case "initModel": return this.initModel(m.robot);
       case "playback": return this.startPlayback(m.csv, m.fps, m.name);
       case "stopPlayback": return this.stopPlayback();
       case "importPack": return this.doImportPack(m.zip);
       case "deletePack": return this.doDeletePack(m.id);
+      case "deleteAllPacks": return this.doDeleteAllPacks();
       case "inspect": this.inspectOn = m.on; return;
+      case "leash":
+        this.leash = { on: m.on, x: m.x ?? this.leash.x, y: m.y ?? this.leash.y };
+        return;
+      case "hoist":
+        this.hoistOn = m.on;
+        this.sendStatus();
+        return;
       case "policy": {
         this.playback = null;
         const idx = this.policies.findIndex((e) => e.name === m.name);
-        if (idx >= 0) { await this.loadDriver(idx); this.reenter(); }
+        if (idx >= 0) { this.autoPolicy = undefined; await this.loadDriver(idx); this.reenter(); }
         return;
       }
       case "cycle": {
         this.playback = null;
         if (!this.policies.length) return;
         const n = this.policies.length;
+        this.autoPolicy = undefined;
         await this.loadDriver((this.polIdx + m.step + n) % n);
         this.reenter();
         return;
@@ -265,9 +500,24 @@ class SimWorker {
       case "command":
         this.command = m.cmd;
         return;
+      case "remote":
+        this.driver?.remote(m.combo);
+        return;
+      case "script":
+        this.scriptT0 = this.simT;
+        this.script = m.steps.map((x) => ({ ...x, at: this.simT + x.at })).sort((a, b) => a.at - b.at);
+        this.stick = null;
+        return;
       case "reset":
         this.playback = null;
+        this.command = [0, 0, 0];
+        this.cmdNow = [0, 0, 0];
         this.driver?.reset();
+        if (this.driver) {
+          this.hoistZ = (this.driver.groundStart || this.driver.maneuver)
+            ? (fam(this.robot) === "g1" ? 0.78 : getSpec(this.robot).fall_height + 0.3)
+            : this.eng.qpos[this.driver.bqp + 2];
+        } else if (this.baseAddr >= 0) this.hoistZ = this.eng.qpos[this.baseAddr + 2];
         this.fsm.enter(this.fsm.state);
         return;
       case "recenter":
@@ -315,8 +565,8 @@ class SimWorker {
         `[pos(3), quat_xyzw(4), joints] with ${Object.values(SPECS)
           .map((s) => s.joint_names.length).join(" or ")} joints` });
     }
-    // ensure the compiled model matches the clip's robot (r1/r1_air share one)
-    if (getSpec(this.robot).model_dir !== spec.model_dir) {
+    // ensure the compiled model matches the clip's robot (20 joints → the R1 Air model, 24 → EDU)
+    if (modelKey(getSpec(this.robot)) !== modelKey(spec)) {
       this.busy = true;
       this.robot = spec.robot;
       post({ t: "busy", msg: "compiling MuJoCo model (wasm)…" });
@@ -344,6 +594,8 @@ class SimWorker {
       const imported = await importAny(new Uint8Array(zip));   // single pack OR bundle
       const curName = this.policies[this.polIdx]?.name;
       for (const pack of imported) {
+        revokePack(pack.id);
+        for (const e of packEntries(pack)) this.configs.delete(e.name);
         this.packs = this.packs.filter((p) => p.id !== pack.id);   // replace by id
         this.packs.push(pack);
       }
@@ -356,9 +608,15 @@ class SimWorker {
       }
       this.rebuildPolicies();
       if (this.driver && curName) {
-        // keep the running policy; entries may have reordered around it
         const i = this.policies.findIndex((e) => e.name === curName);
-        if (i >= 0) this.polIdx = i;
+        if (i >= 0) {
+          this.polIdx = i;
+          const wasImported = imported.some((p) => packEntries(p).some((e) => e.name === curName));
+          if (wasImported) {
+            await this.loadDriver(i);
+            return this.reenter();
+          }
+        }
         post({ t: "ready" });
         this.sendStatus();
       } else if (this.policies.length) {
@@ -375,20 +633,40 @@ class SimWorker {
   }
 
   private async doDeletePack(id: string) {
-    await deletePack(id).catch(() => {});
-    revokePack(id);
     const gone = new Set(this.packs.filter((p) => p.id === id).flatMap(packEntries).map((e) => e.name));
     for (const n of gone) this.configs.delete(n);
+    await deletePack(id).catch(() => {});
+    revokePack(id);
     this.packs = this.packs.filter((p) => p.id !== id);
     this.rebuildPolicies();
     // if the active policy vanished, fall back to the first available
-    if (this.policies.length && !this.policies[this.polIdx]) {
-      this.playback = null;
-      await this.loadDriver(0);
-      this.reenter();
+    if (this.policies.length) {
+      const curName = this.policies[this.polIdx]?.name;
+      if (!curName || gone.has(curName)) {
+        this.playback = null;
+        await this.loadDriver(Math.min(this.polIdx, this.policies.length - 1));
+        this.reenter();
+        return;
+      }
     } else {
-      this.sendStatus();
+      this.playback = null;
+      this.driver = null;
+      this.reenter();
+      return;
     }
+    this.sendStatus();
+  }
+
+  private async doDeleteAllPacks() {
+    await deleteAllPacks().catch(() => {});
+    for (const p of this.packs) revokePack(p.id);
+    this.configs.clear();
+    this.packs = [];
+    this.rebuildPolicies();
+    this.playback = null;
+    this.polIdx = 0;
+    this.driver = null;
+    this.reenter();
   }
 
   private playbackStep() {
@@ -406,6 +684,18 @@ class SimWorker {
     if (pb.t >= pb.nRows / pb.fps) pb.t = 0;
   }
 
+  /** Low-passed base velocity in the robot's heading frame (free-joint qvel: linear in world, angular in body). */
+  private updateSpeed(dt: number) {
+    const qa = this.driver?.bqp ?? this.baseAddr, va = this.driver?.bqv ?? this.baseVaddr;
+    const q = this.eng.qpos, v = this.eng.qvel;
+    const [w, x, y, z] = [q[qa + 3], q[qa + 4], q[qa + 5], q[qa + 6]];
+    const yaw = Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    const now: [number, number, number] = [c * v[va] + s * v[va + 1], -s * v[va] + c * v[va + 1], v[va + 5]];
+    const a = Math.min(1, dt / 0.5);
+    for (let i = 0; i < 3; i++) this.speed[i] += a * ((Number.isFinite(now[i]) ? now[i] : 0) - this.speed[i]);
+  }
+
   private sendStatus() {
     const e = this.policies[this.polIdx];
     post({
@@ -416,7 +706,8 @@ class SimWorker {
       robot: fam(this.robot),
       policies: this.policies.map((p) => ({
         name: p.name, family: p.family, dof: p.dof,
-        group: p.group, packId: p.packId })),
+        group: p.group, packId: p.packId, fsmId: p.fsmId,
+        models: fam(p.robot) === "r1" ? r1Models(p) : p.models })),
       packs: this.packs.map((p) => ({
         id: p.id, group: p.manifest.group, robot: p.manifest.robot,
         checkpoints: p.manifest.checkpoints.map((c) => c.id) })),
@@ -424,10 +715,36 @@ class SimWorker {
       family: e?.family ?? "-",
       dof: e?.dof ?? 0,
       state: this.fsm.state,
-      command: [...this.command] as Command,
+      command: [...this.cmdNow] as Command,   // what the policy is actually fed
       rtf: this.rtf,
       playback: this.playback?.name,
+      model: fam(this.robot) === "g1"
+        ? (this.robot === "g1_air" ? "G1 Air · 23-DOF" : "G1 EDU · 29-DOF")
+        : fam(this.robot) === "r1"
+          ? (this.robot === "r1_air" ? "R1 Air · 20-DOF" : "R1 EDU · 24-DOF") : undefined,
+      leash: !!(this.driver as { leashCapable?: boolean } | null)?.leashCapable,
+      velRange: this.driver?.needsCommand ? this.driver.velRange : undefined,
+      needsCommand: !!this.driver?.needsCommand,
+      hoist: this.hoistOn,
+      // pad pass-through / G-cycling use the same named controls as the panel buttons
+      combos: this.driver?.remoteActions().flatMap((g) => g.items.map((i) => i.combo)),
+      speed: [...this.speed] as [number, number, number],
+      actions: this.driver?.remoteActions(),
+      notice: this.driver && this.driver.name !== this.autoPolicy ? this.driver.cfg.control_ui?.notice : undefined,
     });
+  }
+
+  /** apply due scripted stimulus steps (message "script") before this control tick */
+  private runScript() {
+    while (this.script.length && this.script[0].at <= this.simT + 1e-9) {
+      const x = this.script.shift()!;
+      if (x.stick) this.stick = x.stick;
+      if (x.combo) this.driver?.remote(x.combo);
+    }
+    if (this.stick && this.driver) {
+      const v = this.driver.velRange ?? [-1, 1, -1, 1, -1, 1], [ly, lx, rx] = this.stick;
+      this.command = [ly * v[1], -lx * v[3], -rx * v[5]];
+    }
   }
 
   /** Build + post the obs/action inspector snapshot (≤10 Hz, panel-gated). */
@@ -440,7 +757,7 @@ class SimWorker {
              state: this.playback ? "kinematic playback" : "—",
              baseZ: 0, command: [0, 0, 0], drive: "—", onnxInputs: 1,
              stackDepth: 1, perFrame: 0, terms: [], actions: [],
-             playback: !!this.playback });
+             playback: !!this.playback, hoist: this.hoistOn });
       return;
     }
     const e = this.policies[this.polIdx];
@@ -463,15 +780,21 @@ class SimWorker {
       state: this.fsm.state,
       baseZ: this.eng.qpos[drv.bqp + 2],
       baseXY: [this.eng.qpos[drv.bqp], this.eng.qpos[drv.bqp + 1]],
-      nObst: (drv as { nObst?: number }).nObst,
+      baseQuat: [this.eng.qpos[drv.bqp + 3], this.eng.qpos[drv.bqp + 4], this.eng.qpos[drv.bqp + 5],
+                 this.eng.qpos[drv.bqp + 6]],
+      simT: this.simT, scriptT0: this.scriptT0,
+      hoist: this.hoistOn,
       lidar: (() => {
         const v = drv as { lastHmap?: Float32Array | null;
                            lidarDims?: { nx: number; ny: number } };
         return v.lastHmap && v.lidarDims
           ? { ...v.lidarDims, grid: Array.from(v.lastHmap) } : undefined;
       })(),
-      command: [...this.command] as Command,
-      drive: drv.clipDriven ? "clip" : drv.needsCommand ? "command" : "—",
+      command: [...this.cmdNow] as Command,   // what the policy is actually fed
+      drive: (drv.clipDriven ? "clip"
+        : (drv as { leashCapable?: boolean }).leashCapable ? "leash pull"
+        : drv.needsCommand ? "command" : "—")
+        + ((drv as { activeNet?: string }).activeNet ? ` · ${(drv as { activeNet?: string }).activeNet}` : ""),
       onnxInputs: (cfg?.policy?.onnx_inputs as number) ?? 1,
       stackDepth: drv.stackDepth,
       perFrame,
@@ -485,8 +808,12 @@ class SimWorker {
     const xpos = Float32Array.from(this.eng.geomXpos);
     const xmat = Float32Array.from(this.eng.geomXmat);
     const b = this.playback?.bqp ?? this.driver?.bqp ?? this.baseAddr;
+    const hoistAnchor: [number, number, number] | null = this.hoistOn
+      ? this.hoistPoint()
+      : null;
     post({ t: "frame", xpos, xmat,
-           baseX: this.eng.qpos[b], baseY: this.eng.qpos[b + 1] },
+           baseX: this.eng.qpos[b], baseY: this.eng.qpos[b + 1],
+           hoistAnchor },
          [xpos.buffer, xmat.buffer]);
   }
 
@@ -515,22 +842,38 @@ class SimWorker {
       }
       const cfg = this.configs.get(this.policies[this.polIdx]?.name);
       const stepDt = cfg?.control.step_dt ?? 0.02;
-      const simDt = getSpec(this.robot).sim_dt;
+      const simDt = cfg?.control.sim_dt ?? getSpec(this.robot).sim_dt;
+      if (this.eng.timestep !== simDt) this.eng.timestep = simDt;
       const nSub = Math.max(1, Math.round(stepDt / simDt));
       const t0 = performance.now();
+      this.runScript();
 
-      const cmd: Command = this.driver.needsCommand ? this.command : [0, 0, 0];
+      // every driver shapes the command itself the way its firmware does (ramps / low-passes), so the worker
+      // hands the requested command straight through
+      const cmd: Command = this.driver.needsCommand
+        ? (this.cmdNow = [...this.command] as Command) : (this.cmdNow = [0, 0, 0]);
       try {
-        const target = await this.fsm.infer(this.driver, cmd);
+        if (this.driver.done) await this.handover(cfg);
+        const target = await this.fsm.infer(this.driver!, cmd);
+        this.applyLeash();
+        // command latency (config control.cmd_delay, s): the previous target / gains stay on the motors for the
+        // first substeps of the period, like the robot's lowcmd → motor path (Go2 bench: ~5 ms)
+        const dly = Math.round((cfg?.control.cmd_delay ?? 0) / simDt), drv = this.driver!, prev = this.prevCmd;
+        const cur = { target, kp: drv.kp, kd: drv.kd };
         for (let s = 0; s < nSub; s++) {
-          this.fsm.substepTorque(this.driver, target);
+          this.applyHoist();
+          if (s < dly && prev) { drv.kp = prev.kp; drv.kd = prev.kd; this.fsm.substepTorque(drv, prev.target); drv.kp = cur.kp; drv.kd = cur.kd; }
+          else this.fsm.substepTorque(drv, target);
           this.eng.step();
         }
+        this.prevCmd = dly ? { target: target && Float64Array.from(target), kp: Float64Array.from(cur.kp), kd: Float64Array.from(cur.kd) } : null;
       } catch (e) {
         console.error(e);
         post({ t: "error", msg: `sim step failed: ${e}` });
         this.fsm.enter("damping");
       }
+      this.simT += stepDt;
+      this.updateSpeed(stepDt);
       this.postFrame();
       this.maybeInspect(t0);
       const elapsed = performance.now() - t0;
