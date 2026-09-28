@@ -1,0 +1,50 @@
+# ai_sport FsmHybridRun (FSM 200, 2024 legacy loco; reached from 4 / 201-203 / 210 / 500 via LocoClient.SetFsmId).
+# Decoded from the bench MNN I/O capture (1.5.4, EDU), replayed bit-exact (net out max|d| 3e-5):
+#   input.1[400] = 10 x 40 frame, oldest first, 100 Hz; history refilled with the first frame on FSM entry
+#   frame = gyro(lpf a=0.6)*0.25, (gravity+[0,0,1])*3, cmd[vx*2, vy*2, wz*0.25] (lpf a=0.03/tick),
+#           (q-default)/action_scale (ankles lpf 10 Hz), dq(lpf a=0.2)*0.05,
+#           [cos thL, cos thR, sin thL, sin thR] (gait clock, period 0.7 s, legs pi apart),
+#           [0, (duty-0.4)/0.2 = 0.5, 0.2]
+#   target = a*action_scale (legs, default 0); arms: shoulder pitch 0.3 + 0.4*vx*cos(th); legs kd x1.1 standing
+name: hybrid_run/model.24_08_15_17_59_26_28800
+robot: g1
+family: g1_locomotion
+control: {step_dt: 0.01, sim_dt: 0.0005, duration: 20.0}
+policy: {path: assets/policies/g1/hybrid_run/model.24_08_15_17_59_26_28800.mnn, arch: legacy, num_obs: 400, num_act: 12}
+g1:
+  models: [air, edu]   # G1 variants it runs on (Air = machinetype 4, EDU = 5)
+  fsm_id: 200
+  obs_scheme: legacy
+  control_joints: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  num_obs: 40
+  num_act: 12
+  memory_size: 10
+  default_dof_pos: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0.3, 0.25, 0, 0.97, 0.15, 0, 0, 0.3, -0.25, 0, 0.97, -0.15, 0, 0]
+  action_scale: [0.6, 0.4, 0.4, 1.4, 0.4, 0.2, 0.6, 0.4, 0.4, 1.4, 0.4, 0.2]
+  action_clip: 10.0
+  obs_clip: 100.0
+  dt: 0.01
+  vel_range: [-1.0, 1.0, -0.5, 0.5, -1.0, 1.0]
+  kp: [100, 100, 100, 200, 40, 20, 100, 100, 100, 200, 40, 20, 100, 800, 800,
+    90, 75, 20, 60, 4, 4, 4, 90, 75, 20, 60, 4, 4, 4]
+  kd: [4, 4, 4, 8, 0.3, 0.1, 4, 4, 4, 8, 0.3, 0.1, 10, 5, 5,
+    2, 1, 0.4, 1, 0.2, 0.2, 0.2, 2, 1, 0.4, 1, 0.2, 0.2, 0.2]
+  tau: [88, 88, 88, 139, 50, 50, 88, 88, 88, 139, 50, 50, 88, 60, 60,
+    20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20]
+  legacy:
+    frame_dim: 40
+    num_latent: 0
+    omega_alpha: 0.6
+    cmd_alpha: 0.03
+    vx_max: 1.0
+    delta_phi: [0, 1]
+    velocity_points: [0.8, 2.0]
+    duty_factor_points: [0.5, 0.3]
+    period_points: [0.7, 0.5]
+    duty_mean: 0.4
+    duty_scale: 0.2
+    obs_tail: [0.0, 0.2]
+    stand_phase: 0.5
+    swing: clock
+    rules: true

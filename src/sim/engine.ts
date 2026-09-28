@@ -71,9 +71,11 @@ export class Engine {
 
   /** Fetch every file in the model bundle into MEMFS and compile the scene.
    * `modelDir` is a URL prefix holding manifest.json (list of relative files)
-   * and scene.xml. `transformXml` lets terrain presets rewrite the scene. */
+   * and scene.xml. `transformXml` lets terrain presets rewrite the scene. `scene` picks another
+   * scene file of the same bundle (the G1 Air model shares the G1 bundle's meshes). */
   static async create(modelDir: string,
-                      transformXml?: (name: string, xml: string) => string):
+                      transformXml?: (name: string, xml: string) => string,
+                      scene = "scene.xml"):
       Promise<Engine> {
     const mj = await mujocoModule();
     const manifest: { files: string[] } =
@@ -115,11 +117,21 @@ export class Engine {
       }
     }
     console.log(`[engine] bundle written (${manifest.files.length} files), compiling`);
-    const model = mj.MjModel.mj_loadXML(`${root}/scene.xml`);
+    const model = mj.MjModel.mj_loadXML(`${root}/${scene}`);
     console.log(`[engine] model compiled: nq=${model.nq} ngeom=${model.ngeom}`);
     const data = new mj.MjData(model);
     mj.mj_forward(model, data);
     return new Engine(mj, model, data, modelDir);
+  }
+
+  /** Free the wasm-side MjData/MjModel. Every terrain/robot switch compiles a
+   * fresh model; without this each one leaked (the G1, with its large mesh
+   * set, exhausted the 2 GB wasm heap after a handful of terrain switches:
+   * "Could not allocate memory"). The engine is unusable afterwards. */
+  dispose() {
+    this.rayGid?.delete(); this.rayGid = null;
+    (this.data as any).delete?.();
+    (this.model as any).delete?.();
   }
 
   // ---- stepping -------------------------------------------------------
@@ -133,10 +145,25 @@ export class Engine {
   get qpos(): Float64Array { return (this.data as any).qpos; }
   get qvel(): Float64Array { return (this.data as any).qvel; }
   get qfrcApplied(): Float64Array { return (this.data as any).qfrc_applied; }
+  get xfrcApplied(): Float64Array { return (this.data as any).xfrc_applied; } // nbody*6
+  get xpos(): Float64Array { return (this.data as any).xpos; }          // nbody*3
   get xquat(): Float64Array { return (this.data as any).xquat; }       // nbody*4 wxyz
+  get xipos(): Float64Array { return (this.data as any).xipos; }       // nbody*3 (COM)
+  get xmat(): Float64Array { return (this.data as any).xmat; }         // nbody*9
   get geomXpos(): Float64Array { return (this.data as any).geom_xpos; } // ngeom*3
   get geomXmat(): Float64Array { return (this.data as any).geom_xmat; } // ngeom*9
   get nv(): number { return this.model.nv; }
+  get totalMass(): number {
+    const sm = (this.model as any).body_subtreemass as Float64Array | undefined;
+    if (sm && sm.length > 0 && sm[0] > 0) return sm[0];
+    const bm = (this.model as any).body_mass as Float64Array | undefined;
+    if (bm) {
+      let sum = 0;
+      for (let i = 0; i < this.model.nbody; i++) sum += bm[i];
+      if (sum > 0) return sum;
+    }
+    return 35.0;
+  }
 
   // ---- named lookups (accessor handles deleted immediately) -----------
   private withJnt<T>(name: string, f: (a: any) => T): T {
@@ -156,17 +183,19 @@ export class Engine {
     try { return a.id; } finally { a.delete?.(); }
   }
 
-  /** |ctrlrange[1]| of the actuator driving `<joint>` (name minus "_joint"),
-   * 200 fallback — same heuristic as the reference implementation. */
+  /** |ctrlrange[1]| of the actuator driving `<joint>`, trying both `<joint>`
+   * (G1) and `<joint>` minus "_joint" (Go2/R1), 200 fallback. */
   actuatorLim(jointName: string): number {
-    const aname = jointName.replace("_joint", "");
-    try {
-      const a = (this.model as any).actuator(aname);
+    for (const aname of [jointName, jointName.replace("_joint", "")]) {
       try {
-        const hi = Math.abs(Number(a.ctrlrange[1]));
-        return hi || 200.0;
-      } finally { a.delete?.(); }
-    } catch { return 200.0; }
+        const a = (this.model as any).actuator(aname);
+        try {
+          const hi = Math.abs(Number(a.ctrlrange[1]));
+          if (hi > 0) return hi;
+        } finally { a.delete?.(); }
+      } catch { /* try next */ }
+    }
+    return 200.0;
   }
 
   /** Every hinge joint in the model with addresses + torque limits. */
@@ -196,10 +225,32 @@ export class Engine {
   /** Lowest z over the geoms attached to `bodyIds` (used to seat the robot). */
   minGeomZ(bodyIds: Iterable<number>): number {
     const set = new Set(bodyIds);
-    const bodyid: Int32Array = (this.model as any).geom_bodyid;
+    const m = this.model as any;
+    const bodyid: Int32Array = m.geom_bodyid;
+    const contype: Int32Array | undefined = m.geom_contype;
+    const conaffinity: Int32Array | undefined = m.geom_conaffinity;
+    const geomType: Int32Array | undefined = m.geom_type;
+    const geomSize: Float64Array | undefined = m.geom_size;
+    const geomRbound: Float64Array | undefined = m.geom_rbound;
+
     let zmin = Infinity;
-    for (let g = 0; g < this.model.ngeom; g++)
-      if (set.has(bodyid[g])) zmin = Math.min(zmin, this.geomXpos[3 * g + 2]);
+    for (let g = 0; g < this.model.ngeom; g++) {
+      if (!set.has(bodyid[g])) continue;
+      if (contype && conaffinity && contype[g] === 0 && conaffinity[g] === 0) continue;
+
+      let bottom = this.geomXpos[3 * g + 2];
+      const type = geomType ? geomType[g] : -1;
+      if (type === 2 && geomSize) {
+        bottom -= geomSize[3 * g];
+      } else if (type === 3 && geomSize) {
+        bottom -= geomSize[3 * g] + geomSize[3 * g + 1];
+      } else if (type === 6 && geomSize) {
+        bottom -= geomSize[3 * g + 2];
+      } else if (geomRbound && geomRbound[g] > 0) {
+        bottom -= geomRbound[g];
+      }
+      zmin = Math.min(zmin, bottom);
+    }
     return zmin === Infinity ? 0 : zmin;
   }
 

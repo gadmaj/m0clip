@@ -1,0 +1,45 @@
+# R1 FSM 811: 811 AmpLocomotion with policy_17k as the main net (a commented `model:` line of amp_locomotion.yaml), run / turn nets as configured
+name: amp_locomotion/811_main_policy_17k
+robot: r1
+family: r1_fw
+source: ai_sport 1.0.2.154 r1_controller (OTA 1.4.2.8)
+control: {step_dt: 0.02, sim_dt: 0.002}
+policy: {path: assets/policies/r1/motions/amp_locomotion/2026-04-01_14-10-14/policy_17k.onnx, num_act: 24}
+r1:
+  firmware: true
+  fsm_id: 811
+  models: [edu]
+  obs_scheme: amp_loco
+  joint_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint,
+    right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint,
+    waist_roll_joint, waist_yaw_joint, left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint,
+    left_wrist_roll_joint, right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint,
+    right_wrist_roll_joint]
+  memory: 10
+  action_idx: [0, 3, 6, 10, 14, 18, 1, 4, 7, 11, 15, 19, 2, 5, 8, 12, 16, 20, 22, 9, 13, 17, 21, 23]
+  default_joint_pos: [-0.305, -0.305, 0, 0.04, -0.04, 0, -0.14, 0.14, 0.2, 0.2, 0.41, 0.41, 0.2, -0.2, -0.137, -0.137, 0,
+    0, -0.06, 0.06, 0.8, 0.8, 0, 0]
+  action_scale: [0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.398,
+    0.398, 0.525, 0.525, 0.398, 0.398, 0.525, 0.525, 0.525, 0.525]
+  stiffness: [84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335,
+    31.413, 31.413, 15.706, 15.706, 31.413, 31.413, 15.706, 15.706, 15.706, 15.706]
+  damping: [5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 2, 2, 1, 1,
+    2, 2, 1, 1, 1, 1]
+  cmd: {low: 0.9, high: 2.3, rev: 1.0, vy: 0.6, pure_wz: 2.5, loco_wz: 1.0, lat_ratio: 0.8, lon_ratio: 0.8, yaw_up: 0.08,
+    yaw_down: 0.1, fwd_up: 0.015, fwd_down: 0.05, rev_up: 0.5, rev_down: 0.03, vy_up: 0.1, vy_down: 0.05}
+  run_model:
+    vx:
+    - [1.5, 100]
+    vy:
+    - [-100, 100]
+    wz:
+    - [-100, 100]
+  turn_model:
+    vx:
+    - [-0.3, 0.3]
+    vy:
+    - [-0.3, 0.3]
+    wz:
+    - [-100, -1.0]
+    - [1.0, 100]
+  aux_models: {run: assets/policies/r1/motions/amp_locomotion/2026-04-07_13-24-17/policy_36k.onnx, turn: assets/policies/r1/motions/amp_locomotion/2026-04-03_09-11-48/policy_40k.onnx}

@@ -1,0 +1,37 @@
+# R1 FSM 702: Tangxia: lie down on the back (from loco: L2+X long), ends in Damping
+name: tangxia/tangxia_air
+robot: r1_air
+family: r1_fw
+source: ai_sport 1.0.2.154 r1_controller (OTA 1.4.2.8)
+control: {step_dt: 0.02, sim_dt: 0.002}
+policy: {path: assets/policies/r1/motions/tangxia/r1_tangxia_qili.onnx, num_act: 20}
+r1:
+  firmware: true
+  fsm_id: 702
+  models: [air]
+  obs_scheme: track
+  anchor: gravity
+  joint_names: [left_hip_pitch_joint, left_shoulder_pitch_joint, right_hip_pitch_joint, right_shoulder_pitch_joint, left_hip_roll_joint,
+    left_shoulder_roll_joint, right_hip_roll_joint, right_shoulder_roll_joint, left_hip_yaw_joint, left_shoulder_yaw_joint,
+    right_hip_yaw_joint, right_shoulder_yaw_joint, left_knee_joint, left_elbow_joint, right_knee_joint, right_elbow_joint,
+    left_ankle_pitch_joint, right_ankle_pitch_joint, left_ankle_roll_joint, right_ankle_roll_joint]
+  default_joint_pos: [-0.1, 0.35, -0.1, 0.35, 0.0, 0.18, 0.0, -0.18, 0.0, 0.0, 0.0, 0.0, 0.3, 0.87, 0.3, 0.87, -0.2, -0.2,
+    0.0, 0.0]
+  action_scale: [0.1875, 0.375, 0.1875, 0.375, 0.1875, 0.375, 0.1875, 0.375, 0.1875, 0.4125, 0.1875, 0.4125, 0.1875, 0.4125,
+    0.1875, 0.4125, 0.3125, 0.3125, 0.3125, 0.3125]
+  stiffness: [80, 40, 80, 40, 80, 40, 80, 40, 80, 20, 80, 20, 80, 20, 80, 20, 40, 40, 40, 40]
+  damping: [5.0, 2.0, 5.0, 2.0, 5.0, 2.0, 5.0, 2.0, 5.0, 1.0, 5.0, 1.0, 5.0, 1.0, 5.0, 1.0, 2.0, 2.0, 2.0, 2.0]
+  action_clip: 100.0
+  blend_s: 0.5
+  safety_rad: 1.0
+  hold_joints:
+    waist_roll_joint: [0.0, 150.0, 3.0]
+    waist_yaw_joint: [0.0, 150.0, 3.0]
+    left_wrist_roll_joint: [0, 15.706, 1]
+    right_wrist_roll_joint: [0, 15.706, 1]
+  segments:
+  - {motion: motion, fps: 50, start: 3.5, end: 9.7}
+  aux_files: {motion: assets/policies/r1/trajs/tangxia/r1_air_tangxia_qili.csv}
+  on_end: damping
+  switch_combos: {L2+X: qishen/qishen_air}
+control_ui:

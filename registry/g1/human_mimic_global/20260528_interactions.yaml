@@ -1,0 +1,109 @@
+# ai_sport FsmHumanMimicGlobal (FSM 550, entered by LocoClient.SetFsmId; motions picked by api_id), library 20260528_interactions.
+# Decoded from the humanoid binary (fsm_human_mimic_global.cpp sub_4E16C0 / sub_4D4E50 / sub_4DFC10) + bench captures:
+#   per-library decoder (+ global stance/decoder.onnx while idle), p_obs 10 x 93 as in 503;
+#   cmd 137 = [latent(128) raw from the 135-col CSV, root pos error in the robot yaw frame (zero when mask_root_pos,
+#   dead zone min_root_pos_error 0.2, clip max_root_pos_error 1.0), rot6d of q_robot^-1 q_off q_ref];
+#   idle / transit: [stance latent, 0,0,0, 1,0,0,1,0,0]. Motion rows: CSV rows time_start*fps .. time_end*fps, one
+#   per 50 Hz tick whatever the fps; right after the last row the FSM exits to 802.
+# Bench captures (captures_154/probe3/550_601/507/526/574/chain, no odometry on the bench): entered with
+#   SetFsmId(550000 + api_id) the motion starts at once; latent rows match exactly; the task part is pos 0 and a
+#   rot6d within ~0.03 of identity (not reproduced by the decoded formula), so the pack feeds the identity task.
+# The web plays the library's motions in api_id order (stance gap_s between them). Motions (api_id: name):
+#   507: hello_left_hand  [2.9, 7.0] s @ 50 fps
+#   508: hello_right_hand  [8.0, 12.9] s @ 50 fps
+#   509: hello_both_hand  [13.3, 18.25] s @ 50 fps
+#   510: shrug  [19.25, 22.7] s @ 50 fps
+#   511: emphasize_left  [23.85, 28.0] s @ 50 fps
+#   512: emphasize_front  [28.5, 32.15] s @ 50 fps
+#   513: emphasize_right  [33.7, 38.7] s @ 50 fps
+#   514: gesture_to_left  [38.9, 44.3] s @ 50 fps
+#   515: gesture_to_right  [45.2, 49.9] s @ 50 fps
+#   516: bow  [50.3, 55.2] s @ 50 fps
+#   517: hands_gesture_something  [55.4, 66.0] s @ 50 fps
+#   518: akimbo  [3.0, 9.8] s @ 50 fps
+#   519: scratch_right_head  [10.5, 17.5] s @ 50 fps
+#   520: hands_cross_front  [18.7, 26.2] s @ 50 fps
+#   521: hands_cross_back  [29.8, 37.7] s @ 50 fps
+#   522: rest_chin  [48.0, 56.2] s @ 50 fps
+#   523: make_heart_upon_head  [3.6, 8.7] s @ 50 fps
+#   524: make_left_kiss  [16, 21.7] s @ 50 fps
+#   525: shake_right_hand  [22.6, 28.45] s @ 50 fps
+name: human_mimic_global/20260528_interactions
+robot: g1
+family: g1_mimic_vq
+control: {step_dt: 0.02, sim_dt: 0.0005, duration: 154}
+policy: {path: assets/policies/g1/human_mimic_global/20260528_interactions/decoder.mnn, arch: vq, num_obs: 930, num_act: 29}
+g1:
+  models: [edu]
+  obs_scheme: vq
+  fsm_id: 550
+  control_joints: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+  num_obs: 93
+  num_act: 29
+  memory_size: 10
+  default_dof_pos: [-0.3, 0.0, 0.0, 0.6, -0.3, 0.0, -0.3, 0.0, 0.0, 0.6, -0.3, 0.0, 0.0, 0.0, 0.0,
+    0.3, 0.3, 0.0, 0.97, 0.0, 0.0, 0.0, 0.3, -0.3, 0.0, 0.97, 0.0, 0.0, 0.0]
+  action_scale: 1.0
+  kp: [40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 28.5, 28.5,
+    14.3, 14.3, 14.3, 14.3, 14.3, 16.8, 16.8, 14.3, 14.3, 14.3, 14.3, 14.3, 16.8, 16.8]
+  kd: [2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 1.8, 1.8,
+    0.9, 0.9, 0.9, 0.9, 0.9, 1.1, 1.1, 0.9, 0.9, 0.9, 0.9, 0.9, 1.1, 1.1]
+  tau: [88, 88, 88, 139, 50, 30, 88, 88, 88, 139, 50, 30, 88, 60, 60, 20, 20, 20, 20, 20, 20, 20,
+    20, 20, 20, 20, 20, 20, 20]
+  next_policy: cpy_walk_run_29dofs/actor
+  aux_models:
+    stance: assets/policies/g1/human_mimic_global/stance/decoder.mnn
+  aux_files:
+    stance: "assets/policies/g1/human_mimic_global/stance/stance.csv"
+    m0: "assets/policies/g1/human_mimic_global/20260528_interactions/hello_left_hand.csv"
+    m1: "assets/policies/g1/human_mimic_global/20260528_interactions/hello_right_hand.csv"
+    m2: "assets/policies/g1/human_mimic_global/20260528_interactions/hello_both_hand.csv"
+    m3: "assets/policies/g1/human_mimic_global/20260528_interactions/shrug.csv"
+    m4: "assets/policies/g1/human_mimic_global/20260528_interactions/emphasize_left.csv"
+    m5: "assets/policies/g1/human_mimic_global/20260528_interactions/emphasize_front.csv"
+    m6: "assets/policies/g1/human_mimic_global/20260528_interactions/emphasize_right.csv"
+    m7: "assets/policies/g1/human_mimic_global/20260528_interactions/gesture_to_left.csv"
+    m8: "assets/policies/g1/human_mimic_global/20260528_interactions/gesture_to_right.csv"
+    m9: "assets/policies/g1/human_mimic_global/20260528_interactions/bow.csv"
+    m10: "assets/policies/g1/human_mimic_global/20260528_interactions/hands_gesture_something.csv"
+    m11: "assets/policies/g1/human_mimic_global/20260528_interactions/akimbo.csv"
+    m12: "assets/policies/g1/human_mimic_global/20260528_interactions/scratch_right_head.csv"
+    m13: "assets/policies/g1/human_mimic_global/20260528_interactions/hands_cross_front.csv"
+    m14: "assets/policies/g1/human_mimic_global/20260528_interactions/hands_cross_back.csv"
+    m15: "assets/policies/g1/human_mimic_global/20260528_interactions/rest_chin.csv"
+    m16: "assets/policies/g1/human_mimic_global/20260528_interactions/make_heart_upon_head.csv"
+    m17: "assets/policies/g1/human_mimic_global/20260528_interactions/make_left_kiss.csv"
+    m18: "assets/policies/g1/human_mimic_global/20260528_interactions/shake_right_hand.csv"
+  vq:
+    mode: task
+    stance_latent: stance
+    pre_s: 0.5
+    gap_s: 1.5
+    transit_s: 0.5
+    final_transit: false
+    stance_net: stance
+    stance_task: identity
+    motion_task: odom   # sim ground-truth base pose as fusion_odom; identity = bench without SLAM
+    max_root_pos_error: 1.0
+    min_root_pos_error: 0.2
+    auto_exit_s: 0.0
+    motions:
+      - {file: "m0", start: 2.9, end: 7.0, fps: 50, mask_root_pos: true}
+      - {file: "m1", start: 8.0, end: 12.9, fps: 50, mask_root_pos: true}
+      - {file: "m2", start: 13.3, end: 18.25, fps: 50, mask_root_pos: true}
+      - {file: "m3", start: 19.25, end: 22.7, fps: 50, mask_root_pos: true}
+      - {file: "m4", start: 23.85, end: 28.0, fps: 50, mask_root_pos: true}
+      - {file: "m5", start: 28.5, end: 32.15, fps: 50, mask_root_pos: true}
+      - {file: "m6", start: 33.7, end: 38.7, fps: 50, mask_root_pos: true}
+      - {file: "m7", start: 38.9, end: 44.3, fps: 50, mask_root_pos: true}
+      - {file: "m8", start: 45.2, end: 49.9, fps: 50, mask_root_pos: true}
+      - {file: "m9", start: 50.3, end: 55.2, fps: 50, mask_root_pos: true}
+      - {file: "m10", start: 55.4, end: 66.0, fps: 50, mask_root_pos: true}
+      - {file: "m11", start: 3.0, end: 9.8, fps: 50, mask_root_pos: true}
+      - {file: "m12", start: 10.5, end: 17.5, fps: 50, mask_root_pos: true}
+      - {file: "m13", start: 18.7, end: 26.2, fps: 50, mask_root_pos: true}
+      - {file: "m14", start: 29.8, end: 37.7, fps: 50, mask_root_pos: true}
+      - {file: "m15", start: 48.0, end: 56.2, fps: 50, mask_root_pos: true}
+      - {file: "m16", start: 3.6, end: 8.7, fps: 50, mask_root_pos: true}
+      - {file: "m17", start: 16, end: 21.7, fps: 50, mask_root_pos: true}
+      - {file: "m18", start: 22.6, end: 28.45, fps: 50, mask_root_pos: true}

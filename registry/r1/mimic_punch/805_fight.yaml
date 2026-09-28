@@ -1,0 +1,134 @@
+# R1 FSM 805: MimicPunch fight mode: twist-net guard walk + 21 VQ-latent moves on one net, remote/API driven
+name: mimic_punch/805_fight
+robot: r1
+family: r1_fw
+source: ai_sport 1.0.2.154 r1_controller (OTA 1.4.2.8)
+control: {step_dt: 0.02, sim_dt: 0.002}
+policy: {path: assets/policies/r1/motions/mimic_punch/2025-07-30_08-26-56_norm_adapt_l_speed/exported/model.onnx, num_act: 24}
+r1:
+  firmware: true
+  fsm_id: 805
+  models: [edu]
+  obs_scheme: mimic
+  joint_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint,
+    right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint,
+    waist_roll_joint, waist_yaw_joint, left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint,
+    left_wrist_roll_joint, right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint,
+    right_wrist_roll_joint]
+  mimic:
+    mimic_name: punch
+    default_dof_pos: [-0.305, 0.04, -0.14, 0.41, -0.137, -0.06, -0.305, -0.04, 0.14, 0.41, -0.137, 0.06, 0.0, 0.0, 0.2, 0.2,
+      -0.0, 0.8, 0.0, 0.2, -0.2, 0.0, 0.8, 0.0]
+    kp: [100, 100, 100, 150, 40, 40, 100, 100, 100, 150, 40, 40, 100, 100, 60, 60, 40, 40, 40, 60, 60, 40, 40, 40]
+    kd: [3, 3, 3, 4, 2, 2, 3, 3, 3, 4, 2, 2, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+    action_scale: 1
+    limits_joint_idx: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    dof_lower_limits: [-2.6581, -0.9032, -2.4662, -0.0367, -0.8002, -0.2356, -2.6581, -1.6886, -2.4662, -0.0366, -0.8002,
+      -0.2356, -0.4712, -2.2777, -2.8798, -0.0916, -1.885, -0.8176, -0.8247, -2.8798, -2.3431, -1.885, -0.8176, -0.8247]
+    dof_upper_limits: [2.2742, 1.6886, 2.4662, 2.4452, 0.5035, 0.2356, 2.2742, 0.9032, 2.4662, 2.4452, 0.5035, 0.2356, 0.4712,
+      2.2777, 1.8326, 2.3431, 1.885, 2.0271, 0.8247, 1.8325, 0.0916, 1.885, 2.0271, 0.8247]
+    obs_scale: [0.2, 1.0, 1.0, 0.05, 1.0]
+    twist:
+      scale: [1.0, 1.0, 1.5]
+      offset: [0.05, 0.0, 0.0]
+      min: [0.2, 0.4, 0.6]
+      decay: 0.025
+      fc: 0.5
+      fs: 50.0
+    clips:
+      vq_Take_007_skeleton_0_clip_115_150: {file: vq_Take_007_skeleton_0_clip_115_150, rot_detect: 1, cool: 0.0, api: 0}
+      vq_Take_007_skeleton_0_clip_190_225: {file: vq_Take_007_skeleton_0_clip_190_225, rot_detect: 1, cool: 0.0, api: 1}
+      vq_Take_007_skeleton_0_clip_230_270: {file: vq_Take_007_skeleton_0_clip_230_270, rot_detect: 1, cool: 0.0, api: 2}
+      vq_Take_007_skeleton_0_clip_320_365: {file: vq_Take_007_skeleton_0_clip_320_365, rot_detect: 1, cool: 0.0, api: 3}
+      vq_Take_018_skeleton_0_clip_210_330: {file: vq_Take_018_skeleton_0_clip_210_330, rot_detect: 1, cool: 0.0, api: 20}
+      vq_Take_018_skeleton_0_clip_450_560: {file: vq_Take_018_skeleton_0_clip_450_560, rot_detect: 1, cool: 0.0, api: 21}
+      vq_Take_018_skeleton_0_clip_565_675: {file: vq_Take_018_skeleton_0_clip_565_675, rot_detect: 1, cool: 0.0, api: 22}
+      vq_Take_020_skeleton_0_clip_805_890: {file: vq_Take_020_skeleton_0_clip_805_890, rot_detect: 1, cool: 0.0, api: 23}
+      vq_Take_026_skeleton_0_clip_466_570: {file: vq_Take_026_skeleton_0_clip_466_570, rot_detect: 1, cool: 0.0, api: 40}
+      vq_Take_042_skeleton_0_clip_190_295: {file: vq_Take_042_skeleton_0_clip_190_295, rot_detect: 1, cool: 0.0, api: 41}
+      vq_Take_061_skeleton_0_clip_10_100: {file: vq_Take_061_skeleton_0_clip_10_100, rot_detect: 0, cool: 0.0, api: 201}
+      vq_Take_061_skeleton_0_clip_120_230: {file: vq_Take_061_skeleton_0_clip_120_230, rot_detect: 0, cool: 0.0}
+      vq_Take_067_skeleton_0_clip_20_120: {file: vq_Take_067_skeleton_0_clip_20_120, rot_detect: 0, cool: 0.0}
+      vq_Take_067_skeleton_0_clip_170_310: {file: vq_Take_067_skeleton_0_clip_170_310, rot_detect: 0, cool: 0.0}
+      vq_Take_035_skeleton_0_clip_270_320: {file: vq_Take_035_skeleton_0_clip_270_320, rot_detect: 1, cool: 0.0, api: 60}
+      vq_Take_051_skeleton_0_clip_400_440: {file: vq_Take_051_skeleton_0_clip_400_440, rot_detect: 1, cool: 0.0, api: 61}
+      vq_Take_051_skeleton_0_clip_500_540: {file: vq_Take_051_skeleton_0_clip_500_540, rot_detect: 1, cool: 0.0, api: 62}
+      vq_Take_051_skeleton_0_clip_460_490: {file: vq_Take_051_skeleton_0_clip_460_490, rot_detect: 1, cool: 0.0, api: 63}
+      vq_Take_057_skeleton_0_clip_140_280: {file: vq_Take_057_skeleton_0_clip_140_280, rot_detect: 1, cool: 0.0, api: 64}
+      vq_Take_090_skeleton_0_clip_125_205: {file: vq_Take_090_skeleton_0_clip_125_205, rot_detect: 1, cool: 0.0, api: 80}
+      vq_Take_093_skeleton_0_clip_110_190: {file: vq_Take_093_skeleton_0_clip_110_190, rot_detect: 1, cool: 0.0, api: 81}
+      vq_Take_094_skeleton_0_clip_175_340: {file: vq_Take_094_skeleton_0_clip_175_340, rot_detect: 1, cool: 0.0, api: 82}
+      vq_Take_007_skeleton_0_clip_0_100: {file: vq_Take_007_skeleton_0_clip_0_100, rot_detect: 1, cool: 0.0}
+      default: {file: default, rot_detect: 1, cool: 0.0}
+    default_traj: default
+    front_get_up: vq_Take_061_skeleton_0_clip_120_230
+    back_get_up: vq_Take_067_skeleton_0_clip_170_310
+    fall_down_length: 1.0
+    front_down_jpos: [-0.285133, 0.261554, -0.211369, 0.139072, 0.575354, -0.257638, -0.201578, -0.19978, -0.101467, 0.150181,
+      0.283328, 0.076668, -0.022661, -0.047465, 0.101516, 0.535406, -0.525695, 1.407141, 0.132639, 0.104849, -0.540453, 0.55598,
+      1.477011, -0.075339]
+    back_down_jpos: [-0.255182, 0.211286, -0.175125, 0.37352, 0.015421, -0.016643, -0.172145, -0.25485, -0.307219, 0.384031,
+      -0.134551, 0.120919, -0.020468, 0.02326, 0.101773, 0.566324, 0.342572, 1.287867, 0.907451, 0.084839, -0.63297, 0.144188,
+      1.440844, -0.33599]
+    transit_length: 0.2
+    buttons: {R1+Select: vq_Take_026_skeleton_0_clip_466_570, R1+Up: vq_Take_007_skeleton_0_clip_115_150, R1+Left: vq_Take_007_skeleton_0_clip_190_225,
+      R1+Right: vq_Take_007_skeleton_0_clip_230_270, R1+Down: vq_Take_007_skeleton_0_clip_320_365, R2+Select: vq_Take_042_skeleton_0_clip_190_295,
+      R2+Up: vq_Take_018_skeleton_0_clip_210_330, R2+Left: vq_Take_018_skeleton_0_clip_450_560, R2+Right: vq_Take_018_skeleton_0_clip_565_675,
+      R2+Down: vq_Take_020_skeleton_0_clip_805_890, L2+Up: get_up, L2+Down: vq_Take_061_skeleton_0_clip_10_100, L2+Left: vq_Take_067_skeleton_0_clip_20_120,
+      Up: vq_Take_035_skeleton_0_clip_270_320, Left: vq_Take_051_skeleton_0_clip_400_440, Right: vq_Take_051_skeleton_0_clip_500_540,
+      Down: vq_Take_051_skeleton_0_clip_460_490, X: vq_Take_057_skeleton_0_clip_140_280, B: vq_Take_090_skeleton_0_clip_125_205,
+      Y: vq_Take_094_skeleton_0_clip_175_340, A: vq_Take_093_skeleton_0_clip_110_190}
+  aux_files: {vq_Take_007_skeleton_0_clip_115_150: assets/policies/r1/trajs/mimic_punch/vq_Take_007_skeleton_0_clip_115_150.csv,
+    vq_Take_007_skeleton_0_clip_190_225: assets/policies/r1/trajs/mimic_punch/vq_Take_007_skeleton_0_clip_190_225.csv, vq_Take_007_skeleton_0_clip_230_270: assets/policies/r1/trajs/mimic_punch/vq_Take_007_skeleton_0_clip_230_270.csv,
+    vq_Take_007_skeleton_0_clip_320_365: assets/policies/r1/trajs/mimic_punch/vq_Take_007_skeleton_0_clip_320_365.csv, vq_Take_018_skeleton_0_clip_210_330: assets/policies/r1/trajs/mimic_punch/vq_Take_018_skeleton_0_clip_210_330.csv,
+    vq_Take_018_skeleton_0_clip_450_560: assets/policies/r1/trajs/mimic_punch/vq_Take_018_skeleton_0_clip_450_560.csv, vq_Take_018_skeleton_0_clip_565_675: assets/policies/r1/trajs/mimic_punch/vq_Take_018_skeleton_0_clip_565_675.csv,
+    vq_Take_020_skeleton_0_clip_805_890: assets/policies/r1/trajs/mimic_punch/vq_Take_020_skeleton_0_clip_805_890.csv, vq_Take_026_skeleton_0_clip_466_570: assets/policies/r1/trajs/mimic_punch/vq_Take_026_skeleton_0_clip_466_570.csv,
+    vq_Take_042_skeleton_0_clip_190_295: assets/policies/r1/trajs/mimic_punch/vq_Take_042_skeleton_0_clip_190_295.csv, vq_Take_061_skeleton_0_clip_10_100: assets/policies/r1/trajs/mimic_punch/vq_Take_061_skeleton_0_clip_10_100.csv,
+    vq_Take_061_skeleton_0_clip_120_230: assets/policies/r1/trajs/mimic_punch/vq_Take_061_skeleton_0_clip_120_230.csv, vq_Take_067_skeleton_0_clip_20_120: assets/policies/r1/trajs/mimic_punch/vq_Take_067_skeleton_0_clip_20_120.csv,
+    vq_Take_067_skeleton_0_clip_170_310: assets/policies/r1/trajs/mimic_punch/vq_Take_067_skeleton_0_clip_170_310.csv, vq_Take_035_skeleton_0_clip_270_320: assets/policies/r1/trajs/mimic_punch/vq_Take_035_skeleton_0_clip_270_320.csv,
+    vq_Take_051_skeleton_0_clip_400_440: assets/policies/r1/trajs/mimic_punch/vq_Take_051_skeleton_0_clip_400_440.csv, vq_Take_051_skeleton_0_clip_500_540: assets/policies/r1/trajs/mimic_punch/vq_Take_051_skeleton_0_clip_500_540.csv,
+    vq_Take_051_skeleton_0_clip_460_490: assets/policies/r1/trajs/mimic_punch/vq_Take_051_skeleton_0_clip_460_490.csv, vq_Take_057_skeleton_0_clip_140_280: assets/policies/r1/trajs/mimic_punch/vq_Take_057_skeleton_0_clip_140_280.csv,
+    vq_Take_090_skeleton_0_clip_125_205: assets/policies/r1/trajs/mimic_punch/vq_Take_090_skeleton_0_clip_125_205.csv, vq_Take_093_skeleton_0_clip_110_190: assets/policies/r1/trajs/mimic_punch/vq_Take_093_skeleton_0_clip_110_190.csv,
+    vq_Take_094_skeleton_0_clip_175_340: assets/policies/r1/trajs/mimic_punch/vq_Take_094_skeleton_0_clip_175_340.csv, vq_Take_007_skeleton_0_clip_0_100: assets/policies/r1/trajs/mimic_punch/vq_Take_007_skeleton_0_clip_0_100.csv,
+    default: assets/policies/r1/trajs/mimic_punch/default.csv}
+  switch_combos: {R2+A: amp_locomotion/amp_locomotion}
+  aux_models: {clip: assets/policies/r1/motions/mimic_punch/2025-07-27_15-55-47_mu_p_resume/exported/model.onnx}
+control_ui:
+  notice:
+    title: Fight mode
+    text: "This policy is a fight mode. The robot stands in a boxing guard and walks with the stick (W A S D / Q E or the left / right stick).\n\nTo fight, choose a move from the Moves list in the panel: hand strikes, kicks, footwork and defence, gestures and get down / get up. G / Shift+G steps through the moves; hover a button to see its remote-controller shortcut (on a gamepad LB/RB/LT/RT = L1/R1/L2/R2).\n\nAfter a fall or Get down the robot stays down until you pick Get up. Start stops a move."
+  actions:
+  - group: Hand strikes
+    items:
+    - {combo: R1+Up, label: Straight punch}
+    - {combo: R1+Left, label: Left hook}
+    - {combo: R1+Right, label: Right hook}
+    - {combo: R1+Down, label: Low hook}
+    - {combo: R1+Select, label: Straight-punch combo}
+    - {combo: R2+Select, label: Attack combo}
+  - group: Kicks
+    items:
+    - {combo: R2+Up, label: Front kick}
+    - {combo: R2+Left, label: Left side kick}
+    - {combo: R2+Right, label: Right side kick}
+    - {combo: R2+Down, label: Knee kick}
+  - group: Footwork / defence
+    items:
+    - {combo: Up, label: Turn around}
+    - {combo: Left, label: Dodge left}
+    - {combo: Right, label: Dodge right}
+    - {combo: Down, label: Dodge back}
+    - {combo: X, label: Block}
+  - group: Gestures
+    items:
+    - {combo: B, label: Boxing stance}
+    - {combo: A, label: Taunt 3}
+    - {combo: Y, label: Taunt 2 (ready)}
+  - group: Get down / up
+    items:
+    - {combo: L2+Down, label: Get down (front)}
+    - {combo: L2+Left, label: Get down (back)}
+    - {combo: L2+Up, label: Get up (after a fall / get down)}
+  - group: Mode
+    items:
+    - {combo: Start, label: Stop move (Start ×2)}

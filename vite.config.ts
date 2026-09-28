@@ -10,12 +10,23 @@ const crossOriginIsolation = {
 export default defineConfig({
   // mujoco's emscripten glue does dynamic wasm fetches; don't prebundle it
   optimizeDeps: { exclude: ["mujoco", "onnxruntime-web"] },
-  server: { headers: crossOriginIsolation },
+  server: {
+    headers: crossOriginIsolation,
+    watch: {
+      ignored: [
+        "**/workbench_configs/**",
+        "**/decrypted/**",
+        "**/policy-packs/**",
+        "**/docs/**",
+        "**/.git/**",
+      ],
+    },
+  },
   preview: { headers: crossOriginIsolation },
   build: {
     target: "es2022",
     rollupOptions: {
-      input: { main: "index.html", painter: "painter.html" },
+      input: { main: "index.html" },
     },
   },
   worker: { format: "es" },

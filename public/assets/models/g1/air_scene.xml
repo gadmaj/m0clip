@@ -1,0 +1,5 @@
+<mujoco model="g1 air scene">
+  <!-- G1 Air (23-DOF) counterpart of scene.xml (name must end in "scene.xml" for the terrain transform): g1_23dof.xml is a full scene (floor "floor", light,
+       skybox) like g1_29dof.xml, so terrain presets apply unchanged. Selected by the g1_air spec. -->
+  <include file="g1_23dof.xml"/>
+</mujoco>

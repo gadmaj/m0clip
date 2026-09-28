@@ -1,0 +1,32 @@
+# R1 FSM 816: ArmSdkLocomotion (SetFsmId 816, EDU): legs + waist net, arms from rt/arm_sdk
+name: arm_sdk_locomotion/816_arm_sdk
+robot: r1
+family: r1_fw
+source: ai_sport 1.0.2.154 r1_controller (OTA 1.4.2.8)
+control: {step_dt: 0.02, sim_dt: 0.002}
+policy: {path: assets/policies/r1/motions/arm_sdk_locomotion/2026-04-07_13-26-00/policy_37k.onnx, num_act: 24}
+r1:
+  firmware: true
+  fsm_id: 816
+  models: [edu]
+  obs_scheme: amp_loco
+  joint_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint,
+    right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint,
+    waist_roll_joint, waist_yaw_joint, left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint,
+    left_wrist_roll_joint, right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint,
+    right_wrist_roll_joint]
+  memory: 10
+  action_idx: [0, 3, 6, 10, 14, 18, 1, 4, 7, 11, 15, 19, 2, 5, 8, 12, 16, 20, 22, 9, 13, 17, 21, 23]
+  default_joint_pos: [-0.305, -0.305, 0, 0.04, -0.04, 0, -0.14, 0.14, 0.2, 0.2, 0.41, 0.41, 0.2, -0.2, -0.137, -0.137, 0,
+    0, -0.06, 0.06, 0.8, 0.8, 0, 0]
+  action_scale: [0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.178, 0.398,
+    0.398, 0.525, 0.525, 0.398, 0.398, 0.525, 0.525, 0.525, 0.525]
+  stiffness: [84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335, 84.335,
+    31.413, 31.413, 15.706, 15.706, 31.413, 31.413, 15.706, 15.706, 15.706, 15.706]
+  damping: [5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 5.369, 2, 2, 1, 1,
+    2, 2, 1, 1, 1, 1]
+  cmd: {}
+  control:
+    dof: [0, 6, 12, 1, 7, 13, 2, 8, 3, 9, 4, 10, 5, 11]
+    act: [0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 14, 15, 18, 19]
+control_ui:

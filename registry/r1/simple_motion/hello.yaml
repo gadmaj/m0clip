@@ -1,0 +1,31 @@
+# R1 (no FSM id): SimpleMotion 'hello' — left-arm wave (3.5 s); no r1_controller build implements it: obs reconstructed from the net weights + a layout sweep (the only layout that tracks), unverifiable on the robot
+name: simple_motion/hello
+robot: r1
+family: r1_fw
+source: ai_sport 1.0.2.154 r1_controller (OTA 1.4.2.8)
+control: {step_dt: 0.02, sim_dt: 0.002}
+policy: {path: assets/policies/r1/motions/simple_motion/r1_mimic_hello1_Sep06_17-15-29_model_50000.onnx, num_act: 24}
+r1:
+  firmware: true
+  fsm_id: null
+  models: [edu]
+  obs_scheme: simple
+  joint_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint,
+    right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint,
+    waist_roll_joint, waist_yaw_joint, left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint,
+    left_wrist_roll_joint, right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint,
+    right_wrist_roll_joint]
+  default_dof_pos: [-0.305, 0.04, -0.14, 0.41, -0.137, -0.06, -0.305, -0.04, 0.14, 0.41, -0.137, 0.06, 0.0, 0.0, 0.2, 0.2,
+    -0.0, 0.8, 0.0, 0.2, -0.2, 0.0, 0.8, 0.0]
+  kp: [100.0, 100.0, 100.0, 150.0, 40.0, 40.0, 100.0, 100.0, 100.0, 150.0, 40.0, 40.0, 100.0, 100.0, 60.0, 60.0, 40.0, 40.0,
+    40.0, 60.0, 60.0, 40.0, 40.0, 40.0]
+  kd: [3.0, 3.0, 3.0, 4.0, 2.0, 2.0, 3.0, 3.0, 3.0, 4.0, 2.0, 2.0, 3.0, 3.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0,
+    2.0]
+  ang_vel_scale: 0.25
+  dof_vel_scale: 0.05
+  action_scale: 0.25
+  lower_index: 0
+  upper_index: 175
+  memory: 5
+  aux_files: {motion: assets/policies/r1/motions/simple_motion/hello_motion_resample_50hz_world_velocity_without_gravity.csv}
+control_ui:

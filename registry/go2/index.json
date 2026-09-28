@@ -1,0 +1,292 @@
+{
+  "robot": "go2",
+  "source": "Go2 OTA 1.1.15 mcf 1.0.0.75 libgo2_ai_module.so",
+  "policies": [
+    {
+      "name": "free_walk/1003_free_walk",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/Aug13_20-48-41_v1.onnx",
+      "runnable": true,
+      "config": "registry/go2/free_walk/1003_free_walk.yaml",
+      "note": "FreeWalk: Aug13 walk net, Apr25 in-place-rotation net when |vx| < 0.05 and vy < 0.05 (signed), Mar25 stair net at low speed (double L2) \u2014 one shared 6-frame history",
+      "fsm_id": 1003
+    },
+    {
+      "name": "free_walk/1003_free_walk_payload_1_5kg",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/Mar23_06-45-23_60000.onnx",
+      "runnable": true,
+      "config": "registry/go2/free_walk/1003_free_walk_payload_1_5kg.yaml",
+      "note": "FreeWalk with a 1-5kg payload (sport_payload_json mass): Mar23_06-45-23_60000.mnn always, up_vx 1.0, falls \u2192 Damping",
+      "fsm_id": 1003
+    },
+    {
+      "name": "free_walk/1003_free_walk_payload_5_20kg",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/Mar23_06-49-36_51000.onnx",
+      "runnable": true,
+      "config": "registry/go2/free_walk/1003_free_walk_payload_5_20kg.yaml",
+      "note": "FreeWalk with a 5-20kg payload (sport_payload_json mass): Mar23_06-49-36_51000.mnn always, up_vx 1.0, falls \u2192 Damping",
+      "fsm_id": 1003
+    },
+    {
+      "name": "rage_mode/2021_rage_mode",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/Sep18_13-11-47_8200.onnx",
+      "runnable": true,
+      "config": "registry/go2/rage_mode/2021_rage_mode.yaml",
+      "note": "RageMode (API 2059 only): asymmetric stick filters, vx 2.5 \u00d7 stick",
+      "fsm_id": 2021
+    },
+    {
+      "name": "cross_step/2016_cross_step",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/Dec12_11-38-32_.onnx",
+      "runnable": true,
+      "config": "registry/go2/cross_step/2016_cross_step.yaml",
+      "note": "CrossStep (double B)",
+      "fsm_id": 2016
+    },
+    {
+      "name": "back_stand/2017_back_stand",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/Dec02_19-59-54_2.onnx",
+      "runnable": true,
+      "config": "registry/go2/back_stand/2017_back_stand.yaml",
+      "note": "BackStand (double R2; again = BackStandEnd 0.5 s \u2192 FreeWalk)",
+      "fsm_id": 2017
+    },
+    {
+      "name": "free_bound/2008_free_bound",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/Oct10_14-47-34_.onnx",
+      "runnable": true,
+      "config": "registry/go2/free_bound/2008_free_bound.yaml",
+      "note": "FreeBound (double X): the zero-walk net (Aug13) whenever the filtered forward / side stick is < 0.05",
+      "fsm_id": 2008
+    },
+    {
+      "name": "free_jump/2009_free_jump",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/Oct10_15-54-09_.onnx",
+      "runnable": true,
+      "config": "registry/go2/free_jump/2009_free_jump.yaml",
+      "note": "FreeJump (double Y): the zero-walk net (Aug13) whenever the filtered forward / side stick is < 0.05",
+      "fsm_id": 2009
+    },
+    {
+      "name": "free_avoid/2007_free_avoid",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/Aug13_20-48-41_v1.onnx",
+      "runnable": true,
+      "config": "registry/go2/free_avoid/2007_free_avoid.yaml",
+      "note": "FreeAvoid (double A): obstacle / zero planner nets on a 41\u00d721 5 cm height-map grid \u2192 walker velocity",
+      "fsm_id": 2007
+    },
+    {
+      "name": "force_follow/2019_force_follow",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/Apr09_14-12-16_.onnx",
+      "runnable": true,
+      "config": "registry/go2/force_follow/2019_force_follow.yaml",
+      "note": "ForceFollow / drag (API 2056 only): the Apr10 net estimates the pull velocity from the history",
+      "fsm_id": 2019
+    },
+    {
+      "name": "classic_walk/2010_classic_walk",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/b_v2.onnx",
+      "runnable": true,
+      "config": "registry/go2/classic_walk/2010_classic_walk.yaml",
+      "note": "ClassicWalk (Right+Start): gait-clock net, stands still when the command is ~0",
+      "fsm_id": 2010
+    },
+    {
+      "name": "hand_stand/2011_hand_stand",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/stand_d48v1.onnx",
+      "runnable": true,
+      "config": "registry/go2/hand_stand/2011_hand_stand.yaml",
+      "note": "HandStand (double R1; again = back on four legs, 0.5 s \u2192 FreeWalk)",
+      "fsm_id": 2011
+    },
+    {
+      "name": "auto_recovery/2005_auto_recovery",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/re_v2.onnx",
+      "runnable": true,
+      "config": "registry/go2/auto_recovery/2005_auto_recovery.yaml",
+      "note": "AutoRecovery (re_v2): what every FSM falls back to after a fall; starts here on the back",
+      "fsm_id": 2005
+    },
+    {
+      "name": "flips/2012_forward_flip",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/flip_v0.onnx",
+      "runnable": true,
+      "config": "registry/go2/flips/2012_forward_flip.yaml",
+      "note": "ForwardFlip (API 1030): ready \u2192 0.3 s hold \u2192 NN \u2192 scripted landing \u2192 FreeWalk",
+      "fsm_id": 2012
+    },
+    {
+      "name": "flips/2013_back_flip",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/back_flip_v0.onnx",
+      "runnable": true,
+      "config": "registry/go2/flips/2013_back_flip.yaml",
+      "note": "BackFlip (API 2043): ready \u2192 0.3 s hold \u2192 NN \u2192 scripted landing \u2192 FreeWalk",
+      "fsm_id": 2013
+    },
+    {
+      "name": "flips/2014_left_flip",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/left_flip_v0.onnx",
+      "runnable": true,
+      "config": "registry/go2/flips/2014_left_flip.yaml",
+      "note": "LeftFlip (API 2041): ready \u2192 0.3 s hold \u2192 NN \u2192 scripted landing \u2192 FreeWalk",
+      "fsm_id": 2014
+    },
+    {
+      "name": "flips/continuous_flip",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/ai_sport_1.0.4/continuous_flip_v0.onnx",
+      "runnable": true,
+      "config": "registry/go2/flips/continuous_flip.yaml",
+      "note": "ai_sport 1.0.4.x ContinuousFlip (StateMachine 12): implemented in Go2 1.1.1-1.1.4 but never entered by any API or remote combo; forced on the bench with gdb",
+      "fsm_id": 12
+    },
+    {
+      "name": "flips/continuous_flip_x3",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "policy": "assets/policies/go2/ai_sport_1.0.4/continuous_flip_x_v0.onnx",
+      "runnable": true,
+      "config": "registry/go2/flips/continuous_flip_x3.yaml",
+      "note": "ai_sport 1.0.4.x ContinuousFlipX3 (StateMachine 14): implemented in Go2 1.1.1-1.1.4 but never entered by any API or remote combo; forced on the bench with gdb",
+      "fsm_id": 14
+    },
+    {
+      "name": "obsolete/double_walk/Oct17_18-26-54_1",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "runnable": false,
+      "note": "1.1.15: double_walk_export_cfg.json: no FSM class"
+    },
+    {
+      "name": "obsolete/fly_bound/Oct10_15-54-09_",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "runnable": false,
+      "note": "1.1.15: fly_bound_export_cfg(_1).json: no FSM class (same net as FreeJump)"
+    },
+    {
+      "name": "obsolete/right_flip/right_flip_v0",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "runnable": false,
+      "note": "1.1.15: right_flip_export_cfg.json: no FSM (API 2042 unhandled on 1.1.15)"
+    },
+    {
+      "name": "obsolete/side_flip/side_flip_v0",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "runnable": false,
+      "note": "1.1.15: side_flip_export_cfg.json: no FSM"
+    },
+    {
+      "name": "obsolete/flip/flip_v0",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "runnable": false,
+      "note": "1.1.15: flip_export_cfg.json: never loaded (ForwardFlip reads forward_flip_export_cfg.json)"
+    },
+    {
+      "name": "obsolete/free_walk/Mar23_06-31-55_57400",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "runnable": false,
+      "note": "1.1.15: unreferenced checkpoint"
+    },
+    {
+      "name": "obsolete/back_stand/Dec02_19-59-54_5",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "runnable": false,
+      "note": "1.1.15: unreferenced checkpoint"
+    },
+    {
+      "name": "obsolete/cross_step/Dec12_11-38-32_3",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "runnable": false,
+      "note": "1.1.15: unreferenced checkpoint"
+    },
+    {
+      "name": "obsolete/auto_recovery/o_v2",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "runnable": false,
+      "note": "1.1.15: auto_recovery obstacle_model_name: never loaded"
+    },
+    {
+      "name": "obsolete/auto_recovery/z_v1",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "runnable": false,
+      "note": "1.1.15: auto_recovery zero_model_name: never loaded"
+    },
+    {
+      "name": "obsolete/auto_recovery/b_v2",
+      "family": "go2_fw",
+      "robot": "go2",
+      "dof": 12,
+      "runnable": false,
+      "note": "1.1.15: auto_recovery blind_model_name: never loaded (b_v2 runs as ClassicWalk)"
+    }
+  ]
+}

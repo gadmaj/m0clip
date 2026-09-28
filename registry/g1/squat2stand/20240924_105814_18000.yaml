@@ -1,0 +1,48 @@
+# ai_sport 1.5.4 FsmSquat2Stand (FSM 703, entered from 203 only; no transition out). Decompiled humanoid
+# (fsm_squat2stand.cpp) + EDU bench capture captures_154/probe5/703start (obs replayed to 5e-5, 93 % of the
+# rt/lowcmd targets reproduced to 1e-4). Driver: src/core/drivers/g1_faceup.ts (G1Squat2StandDriver).
+#   one 13-DOF LS2S net, 100 Hz, obs 46 = [gyro EMA(0.2) x0.25, projected gravity, q - default, dq EMA(0.2) x0.05,
+#   clip(act,+-2) x action_scale (previous tick), traj_step_count/1600];
+#   target = default + clip(act,+-2) x action_scale, limited so |kp(target-q) - kd dq_ema| <= joint_tau_limits;
+#   kp/kd = this config's joint_kp/kd (measured in lowcmd), arms held at init_joint_q.
+#   traj_step_count: 1000 standing (entry from a released 203), Start -> 1000..1400 squat down, 1400 squat,
+#   Start -> 200..600 stand up, 600 stand, Start -> 1000 ... On the bench plant the first squat-down pitched
+#   forward and fell; in the web model the full cycle works.
+# The pack enters standing (203's stance, count 1000) and presses Start at squat2stand.presses (s).
+name: squat2stand/20240924_105814_18000
+robot: g1
+family: g1_getup
+control: {step_dt: 0.01, sim_dt: 0.0005, duration: 20.0}
+policy: {path: assets/policies/g1/squat2stand/20240924_105814_18000.mnn, arch: concat,
+  num_obs: 46, num_act: 13}
+g1:
+  models: [air, edu]   # G1 variants it runs on (Air = machinetype 4, EDU = 5)
+  fsm_id: 703   # ai_sport FSM id on the robot
+  obs_scheme: squat2stand
+  ground_start: stand
+  control_joints: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+  num_obs: 46
+  num_act: 13
+  memory_size: 1
+  maneuver: true
+  default_dof_pos: [-1.25, 0.5, 0, 1.45, -0.175, 0, -1.25, -0.5, 0, 1.45, -0.175, 0, 0.0, 0.0, 0.0, 0.381418,
+    0.4, 0, 0.782123, 0, 0.0, 0.0, 0.381418, -0.4, 0, 0.782123, 0, 0.0, 0.0]
+  action_scale: [2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.5]
+  action_clip: 2.0
+  kp: [100, 100, 100, 200, 40, 20, 100, 100, 100, 200, 40, 20, 120, 1000, 1000,
+    60, 40, 20, 20, 0.1, 0, 0, 60, 40, 20, 20, 0.1, 0, 0]
+  kd: [2.5, 2.5, 2.5, 5, 0.3, 0.2, 2.5, 2.5, 2.5, 5, 0.3, 0.2, 2.0, 5, 5,
+    1.5, 1, 0.5, 0.5, 0.01, 0, 0, 1.5, 1, 0.5, 0.5, 0.01, 0, 0]
+  tau: [88, 88, 88, 139, 50, 50, 88, 88, 88, 139, 50, 50, 88, 50, 50, 25, 25, 25, 25, 25, 5, 5,
+    25, 25, 25, 25, 25, 5, 5]
+  # start pose: the joints at 703 entry on the bench (released 203 stance), arms at init_joint_q
+  init_pose: [-0.447, 0.033, 0.023, 1.007, -0.527, -0.029, -0.393, -0.073, 0.063, 0.979, -0.551, 0.098, 0.0, 0.0, 0.0,
+    0.5, 0.15, 0, 0.6, 0, 0.0, 0.0, 0.5, -0.15, 0, 0.6, 0, 0.0, 0.0]
+  # arm / waist targets while 703 runs (init_joint_q, as in lowcmd)
+  arm_pose: [-2.43, 0, 0, 2.73, -0.67, 0, -2.43, 0, 0, 2.73, -0.67, 0, 0.0, 0.0, 0.0, 0.5, 0.15, 0, 0.6, 0,
+    0.0, 0.0, 0.5, -0.15, 0, 0.6, 0, 0.0, 0.0]
+  squat2stand:
+    presses: [3.0, 9.0, 15.0]   # Start: squat down, stand up, squat down
+    start_count: 1000
+    spawn_pitch: 0.0
+    tau_limits: [88, 88, 88, 139, 50, 50, 88, 88, 88, 139, 50, 50, 88]

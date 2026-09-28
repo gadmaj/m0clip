@@ -6,14 +6,13 @@
  * deadlocks the browser main thread; inside a worker, blocking is legal and
  * the pthread pool boots fine.
  */
-import type { Command } from "../core/types";
+import type { Command, RemoteActionGroup } from "../core/types";
 import type { FsmState } from "./fsm";
 import type { TerrainName } from "./terrain";
 
 // ---- main -> worker --------------------------------------------------
 export type ToWorker =
   | { t: "init"; robot?: string; terrain?: TerrainName; policy?: string }  // restore saved session
-  | { t: "initModel"; robot?: string }   // painter: compile model only, no sim
   | { t: "policy"; name: string }
   | { t: "cycle"; step: 1 | -1 }
   | { t: "state"; state: FsmState }
@@ -26,13 +25,20 @@ export type ToWorker =
   | { t: "stopPlayback" }
   | { t: "importPack"; zip: ArrayBuffer }
   | { t: "deletePack"; id: string }
-  | { t: "inspect"; on: boolean };   // stream live obs/action inspector data
+  | { t: "deleteAllPacks" }
+  | { t: "inspect"; on: boolean }    // stream live obs/action inspector data
+  | { t: "leash"; on: boolean; x?: number; y?: number }  // drag: pull anchor (world xy)
+  | { t: "hoist"; on: boolean }      // overhead suspension gantry support
+  | { t: "remote"; combo: string }  // remote-controller combo for the active policy (e.g. 505 "R1+Up")
+  /** scripted stimulus on SIM time (tests / bench replays): at `at` s after receipt set the sticks
+   * (ly, lx, rx in [-1, 1], scaled by the active policy's velRange every tick) and / or press a combo */
+  | { t: "script"; steps: { at: number; stick?: [number, number, number]; combo?: string }[] };
 
 // ---- worker -> main --------------------------------------------------
 /** Everything the renderer needs to build the scene, copied out of the model
  * (typed arrays are structured-clone copies, not wasm views). */
 export interface RenderModel {
-  robot: string;           // active robot (r1* → paint palette, else model rgba)
+  robot: string;           // active robot (r1* / go2 → paint palette, else model rgba)
   ngeom: number;
   type: Int32Array;        // ngeom
   size: Float64Array;      // 3*ngeom
@@ -41,12 +47,20 @@ export interface RenderModel {
   contype: Int32Array;     // ngeom (0 = visual-only geom)
   bodyid: Int32Array;      // ngeom (0 = worldbody/terrain)
   dataid: Int32Array;      // ngeom (mesh id or -1)
-  meshes: Record<number, { name: string; vert: Float32Array; face: Uint32Array }>;
+  /** vert is in MuJoCo's compiled (inertia-centred) mesh frame; pos + quat
+   * (mesh_pos / mesh_quat) map it back to the asset file's frame:
+   * file = pos + quat * vert. */
+  meshes: Record<number, {
+    name: string; vert: Float32Array; face: Uint32Array;
+    pos: [number, number, number]; quat: [number, number, number, number];
+  }>;
 }
 
 export interface PolicyInfo {
   name: string; family: string; dof: number; group: string;
   packId: string;            // owning pack (all policies come from packs)
+  fsmId?: number;            // ai_sport FSM id on the robot (G1), shown in the picker
+  models?: string[];         // G1 / R1 variants it runs on ("air" / "edu"): picker lists Air, Air+EDU, EDU
 }
 
 export interface PackInfo {
@@ -66,14 +80,23 @@ export interface StatusMsg {
   command: Command;
   rtf: number;
   playback?: string;        // clip name when in kinematic-playback mode
+  model?: string;           // loaded model variant when a family has several ("G1 Air · 23-DOF", "R1 EDU · 24-DOF")
+  leash?: boolean;          // active policy is leash-capable (drag family)
+  velRange?: number[];      // active policy's own clamp [vx-,vx+,vy-,vy+,wz-,wz+]
+  needsCommand?: boolean;   // driver consumes velocity commands
+  hoist?: boolean;          // overhead suspension hoist enabled
+  speed?: [number, number, number];  // measured base speed: forward, lateral m/s (heading frame), yaw rad/s
+  combos?: string[];        // remote combos the active policy reacts to (trigger buttons / pad pass-through)
+  actions?: RemoteActionGroup[];            // the same combos, named and grouped for the panel
+  notice?: { title?: string; text: string }; // popup shown when the policy is selected
 }
 
 /** Live obs/action inspector snapshot (streamed ~10 Hz while the panel is open). */
 export interface InspectMsg {
   t: "inspect";
   policy: string; family: string; state: string;
-  baseZ: number; baseXY?: [number, number]; command: Command; drive: string;
-  nObst?: number;            // vision family: occupied LIDAR cells this step
+  baseZ: number; baseXY?: [number, number]; baseQuat?: [number, number, number, number]; simT?: number; scriptT0?: number; command: Command; drive: string;
+  hoist?: boolean;
   lidar?: { nx: number; ny: number; grid: number[] };  // occupancy minimap
   onnxInputs: number; stackDepth: number; perFrame: number;
   terms: { name: string; dim: number; vals: number[] }[];   // vals = first 6 of newest frame
@@ -83,7 +106,8 @@ export interface InspectMsg {
 
 export type FromWorker =
   | { t: "model"; desc: RenderModel }
-  | { t: "frame"; xpos: Float32Array; xmat: Float32Array; baseX: number; baseY: number }
+  | { t: "frame"; xpos: Float32Array; xmat: Float32Array; baseX: number; baseY: number;
+      hoistAnchor?: [number, number, number] | null }
   | StatusMsg
   | InspectMsg
   | { t: "busy"; msg: string }

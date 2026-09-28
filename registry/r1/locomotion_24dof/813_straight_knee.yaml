@@ -1,0 +1,48 @@
+# R1 FSM 813: Locomotion24DofStraightKnee: 24-joint walk, straight-knee gait (registered, but no transition reaches it)
+name: locomotion_24dof/813_straight_knee
+robot: r1
+family: r1_fw
+source: ai_sport 1.0.2.154 r1_controller (OTA 1.4.2.8)
+control: {step_dt: 0.02, sim_dt: 0.002}
+policy: {path: assets/policies/r1/motions/locomotion_24dof_straight_knee/2026-02-01_02-39-41_25000/actor.onnx, num_act: 24}
+r1:
+  firmware: true
+  fsm_id: 813
+  models: [edu]
+  obs_scheme: amp_motion
+  frame: loco24
+  joint_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint,
+    right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint,
+    waist_roll_joint, waist_yaw_joint, left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint,
+    left_wrist_roll_joint, right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint,
+    right_wrist_roll_joint]
+  memory: 5
+  dof_activated_idx: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+  default_dof_pos: [-0.057, -0.001, -0.024, -0.028, 0.079, 0.001, -0.057, 0.001, 0.024, -0.028, 0.079, -0.001, 0.0, 0.0, 0.2,
+    0.2, -0.0, 1.1, 0.0, 0.2, -0.2, 0.0, 1.1, 0.0]
+  action_scale: [0.2312, 0.2312, 0.2312, 0.2312, 0.5228, 0.5228, 0.2312, 0.2312, 0.2312, 0.2312, 0.5228, 0.5228, 0.2312, 0.2312,
+    0.2312, 0.2312, 0.6901, 0.6901, 0.6901, 0.2312, 0.2312, 0.6901, 0.6901, 0.6901]
+  kp: [84.3355, 84.3355, 84.3355, 84.3355, 31.0834, 31.0834, 84.3355, 84.3355, 84.3355, 84.3355, 31.0834, 31.0834, 84.3355,
+    84.3355, 84.3355, 84.3355, 15.5417, 15.5417, 15.5417, 84.3355, 84.3355, 15.5417, 15.5417, 15.5417]
+  kd: [5.369, 5.369, 5.369, 5.369, 1.9788, 1.9788, 5.369, 5.369, 5.369, 5.369, 1.9788, 1.9788, 5.369, 5.369, 5.369, 5.369,
+    0.9894, 0.9894, 0.9894, 5.369, 5.369, 0.9894, 0.9894, 0.9894]
+  limits_joint_idx: []
+  cmd:
+    max: [1.5, 0.6, 0.8]
+    high_vx: 1.5
+    yaw_up: 0.03
+    yaw_down: 0.1
+    vx_up: 0.1
+    vx_down: 0.1
+    vy_up: 0.02
+    vy_down: 0.01
+control_ui:
+  actions:
+  - group: Speed limits
+    items:
+    - {combo: R1+Up, label: vx max +0.5}
+    - {combo: R1+Down, label: vx max −0.5}
+    - {combo: R1+Left, label: vy max +0.3}
+    - {combo: R1+Right, label: vy max −0.3}
+    - {combo: R2+Up, label: yaw max +0.5}
+    - {combo: R2+Down, label: yaw max −0.5}

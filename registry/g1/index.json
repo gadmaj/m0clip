@@ -1,0 +1,1521 @@
+{
+  "robot": "g1",
+  "policies": [
+    {
+      "name": "walk_29dofs/walk",
+      "family": "g1_locomotion",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/walk_29dofs/walk.mnn",
+      "arch": "locomotion",
+      "runnable": true,
+      "inputs": {
+        "commands": [
+          1,
+          3
+        ],
+        "memory": [
+          1,
+          465
+        ],
+        "proprioception": [
+          1,
+          93
+        ]
+      },
+      "outputs": {
+        "actor_actions": [
+          1,
+          29
+        ]
+      },
+      "n_models": 2,
+      "config": "registry/g1/walk_29dofs/walk.yaml",
+      "note": "Walk (waist control, FSM 501)",
+      "fsm_id": 501
+    },
+    {
+      "name": "walk_29dofs/run",
+      "family": "g1_locomotion",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/walk_29dofs/run.mnn",
+      "arch": "locomotion",
+      "runnable": true,
+      "inputs": {
+        "commands": [
+          1,
+          3
+        ],
+        "memory": [
+          1,
+          465
+        ],
+        "proprioception": [
+          1,
+          93
+        ]
+      },
+      "outputs": {
+        "actor_actions": [
+          1,
+          29
+        ]
+      },
+      "n_models": 2,
+      "config": "registry/g1/walk_29dofs/run.yaml",
+      "note": "Run (high-speed, FSM 801)",
+      "fsm_id": 801
+    },
+    {
+      "name": "walk_29dofs/actor",
+      "family": "g1_locomotion",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/walk_29dofs/actor.mnn",
+      "arch": "locomotion",
+      "runnable": true,
+      "inputs": {
+        "commands": [
+          1,
+          3
+        ],
+        "memory": [
+          1,
+          465
+        ],
+        "proprioception": [
+          1,
+          93
+        ]
+      },
+      "outputs": {
+        "actor_actions": [
+          1,
+          29
+        ]
+      },
+      "n_models": 2,
+      "config": "registry/g1/walk_29dofs/actor.yaml",
+      "note": "locomotion (split), 29-DOF",
+      "fsm_id": 801
+    },
+    {
+      "name": "human_loco/g1_b_l_ankle_track",
+      "family": "g1_locomotion",
+      "robot": "g1",
+      "dof": 12,
+      "policy": "assets/policies/g1/human_loco/g1_b_l_ankle_track.mnn",
+      "arch": "locomotion",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          8
+        ],
+        "p_obs": [
+          1,
+          5,
+          42
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          12
+        ],
+        "v_pred": [
+          1,
+          3
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/human_loco/g1_b_l_ankle_track.yaml",
+      "note": "HumanLoco (bmlp), 12-DOF",
+      "fsm_id": 500
+    },
+    {
+      "name": "human_loco_29/g1_b29_no_yaw_ctrl",
+      "family": "g1_locomotion",
+      "robot": "g1",
+      "dof": 14,
+      "policy": "assets/policies/g1/human_loco_29/g1_b29_no_yaw_ctrl.mnn",
+      "arch": "locomotion",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          8
+        ],
+        "p_obs": [
+          1,
+          5,
+          48
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          14
+        ],
+        "v_pred": [
+          1,
+          3
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/human_loco_29/g1_b29_no_yaw_ctrl.yaml",
+      "note": "HumanLoco (bmlp), 14-DOF",
+      "fsm_id": 500
+    },
+    {
+      "name": "cpy_run_29dofs/actor",
+      "family": "g1_locomotion",
+      "robot": "g1",
+      "dof": 21,
+      "policy": "assets/policies/g1/cpy_run_29dofs/actor.mnn",
+      "arch": "locomotion",
+      "runnable": true,
+      "inputs": {
+        "commands": [
+          1,
+          3
+        ],
+        "memory": [
+          1,
+          345
+        ],
+        "proprioception": [
+          1,
+          69
+        ]
+      },
+      "outputs": {
+        "actor_actions": [
+          1,
+          21
+        ]
+      },
+      "n_models": 2,
+      "config": "registry/g1/cpy_run_29dofs/actor.yaml",
+      "note": "locomotion (split), 21-DOF"
+    },
+    {
+      "name": "cpy_stair_loco/actor",
+      "family": "g1_locomotion",
+      "robot": "g1",
+      "dof": 21,
+      "policy": "assets/policies/g1/cpy_stair_loco/actor.mnn",
+      "arch": "locomotion",
+      "runnable": true,
+      "inputs": {
+        "commands": [
+          1,
+          3
+        ],
+        "memory": [
+          1,
+          345
+        ],
+        "proprioception": [
+          1,
+          69
+        ]
+      },
+      "outputs": {
+        "actor_actions": [
+          1,
+          21
+        ]
+      },
+      "n_models": 3,
+      "config": "registry/g1/cpy_stair_loco/actor.yaml",
+      "note": "locomotion (split), 21-DOF"
+    },
+    {
+      "name": "normal_walk/G1_Normal_Walk_20240827_103556_22000",
+      "family": "g1_locomotion",
+      "robot": "g1",
+      "dof": 13,
+      "policy": "assets/policies/g1/normal_walk/G1_Normal_Walk_20240827_103556_22000.mnn",
+      "arch": "locomotion",
+      "runnable": false,
+      "inputs": {
+        "obs": [
+          1,
+          1,
+          49
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          13
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/normal_walk/G1_Normal_Walk_20240827_103556_22000.yaml",
+      "note": "obsolete on 1.5.4: FSM 704 has no transition in/is blocked — excluded from packs"
+    },
+    {
+      "name": "cpy_dance/actor",
+      "family": "g1_mimic",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/cpy_dance/actor.mnn",
+      "arch": "mimic",
+      "runnable": true,
+      "inputs": {
+        "memory": [
+          1,
+          465
+        ],
+        "proprioception": [
+          1,
+          93
+        ],
+        "quaternion": [
+          1,
+          4
+        ],
+        "target_state": [
+          1,
+          71
+        ]
+      },
+      "outputs": {
+        "actor_actions": [
+          1,
+          29
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/cpy_dance/actor.yaml",
+      "note": "Motion-mimic, 29-DOF (4638 frames clip)"
+    },
+    {
+      "name": "cpy_fight/actor",
+      "family": "g1_mimic",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/cpy_fight/actor.mnn",
+      "arch": "mimic",
+      "runnable": true,
+      "inputs": {
+        "memory": [
+          1,
+          465
+        ],
+        "proprioception": [
+          1,
+          93
+        ],
+        "quaternion": [
+          1,
+          4
+        ],
+        "target_state": [
+          1,
+          71
+        ]
+      },
+      "outputs": {
+        "actor_actions": [
+          1,
+          29
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/cpy_fight/actor.yaml",
+      "note": "Motion-mimic, 29-DOF (381 frames clip)"
+    },
+    {
+      "name": "mimic_test/yangliu_g1_mimic_cxk_new_38600_scuffing",
+      "family": "g1_mimic",
+      "robot": "g1",
+      "dof": 23,
+      "policy": "assets/policies/g1/mimic_test/yangliu_g1_mimic_cxk_new_38600_scuffing.mnn",
+      "arch": "mimic",
+      "runnable": true,
+      "inputs": {
+        "obs": [
+          1,
+          5,
+          76
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          23
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/mimic_test/yangliu_g1_mimic_cxk_new_38600_scuffing.yaml",
+      "note": "Phase-driven mimic, 23-DOF"
+    },
+    {
+      "name": "jump_17dofs/20240924_205514_27000",
+      "family": "g1_jump",
+      "robot": "g1",
+      "dof": 17,
+      "policy": "assets/policies/g1/jump_17dofs/20240924_205514_27000.mnn",
+      "arch": "jump",
+      "runnable": false,
+      "inputs": {
+        "obs": [
+          1,
+          1,
+          58
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          17
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/jump_17dofs/20240924_205514_27000.yaml",
+      "note": "obsolete on 1.5.4: FSM 705 has no transition in/is blocked — excluded from packs"
+    },
+    {
+      "name": "jumpforward_17dofs/20240921_215724_42000",
+      "family": "g1_jump",
+      "robot": "g1",
+      "dof": 17,
+      "policy": "assets/policies/g1/jumpforward_17dofs/20240921_215724_42000.mnn",
+      "arch": "jump",
+      "runnable": false,
+      "inputs": {
+        "obs": [
+          1,
+          1,
+          58
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          17
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/jumpforward_17dofs/20240921_215724_42000.yaml",
+      "note": "obsolete on 1.5.4: FSM 708 has no transition in/is blocked — excluded from packs"
+    },
+    {
+      "name": "jumpup_17dofs/20241002_124655_100000",
+      "family": "g1_jump",
+      "robot": "g1",
+      "dof": 17,
+      "policy": "assets/policies/g1/jumpup_17dofs/20241002_124655_100000.mnn",
+      "arch": "jump",
+      "runnable": false,
+      "inputs": {
+        "obs": [
+          1,
+          1,
+          58
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          17
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/jumpup_17dofs/20241002_124655_100000.yaml",
+      "note": "obsolete on 1.5.4: FSM 709 has no transition in/is blocked — excluded from packs"
+    },
+    {
+      "name": "any2squat/20240909_221251_24000",
+      "family": "g1_getup",
+      "robot": "g1",
+      "dof": 21,
+      "policy": "assets/policies/g1/any2squat/20240909_221251_24000.mnn",
+      "arch": "getup",
+      "runnable": false,
+      "inputs": {
+        "obs": [
+          1,
+          1,
+          70
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          21
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/any2squat/20240909_221251_24000.yaml",
+      "note": "obsolete on 1.5.4: FSM 707 has no transition in/is blocked — excluded from packs"
+    },
+    {
+      "name": "facedown_getup/LS2S_20240815_131051_47000",
+      "family": "g1_getup",
+      "robot": "g1",
+      "dof": 23,
+      "policy": "assets/policies/g1/facedown_getup/LS2S_20240815_131051_47000.mnn",
+      "arch": "getup",
+      "runnable": false,
+      "inputs": {
+        "obs": [
+          1,
+          1,
+          76
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          23
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/facedown_getup/LS2S_20240815_131051_47000.yaml",
+      "note": "obsolete on 1.5.4: FSM 700 has no transition in/is blocked — excluded from packs"
+    },
+    {
+      "name": "faceup_getup/20241130_214351_200000",
+      "family": "g1_getup",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/one_key_break/squat2stand_new_decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          64
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "n_models": 4,
+      "config": "registry/g1/faceup_getup/20241130_214351_200000.yaml",
+      "note": "FSM 702 face-up get-up: scripted lay-to-squat + squat2stand VQ decoder"
+    },
+    {
+      "name": "faceup_getup/face_down",
+      "family": "g1_getup",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/one_key_break/squat2stand_new_decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          64
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "n_models": 4,
+      "config": "registry/g1/faceup_getup/face_down.yaml",
+      "note": "FSM 702 from lying face down: scripted face-down try, then the face-up get-up"
+    },
+    {
+      "name": "fsm_transis_test/20241002_124655_100000",
+      "family": "g1_getup",
+      "robot": "g1",
+      "dof": 17,
+      "policy": "assets/policies/g1/fsm_transis_test/20241002_124655_100000.mnn",
+      "arch": "getup",
+      "runnable": false,
+      "inputs": {
+        "obs": [
+          1,
+          1,
+          58
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          17
+        ]
+      },
+      "n_models": 2,
+      "config": "registry/g1/fsm_transis_test/20241002_124655_100000.yaml",
+      "note": "obsolete on 1.5.4: FSM 710 has no transition in/is blocked — excluded from packs"
+    },
+    {
+      "name": "squat2stand/20240924_105814_18000",
+      "family": "g1_getup",
+      "robot": "g1",
+      "dof": 13,
+      "policy": "assets/policies/g1/squat2stand/20240924_105814_18000.mnn",
+      "arch": "getup",
+      "runnable": true,
+      "inputs": {
+        "obs": [
+          1,
+          1,
+          46
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          13
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/squat2stand/20240924_105814_18000.yaml",
+      "note": "FSM 703 squat/stand toggle (13-DOF net + phase clock), from a deep squat"
+    },
+    {
+      "name": "vision_loco/g1_b_l_ankle_track",
+      "family": "g1_vision",
+      "robot": "g1",
+      "dof": 12,
+      "policy": "assets/policies/g1/vision_loco/g1_b_l_ankle_track.mnn",
+      "arch": "vision",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          8
+        ],
+        "p_obs": [
+          1,
+          5,
+          42
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          12
+        ],
+        "v_pred": [
+          1,
+          3
+        ]
+      },
+      "n_models": 2,
+      "config": "registry/g1/vision_loco/g1_b_l_ankle_track.yaml",
+      "note": "HumanLoco (bmlp), 12-DOF",
+      "fsm_id": 500
+    },
+    {
+      "name": "vision_loco_wbc/g1_b29_no_yaw_ctrl",
+      "family": "g1_vision",
+      "robot": "g1",
+      "dof": 14,
+      "policy": "assets/policies/g1/vision_loco_wbc/g1_b29_no_yaw_ctrl.mnn",
+      "arch": "vision",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          8
+        ],
+        "p_obs": [
+          1,
+          5,
+          48
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          14
+        ],
+        "v_pred": [
+          1,
+          3
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/vision_loco_wbc/g1_b29_no_yaw_ctrl.yaml",
+      "note": "HumanLoco (bmlp), 14-DOF",
+      "fsm_id": 500
+    },
+    {
+      "name": "blind_terrain/actor.24_10_08_14_37_12_58200",
+      "family": "g1_locomotion",
+      "robot": "g1",
+      "dof": 12,
+      "policy": "assets/policies/g1/blind_terrain/actor.24_10_08_14_37_12_58200.mnn",
+      "arch": "legacy",
+      "runnable": true,
+      "inputs": {
+        "input.1": [
+          480
+        ]
+      },
+      "outputs": {
+        "input.16": [
+          12
+        ]
+      },
+      "n_models": 2,
+      "config": "registry/g1/blind_terrain/actor.yaml",
+      "note": "FSM 201 terrain blind (encoder + actor)"
+    },
+    {
+      "name": "cpy_walk_jump/actor",
+      "family": "g1_jump",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/cpy_walk_jump/actor.mnn",
+      "arch": "jump",
+      "runnable": true,
+      "inputs": {
+        "future_states": [
+          1,
+          335
+        ],
+        "memory": [
+          1,
+          465
+        ],
+        "proprioception": [
+          1,
+          93
+        ]
+      },
+      "outputs": {
+        "actions": [
+          1,
+          29
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/cpy_walk_jump/actor.yaml",
+      "note": "813 CpyWalkJump: run-up + ~2.3 m forward leap (future-state mimic), then 802",
+      "fsm_id": 813,
+      "models": [
+        "edu"
+      ],
+      "next_policy": "cpy_walk_run_29dofs/actor"
+    },
+    {
+      "name": "zjx_walk_jump/actor",
+      "family": "g1_jump",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/zjx_walk_jump/actor.mnn",
+      "arch": "jump",
+      "runnable": true,
+      "inputs": {
+        "obs": [
+          1,
+          603
+        ]
+      },
+      "outputs": {
+        "actions": [
+          1,
+          29
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/zjx_walk_jump/actor.yaml",
+      "note": "900 ZjxWalkJump: the same run-up + leap (3 x 201 mimic frames), then 802",
+      "fsm_id": 900,
+      "models": [
+        "edu"
+      ],
+      "next_policy": "cpy_walk_run_29dofs/actor"
+    },
+    {
+      "name": "cpy_walk_run_29dofs/actor",
+      "family": "g1_locomotion",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/cpy_walk_run_29dofs/actor.mnn",
+      "arch": "locomotion",
+      "runnable": true,
+      "inputs": {
+        "commands": [
+          1,
+          3
+        ],
+        "memory": [
+          1,
+          960
+        ],
+        "proprioception": [
+          1,
+          96
+        ]
+      },
+      "outputs": {
+        "actor_actions": [
+          1,
+          29
+        ]
+      },
+      "n_models": 2,
+      "config": "registry/g1/cpy_walk_run_29dofs/actor.yaml",
+      "note": "locomotion (split, 6d orient), 29-DOF; FSM 802 walk/run + stance net (bench-measured)"
+    },
+    {
+      "name": "human_mimic/ota_dance_23dof_v1_32000_decoder",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 23,
+      "policy": "assets/policies/g1/human_mimic/ota_dance_23dof_v1/ota_dance_23dof_v1_32000_decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          137
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/human_mimic/ota_dance_23dof_v1_32000_decoder.yaml",
+      "note": "FSM 503 on the Air, remote-driven: stance until R1+Up/Left/Right (dance1) / R2+Up (lixiaolong) / R2+Left (classic movie), then 801"
+    },
+    {
+      "name": "hybrid_run/model.24_08_15_17_59_26_28800",
+      "family": "g1_locomotion",
+      "robot": "g1",
+      "dof": 12,
+      "policy": "assets/policies/g1/hybrid_run/model.24_08_15_17_59_26_28800.mnn",
+      "arch": "legacy",
+      "runnable": true,
+      "inputs": {
+        "input.1": [
+          400
+        ]
+      },
+      "outputs": {
+        "input.16": [
+          12
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/hybrid_run/model.yaml",
+      "note": "FSM 200 hybrid run"
+    },
+    {
+      "name": "one_key_break/squat2stand_new_decoder",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/one_key_break/squat2stand_new_decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          64
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "n_models": 3,
+      "config": "registry/g1/one_key_break/squat2stand_new_decoder.yaml",
+      "note": "FSM 706 one-key get-up"
+    },
+    {
+      "name": "plane_encoder/actor.24_10_11_19_50_07_15400",
+      "family": "g1_locomotion",
+      "robot": "g1",
+      "dof": 12,
+      "policy": "assets/policies/g1/plane_encoder/actor.24_10_11_19_50_07_15400.mnn",
+      "arch": "legacy",
+      "runnable": true,
+      "inputs": {
+        "input.1": [
+          424
+        ]
+      },
+      "outputs": {
+        "input.16": [
+          12
+        ]
+      },
+      "n_models": 2,
+      "config": "registry/g1/plane_encoder/actor.yaml",
+      "note": "FSM 202 plane encoder (encoder + actor)"
+    },
+    {
+      "name": "punch_mode/g1_punch_walk_12500_decoder",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 23,
+      "policy": "assets/policies/g1/punch_mode/g1_punch_walk_12500_decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          163
+        ],
+        "p_obs": [
+          1,
+          10,
+          75
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          23
+        ]
+      },
+      "n_models": 4,
+      "config": "registry/g1/punch_mode/g1_punch_walk_12500_decoder.yaml",
+      "note": "FSM 505 PunchMode (walk decoder + estimator, remote punches / get down / get up)",
+      "fsm_id": 505
+    },
+    {
+      "name": "shot/model.24_10_10_20_13_58_39200",
+      "family": "g1_locomotion",
+      "robot": "g1",
+      "dof": 12,
+      "policy": "assets/policies/g1/shot/model.24_10_10_20_13_58_39200.mnn",
+      "arch": "legacy",
+      "runnable": true,
+      "inputs": {
+        "input.1": [
+          420
+        ]
+      },
+      "outputs": {
+        "input.16": [
+          12
+        ]
+      },
+      "n_models": 1,
+      "config": "registry/g1/shot/model.yaml",
+      "note": "FSM 210 shot (kick)"
+    },
+    {
+      "name": "traj_loco/2026-02-27_18-31-24_decoder",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 23,
+      "policy": "assets/policies/g1/traj_loco/2026-02-27_18-31-24_decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          163
+        ],
+        "p_obs": [
+          1,
+          10,
+          75
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          23
+        ]
+      },
+      "n_models": 3,
+      "config": "registry/g1/traj_loco/decoder.yaml",
+      "note": "FSM 504 traj loco (decoder + estimator)"
+    },
+    {
+      "name": "waist_control/actor.24_08_29_22_07_27_11600",
+      "family": "g1_locomotion",
+      "robot": "g1",
+      "dof": 12,
+      "policy": "assets/policies/g1/waist_control/actor.24_08_29_22_07_27_11600.mnn",
+      "arch": "legacy",
+      "runnable": true,
+      "inputs": {
+        "input.1": [
+          444
+        ]
+      },
+      "outputs": {
+        "input.16": [
+          12
+        ]
+      },
+      "n_models": 2,
+      "config": "registry/g1/waist_control/actor.yaml",
+      "note": "FSM 203 waist control (encoder + actor)"
+    },
+    {
+      "name": "wjc_getup/tangqi_faceup_23dof",
+      "family": "g1_getup",
+      "robot": "g1",
+      "dof": 23,
+      "policy": "assets/policies/g1/wjc_getup/tangqi_faceup_23dof.mnn",
+      "arch": "bm_getup",
+      "runnable": true,
+      "inputs": {
+        "obs": [
+          1,
+          121
+        ],
+        "time_step": [
+          1,
+          1
+        ]
+      },
+      "outputs": {
+        "actions": [
+          1,
+          23
+        ],
+        "body_ang_vel_w": [
+          1,
+          14,
+          3
+        ],
+        "body_lin_vel_w": [
+          1,
+          14,
+          3
+        ],
+        "body_pos_w": [
+          1,
+          14,
+          3
+        ],
+        "body_quat_w": [
+          1,
+          14,
+          4
+        ],
+        "joint_pos": [
+          1,
+          23
+        ],
+        "joint_vel": [
+          1,
+          23
+        ]
+      },
+      "n_models": 4,
+      "config": "registry/g1/wjc_getup/tangqi_faceup_23dof.yaml",
+      "note": "FSM 1001 wjc get-up"
+    },
+    {
+      "name": "human_mimic/dance1_s2",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/human_mimic/dance1_s2_decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "config": "registry/g1/human_mimic/dance1_s2.yaml",
+      "note": "FSM 503 dance1 (R1+B then R1+Up/Left/Right)"
+    },
+    {
+      "name": "human_mimic/lixiaolong",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/human_mimic/lixiaolong_25000_decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "config": "registry/g1/human_mimic/lixiaolong.yaml",
+      "note": "FSM 503 lixiaolong (R2+Up)"
+    },
+    {
+      "name": "human_mimic/classic_movie",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/human_mimic/classic_movie_13000_decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "config": "registry/g1/human_mimic/classic_movie.yaml",
+      "note": "FSM 503 classic movie (R2+Left)"
+    },
+    {
+      "name": "wjc_getup/tangqi_facedown_23dof",
+      "family": "g1_getup",
+      "robot": "g1",
+      "dof": 23,
+      "policy": "assets/policies/g1/wjc_getup/tangqi_faceup_23dof.mnn",
+      "arch": "bm_getup",
+      "runnable": true,
+      "inputs": {
+        "obs": [
+          1,
+          121
+        ],
+        "time_step": [
+          1,
+          1
+        ]
+      },
+      "outputs": {
+        "actions": [
+          1,
+          23
+        ],
+        "body_ang_vel_w": [
+          1,
+          14,
+          3
+        ],
+        "body_lin_vel_w": [
+          1,
+          14,
+          3
+        ],
+        "body_pos_w": [
+          1,
+          14,
+          3
+        ],
+        "body_quat_w": [
+          1,
+          14,
+          4
+        ],
+        "joint_pos": [
+          1,
+          23
+        ],
+        "joint_vel": [
+          1,
+          23
+        ]
+      },
+      "n_models": 4,
+      "config": "registry/g1/wjc_getup/tangqi_facedown_23dof.yaml",
+      "note": "FSM 1001 wjc get-up, lying face-down (facedown net)"
+    },
+    {
+      "name": "human_mimic/fightA1",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/human_mimic/fightA1_s1_decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          64
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "config": "registry/g1/human_mimic/fightA1.yaml",
+      "note": "FSM 503 fightA1 (SELECT+R1, generic config only)"
+    },
+    {
+      "name": "one_key_break/stand2squat",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/one_key_break/squat2stand_test2_23000_decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          64
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "config": "registry/g1/one_key_break/stand2squat.yaml",
+      "note": "FSM 706 one-key break, stand -> squat branch"
+    },
+    {
+      "name": "human_mimic/air_dance1",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 23,
+      "policy": "assets/policies/g1/human_mimic/ota_dance_23dof_v1/ota_dance_23dof_v1_32000_decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          137
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "config": "registry/g1/human_mimic/air_dance1.yaml",
+      "note": "FSM 503 Air dance1 (R1+Up/Left/Right), 137-dim cmd"
+    },
+    {
+      "name": "human_mimic/air_lixiaolong",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 23,
+      "policy": "assets/policies/g1/human_mimic/ota_dance_23dof_v1/ota_dance_23dof_v1_32000_decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          137
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "config": "registry/g1/human_mimic/air_lixiaolong.yaml",
+      "note": "FSM 503 Air lixiaolong (R2+Up), 137-dim cmd"
+    },
+    {
+      "name": "human_mimic/air_classic_movie",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 23,
+      "policy": "assets/policies/g1/human_mimic/ota_dance_23dof_v1/ota_dance_23dof_v1_32000_decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          137
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "config": "registry/g1/human_mimic/air_classic_movie.yaml",
+      "note": "FSM 503 Air classic movie (R2+Left), 137-dim cmd"
+    },
+    {
+      "name": "human_mimic_global/202605_dance",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/human_mimic_global/202605_dance/decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          137
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "config": "registry/g1/human_mimic_global/202605_dance.yaml",
+      "note": "FSM 550 human mimic global, library 202605_dance (4 motions, api 601-604)"
+    },
+    {
+      "name": "human_mimic_global/202605_dance_xueshan",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/human_mimic_global/202605_dance_xueshan/decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          137
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "config": "registry/g1/human_mimic_global/202605_dance_xueshan.yaml",
+      "note": "FSM 550 human mimic global, library 202605_dance_xueshan (1 motions, api 605-605)"
+    },
+    {
+      "name": "human_mimic_global/202603_official_list",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/human_mimic_global/202603_official_list/1.0.2.0/decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          137
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "config": "registry/g1/human_mimic_global/202603_official_list.yaml",
+      "note": "FSM 550 human mimic global, library 202603_official_list/1.0.2.0 (4 motions, api 502-506)"
+    },
+    {
+      "name": "human_mimic_global/20260528_interactions",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/human_mimic_global/20260528_interactions/decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          137
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "config": "registry/g1/human_mimic_global/20260528_interactions.yaml",
+      "note": "FSM 550 human mimic global, library 20260528_interactions (19 motions, api 507-525)"
+    },
+    {
+      "name": "human_mimic_global/0107_simple",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/human_mimic_global/0107_simple/cw.0.1.4/decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          137
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "config": "registry/g1/human_mimic_global/0107_simple.yaml",
+      "note": "FSM 550 human mimic global, library 0107_simple/cw.0.1.4 (2 motions, api 402-401)"
+    },
+    {
+      "name": "human_mimic_global/29dof_20260608_interactions",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/human_mimic_global/29dof/20260608_interactions/decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          137
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "config": "registry/g1/human_mimic_global/29dof_20260608_interactions.yaml",
+      "note": "FSM 550 human mimic global, library 29dof/20260608_interactions (1 motions, api 574-574)"
+    },
+    {
+      "name": "human_mimic_global/29dof_20260608_teach_files",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 29,
+      "policy": "assets/policies/g1/human_mimic_global/29dof/20260608_teach_files/decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          137
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "config": "registry/g1/human_mimic_global/29dof_20260608_teach_files.yaml",
+      "note": "FSM 550 human mimic global, library 29dof/20260608_teach_files (46 motions, api 526-573)"
+    },
+    {
+      "name": "human_mimic_global/23dof_20260608_interactions",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 23,
+      "policy": "assets/policies/g1/human_mimic_global/23dof/20260608_interactions/decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          137
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "config": "registry/g1/human_mimic_global/23dof_20260608_interactions.yaml",
+      "note": "FSM 550 human mimic global, library 23dof/20260608_interactions (1 motions, api 574-574)"
+    },
+    {
+      "name": "human_mimic_global/23dof_20260608_teach_files",
+      "family": "g1_mimic_vq",
+      "robot": "g1",
+      "dof": 23,
+      "policy": "assets/policies/g1/human_mimic_global/23dof/20260608_teach_files/decoder.mnn",
+      "arch": "vq",
+      "runnable": true,
+      "inputs": {
+        "cmd": [
+          1,
+          137
+        ],
+        "p_obs": [
+          1,
+          10,
+          93
+        ]
+      },
+      "outputs": {
+        "act": [
+          1,
+          29
+        ]
+      },
+      "config": "registry/g1/human_mimic_global/23dof_20260608_teach_files.yaml",
+      "note": "FSM 550 human mimic global, library 23dof/20260608_teach_files (46 motions, api 526-573)"
+    }
+  ]
+}

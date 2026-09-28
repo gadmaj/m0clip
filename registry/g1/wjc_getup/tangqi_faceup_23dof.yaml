@@ -1,0 +1,58 @@
+# ai_sport 1.5.4 FsmWjcGetup (FSM 1001; R1+R2+X from damping while lying, auto -> 802 on the robot).
+# Config: configs/policies/wjc_getup/getup.yaml. Measured on the EDU bench (MNN I/O + lowstate/lowcmd, 2026-09-25):
+#   1. 300 ticks @50 Hz: target = q_now + (n/300)(ref_row0 - q_now), then 50 ticks holding ref_row0 (no net)
+#   2. one csv row per tick: obs 121 = ref joint_pos(23) + ref joint_vel(23) + projected_gravity(3)
+#      + ang_vel(3, raw) + (q - default)(23) + dq(23, raw) + last_action(23, raw), joints in action_joint_idx
+#      order; target = default + action*action_scale (no clip); time_step is not fed by the firmware
+#   3. hand-over to 802 at row len-30; the web keeps the policy running on the frozen last row instead
+#   face-up / face-down net picked from projected gravity x at entry (< 0 = on the back)
+name: wjc_getup/tangqi_faceup_23dof
+robot: g1
+family: g1_getup
+control: {step_dt: 0.02, sim_dt: 0.0005, duration: 14.0}
+policy: {path: assets/policies/g1/wjc_getup/tangqi_faceup_23dof.mnn, arch: bm_getup, num_obs: 121, num_act: 23}
+g1:
+  models: [air, edu]   # G1 variants it runs on (Air = machinetype 4, EDU = 5)
+  fsm_id: 1001
+  next_policy: cpy_walk_run_29dofs/actor   # firmware auto-switches 1001 -> 802 after the get-up
+  obs_scheme: bm_getup
+  control_joints: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26]
+  action_joint_idx: [0, 6, 12, 1, 7, 15, 22, 2, 8, 16, 23, 3, 9, 17, 24, 4, 10, 18, 25, 5, 11, 19, 26]
+  num_obs: 121
+  num_act: 23
+  memory_size: 1
+  dt: 0.02
+  maneuver: true
+  ground_start: face_up
+  start_frames: 300
+  hold_frames: 50
+  end_frames: 30
+  # joint pose the bench robot lay in at 1001 entry (dropped from the hoist in damping)
+  init_pose: [0.557, -0.006, -0.012, 2.889, -0.782, -0.027, 0.56, 0.006, 0.014, 2.889, -0.782, 0.023,
+    0.0, -0.001, 0.436, 0.262, 0.034, 0.326, 1.375, -0.013, -0.004, 0.132, 0.26, -0.039, -0.365, 1.375,
+    0.032, -0.014, -0.166]
+  default_dof_pos: [-0.312, 0.0, 0.0, 0.669, -0.363, 0.0, -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
+    0.0, 0.0, 0.0, 0.2, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0, 0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0]
+  action_scale: [0.5475464652142303, 0.3506614663788243, 0.5475464652142303, 0.3506614663788243,
+    0.43857731392336724, 0.43857731392336724, 0.5475464652142303, 0.3506614663788243, 0.5475464652142303,
+    0.3506614663788243, 0.43857731392336724, 0.43857731392336724, 0.5475464652142303, 0.43857731392336724,
+    0.43857731392336724, 0.43857731392336724, 0.43857731392336724, 0.43857731392336724, 0.43857731392336724,
+    0.43857731392336724, 0.07450087032950714, 0.07450087032950714, 0.43857731392336724, 0.43857731392336724,
+    0.43857731392336724, 0.43857731392336724, 0.43857731392336724, 0.07450087032950714, 0.07450087032950714]
+  kp: [40.17923847137318, 99.09842777666113, 40.17923847137318, 99.09842777666113, 28.50124619574858,
+    28.50124619574858, 40.17923847137318, 99.09842777666113, 40.17923847137318, 99.09842777666113,
+    28.50124619574858, 28.50124619574858, 40.17923847137318, 200, 200, 14.25062309787429, 14.25062309787429,
+    14.25062309787429, 14.25062309787429, 14.25062309787429, 16.77832748089279, 16.77832748089279,
+    14.25062309787429, 14.25062309787429, 14.25062309787429, 14.25062309787429, 14.25062309787429,
+    16.77832748089279, 16.77832748089279]
+  kd: [2.5578897650279457, 6.3088018534966395, 2.5578897650279457, 6.3088018534966395, 1.814445686584846,
+    1.814445686584846, 2.5578897650279457, 6.3088018534966395, 2.5578897650279457, 6.3088018534966395,
+    1.814445686584846, 1.814445686584846, 2.5578897650279457, 6, 6, 0.907222843292423, 0.907222843292423,
+    0.907222843292423, 0.907222843292423, 0.907222843292423, 1.06814150219, 1.06814150219,
+    0.907222843292423, 0.907222843292423, 0.907222843292423, 0.907222843292423, 0.907222843292423,
+    1.06814150219, 1.06814150219]
+  tau: [88, 88, 88, 139, 50, 50, 88, 88, 88, 139, 50, 50, 88, 50, 50, 25, 25, 25, 25, 25, 5, 5,
+    25, 25, 25, 25, 25, 5, 5]
+  aux_models: {facedown: assets/policies/g1/wjc_getup/tangqi_facedown_23dof.mnn}
+  aux_files: {faceup_motion: assets/policies/g1/wjc_getup/tangqi_faceup_23dof.csv,
+    facedown_motion: assets/policies/g1/wjc_getup/tangqi_facedown_23dof.csv}

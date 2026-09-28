@@ -2,27 +2,34 @@
 node_modules/
 dist/
 
-# robot-derived assets (import them from your own robot; never committed) —
-# except the go2 and r1 model bundles, which are checked in so a fresh clone
-# runs out of the box. Re-include per level: a parent dir must stay traversable
-# (dir/* instead of dir/) for the deeper negations to take effect.
+# robot-derived assets: only the g1 / r1 / go2 model bundles are checked in, so a
+# fresh clone runs out of the box. Re-include per level: a parent dir must stay
+# traversable (dir/* instead of dir/) for the deeper negations to take effect.
 public/assets/*
 !public/assets/.gitkeep
 !public/assets/models/
 public/assets/models/*
 !public/assets/models/go2/
 !public/assets/models/r1/
-public/registry/
+!public/assets/models/g1/
+
+# local policy weights cache, written by scripts/import_*.py (never committed)
+/assets/
 
 # wasm runtime copied out of node_modules by postinstall
 public/wasm/
 
-*.log
-
-# policy packs (proprietary weights — bring your own)
+# policy packs (proprietary weights — bring your own), built by scripts/build-packs.mjs
 policy-packs/*.zip
 policy-packs/**/*.zip
 
-# internal tooling (not shipped) — only the wasm postinstall copy is public
-scripts/*
-!scripts/copy-ort-wasm.mjs
+# python / scratch
+__pycache__/
+*.pyc
+*.log
+MUJOCO_LOG*.TXT
+
+# local firmware-work leftovers (decrypted configs, bench notes, old benchmark output)
+decrypted/
+workbench_configs/
+benchmark_results.json

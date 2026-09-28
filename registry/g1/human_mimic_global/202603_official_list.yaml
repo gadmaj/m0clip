@@ -1,0 +1,64 @@
+# ai_sport FsmHumanMimicGlobal (FSM 550, entered by LocoClient.SetFsmId; motions picked by api_id), library 202603_official_list/1.0.2.0.
+# Decoded from the humanoid binary (fsm_human_mimic_global.cpp sub_4E16C0 / sub_4D4E50 / sub_4DFC10) + bench captures:
+#   per-library decoder (+ global stance/decoder.onnx while idle), p_obs 10 x 93 as in 503;
+#   cmd 137 = [latent(128) raw from the 135-col CSV, root pos error in the robot yaw frame (zero when mask_root_pos,
+#   dead zone min_root_pos_error 0.2, clip max_root_pos_error 1.0), rot6d of q_robot^-1 q_off q_ref];
+#   idle / transit: [stance latent, 0,0,0, 1,0,0,1,0,0]. Motion rows: CSV rows time_start*fps .. time_end*fps, one
+#   per 50 Hz tick whatever the fps; right after the last row the FSM exits to 802.
+# Bench captures (captures_154/probe3/550_601/507/526/574/chain, no odometry on the bench): entered with
+#   SetFsmId(550000 + api_id) the motion starts at once; latent rows match exactly; the task part is pos 0 and a
+#   rot6d within ~0.03 of identity (not reproduced by the decoded formula), so the pack feeds the identity task.
+# The web plays the library's motions in api_id order (stance gap_s between them). Motions (api_id: name):
+#   502: POPPING1_003_SY_09478d7c_G1_50hz  [3.4, 42] s @ 50 fps
+#   503: POPPING8_001_v1_G1_50hz  [1, 26.8] s @ 50 fps
+#   504: POPPING9_001_v1_G1_50hz  [1.2, 31.2] s @ 50 fps
+#   506: YSKJ_NEWBALEI_008_v1_G1_50hz  [1.5, 33.5] s @ 50 fps
+name: human_mimic_global/202603_official_list
+robot: g1
+family: g1_mimic_vq
+control: {step_dt: 0.02, sim_dt: 0.0005, duration: 148}
+policy: {path: assets/policies/g1/human_mimic_global/202603_official_list/1.0.2.0/decoder.mnn, arch: vq, num_obs: 930, num_act: 29}
+g1:
+  models: [edu]
+  obs_scheme: vq
+  fsm_id: 550
+  control_joints: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+  num_obs: 93
+  num_act: 29
+  memory_size: 10
+  default_dof_pos: [-0.3, 0.0, 0.0, 0.6, -0.3, 0.0, -0.3, 0.0, 0.0, 0.6, -0.3, 0.0, 0.0, 0.0, 0.0,
+    0.3, 0.3, 0.0, 0.97, 0.0, 0.0, 0.0, 0.3, -0.3, 0.0, 0.97, 0.0, 0.0, 0.0]
+  action_scale: 1.0
+  kp: [40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 28.5, 28.5,
+    14.3, 14.3, 14.3, 14.3, 14.3, 16.8, 16.8, 14.3, 14.3, 14.3, 14.3, 14.3, 16.8, 16.8]
+  kd: [2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 1.8, 1.8,
+    0.9, 0.9, 0.9, 0.9, 0.9, 1.1, 1.1, 0.9, 0.9, 0.9, 0.9, 0.9, 1.1, 1.1]
+  tau: [88, 88, 88, 139, 50, 30, 88, 88, 88, 139, 50, 30, 88, 60, 60, 20, 20, 20, 20, 20, 20, 20,
+    20, 20, 20, 20, 20, 20, 20]
+  next_policy: cpy_walk_run_29dofs/actor
+  aux_models:
+    stance: assets/policies/g1/human_mimic_global/stance/decoder.mnn
+  aux_files:
+    stance: "assets/policies/g1/human_mimic_global/stance/stance.csv"
+    m0: "assets/policies/g1/human_mimic_global/202603_official_list/1.0.2.0/vq_POPPING1_003_SY_09478d7c_G1_50hz.csv"
+    m1: "assets/policies/g1/human_mimic_global/202603_official_list/1.0.2.0/vq_POPPING8_001_v1_G1_50hz.csv"
+    m2: "assets/policies/g1/human_mimic_global/202603_official_list/1.0.2.0/vq_POPPING9_001_v1_G1_50hz.csv"
+    m3: "assets/policies/g1/human_mimic_global/202603_official_list/1.0.2.0/vq_YSKJ_NEWBALEI_008_v1_G1_50hz.csv"
+  vq:
+    mode: task
+    stance_latent: stance
+    pre_s: 0.5
+    gap_s: 1.5
+    transit_s: 0.5
+    final_transit: false
+    stance_net: stance
+    stance_task: identity
+    motion_task: odom   # sim ground-truth base pose as fusion_odom; identity = bench without SLAM
+    max_root_pos_error: 1.0
+    min_root_pos_error: 0.2
+    auto_exit_s: 0.0
+    motions:
+      - {file: "m0", start: 3.4, end: 42, fps: 50, mask_root_pos: true}
+      - {file: "m1", start: 1, end: 26.8, fps: 50, mask_root_pos: true}
+      - {file: "m2", start: 1.2, end: 31.2, fps: 50, mask_root_pos: true}
+      - {file: "m3", start: 1.5, end: 33.5, fps: 50, mask_root_pos: true}

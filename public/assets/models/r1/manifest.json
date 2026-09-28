@@ -1,6 +1,13 @@
 {
  "files": [
   "R1_C++.xml",
+  "r1_air.xml",
+  "meshes/air_left_elbow_link.stl",
+  "meshes/air_left_shoulder_pitch_link.stl",
+  "meshes/air_left_shoulder_yaw_link.stl",
+  "meshes/air_pelvis_link.stl",
+  "meshes/air_right_elbow_link.stl",
+  "meshes/air_right_shoulder_yaw_link.stl",
   "meshes/head_pitch_link.STL",
   "meshes/head_yaw_link.STL",
   "meshes/imu_in_pelvis_link.STL",
@@ -44,6 +51,7 @@
   "meshes/torso_collision.stl",
   "meshes/waist_roll_link.STL",
   "meshes/waist_yaw_link.STL",
-  "scene.xml"
+  "scene.xml",
+  "air_scene.xml"
  ]
 }

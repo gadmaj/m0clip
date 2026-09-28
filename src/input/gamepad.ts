@@ -36,6 +36,12 @@ const COMBOS: { hold: number; press: number; action: ComboAction }[] = [
   { hold: BTN.RT, press: BTN.B, action: { kind: "reset" } },
 ];
 
+/** Unitree remote names of the standard-mapping buttons (modifiers = shoulder buttons / triggers). */
+const REMOTE_MODS: [string, number][] = [["L1", BTN.LB], ["L2", BTN.LT], ["R1", BTN.RB], ["R2", BTN.RT]];
+const REMOTE_KEYS: [string, number][] = [
+  ["A", BTN.A], ["B", BTN.B], ["X", BTN.X], ["Y", BTN.Y], ["Select", BTN.SELECT], ["Start", BTN.START],
+  ["Up", BTN.UP], ["Down", BTN.DOWN], ["Left", BTN.LEFT], ["Right", BTN.RIGHT], ...REMOTE_MODS];
+
 export class GamepadInput {
   deadzone = 0.08;
   scale: Command = [1.0, 1.0, 1.0];
@@ -50,18 +56,16 @@ export class GamepadInput {
   private neutral: number[] | null = null;
   private neutralIndex = -1;
   private samples: number[][] = [];
-  connected = false;
-  name = "";
 
-  constructor() {
-    window.addEventListener("gamepadconnected", (e) => {
-      this.connected = true;
-      this.name = (e as GamepadEvent).gamepad.id;
-    });
-    window.addEventListener("gamepaddisconnected", () => {
-      this.connected = false; this.name = "";
-    });
-  }
+  // HID devices that Linux exposes as joysticks but aren't controllers (e.g.
+  // the ASRock RGB/LED controller). Their axes sit at 0 forever, so picking
+  // one silently zeroes the command.
+  private static readonly IGNORE = /LED Controller/i;
+
+  // Derived from the pad actually polled, so the status line can't name a
+  // different pad than the one driving the robot.
+  get connected(): boolean { return this.pad() !== null; }
+  get name(): string { return this.pad()?.id ?? ""; }
 
   /** Forget the sampled rest position and re-arm (~0.5 s, hands off the pad).
    * Wired to Space/Stop in the app — the manual fix for any leftover drift. */
@@ -90,18 +94,24 @@ export class GamepadInput {
 
   get armed(): boolean { return this.neutral !== null; }
 
+  /** Preference: standard-mapped pad > Unitree remote (the BLE joy bridge
+   * isn't in Chrome's mapping DB, so it comes up "raw") > any other pad. */
   private pad(): Gamepad | null {
-    for (const g of navigator.getGamepads())
-      if (g && g.connected && g.mapping === "standard") return g;
-    for (const g of navigator.getGamepads()) if (g && g.connected) return g;
-    return null;
+    const pads = navigator.getGamepads().filter(
+      (g): g is Gamepad => !!g && g.connected && !GamepadInput.IGNORE.test(g.id));
+    return pads.find((g) => g.mapping === "standard")
+      ?? pads.find((g) => /unitree/i.test(g.id))
+      ?? pads[0] ?? null;
   }
 
   private dz(v: number): number { return Math.abs(v) < this.deadzone ? 0 : v; }
 
   /** Poll once per control step. Returns the velocity command and fires
-   * `onAction` for each combo whose press-button went down this step. */
-  poll(onAction: (a: ComboAction) => void): Command | null {
+   * `onAction` for each combo whose press-button went down this step. When the active policy lists remote
+   * `combos` (Unitree remote names, e.g. "R1+Up", "L2+Down", "A"), a press that forms one of them goes to
+   * `onRemote` instead and shadows the app combo on the same buttons. */
+  poll(onAction: (a: ComboAction) => void, combos?: string[],
+       onRemote?: (combo: string) => void): Command | null {
     const g = this.pad();
     if (!g) {
       this.prevButtons = []; this.neutral = null; this.neutralIndex = -1;
@@ -133,8 +143,18 @@ export class GamepadInput {
     const vy = -this.dz(ax(0)) * this.scale[1];
     const wz = -this.dz(ax(2)) * this.scale[2];
     const down = g.buttons.map((b) => b.pressed || (typeof b.value === "number" && b.value > 0.6));
+    const used = new Set<number>();
+    if (combos?.length && onRemote) {
+      const mods = REMOTE_MODS.filter(([, i]) => down[i]);
+      for (const [name, i] of REMOTE_KEYS) {
+        if (!down[i] || this.prevButtons[i]) continue;
+        const held = mods.filter(([, m]) => m !== i).map(([n]) => n);
+        const combo = [...held, name].join("+");
+        if (combos.includes(combo)) { onRemote(combo); used.add(i); }
+      }
+    }
     for (const c of COMBOS) {
-      if (down[c.hold] && down[c.press] && !this.prevButtons[c.press])
+      if (down[c.hold] && down[c.press] && !this.prevButtons[c.press] && !used.has(c.press))
         onAction(c.action);
     }
     this.prevButtons = down;

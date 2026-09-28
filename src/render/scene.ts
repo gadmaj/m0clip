@@ -8,7 +8,7 @@ import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment
 import { GEOM_BOX, GEOM_CAPSULE, GEOM_CYLINDER, GEOM_ELLIPSOID, GEOM_MESH,
          GEOM_PLANE, GEOM_SPHERE } from "../sim/engine";
 import type { RenderModel } from "../sim/protocol";
-import { loadPaint, resolve, type PaintMap } from "./paint";
+import { FINISH, hasPalette, resolve, type Paint, type Region } from "./paint";
 
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 
@@ -95,14 +95,185 @@ function trimIndex(name: string, vert: Float32Array, face: Uint32Array): Uint32A
   return Uint32Array.from(kept);
 }
 
+/** Robot-part material from a palette paint. DoubleSide: several R1 linkage
+ * STLs have inverted winding and vanish under back-face culling from outside. */
+function paintMaterial(p: Paint): THREE.MeshPhysicalMaterial {
+  return new THREE.MeshPhysicalMaterial({
+    color: p.color, side: THREE.DoubleSide, ...FINISH[p.finish],
+  });
+}
+
+/** Union-find over n items. */
+function unionFind(n: number) {
+  const parent = new Int32Array(n).map((_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+    return i;
+  };
+  return { find, union: (a: number, b: number) => { parent[find(a)] = find(b); } };
+}
+
+/** Per-triangle group labels for patch / shell regions. Vertices are welded
+ * by position (0.1 µm grid) so split normals / seams don't break shells;
+ * "patch" additionally only joins faces across edges bending < 20°. */
+function groupLabels(F: Float64Array, idx: Uint32Array, scope: "patch" | "shell"): Int32Array {
+  const nt = idx.length / 3;
+  const weld = new Map<string, number>();
+  const vid = new Int32Array(F.length / 3);
+  for (let i = 0; i < vid.length; i++) {
+    const k = `${Math.round(F[3 * i] * 1e7)},${Math.round(F[3 * i + 1] * 1e7)},${Math.round(F[3 * i + 2] * 1e7)}`;
+    let w = weld.get(k);
+    if (w === undefined) { w = weld.size; weld.set(k, w); }
+    vid[i] = w;
+  }
+  const uf = unionFind(nt);
+  const nrm = new Float64Array(3 * nt);
+  for (let t = 0; t < nt; t++) {
+    const a = 3 * idx[3 * t], b = 3 * idx[3 * t + 1], c = 3 * idx[3 * t + 2];
+    const ux = F[b] - F[a], uy = F[b + 1] - F[a + 1], uz = F[b + 2] - F[a + 2];
+    const vx = F[c] - F[a], vy = F[c + 1] - F[a + 1], vz = F[c + 2] - F[a + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const l = Math.hypot(nx, ny, nz) || 1;
+    nrm[3 * t] = nx / l; nrm[3 * t + 1] = ny / l; nrm[3 * t + 2] = nz / l;
+  }
+  const cosMax = Math.cos((20 * Math.PI) / 180);
+  const edgeOwner = new Map<number, number>();
+  for (let t = 0; t < nt; t++) {
+    for (let k = 0; k < 3; k++) {
+      const p = vid[idx[3 * t + k]], q = vid[idx[3 * t + (k + 1) % 3]];
+      const key = p < q ? p * 4194304 + q : q * 4194304 + p;
+      const o = edgeOwner.get(key);
+      if (o === undefined) { edgeOwner.set(key, t); continue; }
+      if (scope === "shell" ||
+          nrm[3 * o] * nrm[3 * t] + nrm[3 * o + 1] * nrm[3 * t + 1] + nrm[3 * o + 2] * nrm[3 * t + 2] > cosMax)
+        uf.union(o, t);
+    }
+  }
+  const lab = new Int32Array(nt);
+  for (let t = 0; t < nt; t++) lab[t] = uf.find(t);
+  return lab;
+}
+
+/** Split an indexed mesh into material groups: group 0 = triangles no region
+ * claims, group i+1 = triangles regions[i] claims (first match wins). Regions
+ * test a point + normal in the mesh FILE's frame (`toFile` = the mesh's
+ * compile offset); patch / shell regions test each group's area-weighted
+ * centroid, mean normal and bbox size once and claim all its triangles.
+ * Triangles straddling a per-triangle region boundary are bisected along
+ * their longest edge (shared midpoints) down to ~REFINE_EDGE, so boundaries
+ * stay crisp even on coarse CAD tessellation. Returns false when no region
+ * claims anything (geometry left untouched). */
+const REFINE_EDGE = 0.0008;   // m
+const REFINE_DEPTH = 14;
+function splitRegions(geo: THREE.BufferGeometry, regions: Region[], toFile: THREE.Matrix4): boolean {
+  const posAttr = geo.getAttribute("position") as THREE.BufferAttribute;
+  const nrmAttr = geo.getAttribute("normal") as THREE.BufferAttribute;
+  const idx = geo.getIndex()!.array as Uint32Array;
+  const nt0 = idx.length / 3;
+  // growable vertex store: compiled-frame position, vertex normal, file-frame position
+  const P: number[] = Array.from(posAttr.array as Float32Array);
+  const N: number[] = Array.from(nrmAttr.array as Float32Array);
+  const F: number[] = [];
+  const v = new THREE.Vector3();
+  for (let i = 0; i < posAttr.count; i++) {
+    v.fromBufferAttribute(posAttr, i).applyMatrix4(toFile);
+    F.push(v.x, v.y, v.z);
+  }
+  // group-scope verdicts: verdict[r][t] for each original triangle t
+  const verdict: (Uint8Array | null)[] = regions.map(() => null);
+  const labels: Partial<Record<"patch" | "shell", Int32Array>> = {};
+  const F64 = Float64Array.from(F);
+  regions.forEach((rg, r) => {
+    const scope = rg.scope ?? "tri";
+    if (scope === "tri") return;
+    const lab = labels[scope] ??= groupLabels(F64, idx, scope);
+    const acc = new Map<number, number[]>();   // area, cx, cy, cz, nx, ny, nz, min xyz, max xyz
+    for (let t = 0; t < nt0; t++) {
+      const a = 3 * idx[3 * t], b = 3 * idx[3 * t + 1], c = 3 * idx[3 * t + 2];
+      const ux = F64[b] - F64[a], uy = F64[b + 1] - F64[a + 1], uz = F64[b + 2] - F64[a + 2];
+      const vx = F64[c] - F64[a], vy = F64[c + 1] - F64[a + 1], vz = F64[c + 2] - F64[a + 2];
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const ar = Math.hypot(nx, ny, nz) / 2;
+      let g = acc.get(lab[t]);
+      if (!g) { g = [0, 0, 0, 0, 0, 0, 0, Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]; acc.set(lab[t], g); }
+      g[0] += ar;
+      for (let k = 0; k < 3; k++) g[1 + k] += ar * (F64[a + k] + F64[b + k] + F64[c + k]) / 3;
+      g[4] += nx / 2; g[5] += ny / 2; g[6] += nz / 2;
+      for (const i of [a, b, c]) for (let k = 0; k < 3; k++) {
+        g[7 + k] = Math.min(g[7 + k], F64[i + k]); g[10 + k] = Math.max(g[10 + k], F64[i + k]);
+      }
+    }
+    const ok = new Map<number, boolean>();
+    for (const [l, g] of acc) {
+      const w = g[0] || 1, nl = Math.hypot(g[4], g[5], g[6]) || 1;
+      ok.set(l, rg.test(g[1] / w, g[2] / w, g[3] / w, g[4] / nl, g[5] / nl, g[6] / nl,
+                        g[10] - g[7], g[11] - g[8], g[12] - g[9]));
+    }
+    verdict[r] = Uint8Array.from(lab, (l) => (ok.get(l) ? 1 : 0));
+  });
+  const mids = new Map<number, number>();
+  const mid = (a: number, b: number): number => {
+    const key = a < b ? a * 1e7 + b : b * 1e7 + a;
+    let m = mids.get(key);
+    if (m === undefined) {
+      m = P.length / 3;
+      for (let k = 0; k < 3; k++) {
+        P.push((P[3 * a + k] + P[3 * b + k]) / 2);
+        F.push((F[3 * a + k] + F[3 * b + k]) / 2);
+        N.push((N[3 * a + k] + N[3 * b + k]) / 2);
+      }
+      mids.set(key, m);
+    }
+    return m;
+  };
+  let tri0 = 0;   // original triangle being placed (group verdicts)
+  const cls = (x: number, y: number, z: number, n: THREE.Vector3) =>
+    regions.findIndex((rg, r) => verdict[r]
+      ? verdict[r]![tri0] === 1
+      : rg.test(x, y, z, n.x, n.y, n.z, 0, 0, 0));
+  const buckets: number[][] = [[], ...regions.map(() => [])];
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), n = new THREE.Vector3();
+  const place = (a: number, b: number, c: number, depth: number) => {
+    const ax = F[3 * a], ay = F[3 * a + 1], az = F[3 * a + 2];
+    const bx = F[3 * b], by = F[3 * b + 1], bz = F[3 * b + 2];
+    const cx = F[3 * c], cy = F[3 * c + 1], cz = F[3 * c + 2];
+    e1.set(bx - ax, by - ay, bz - az); e2.set(cx - ax, cy - ay, cz - az);
+    n.crossVectors(e1, e2).normalize();
+    const k = cls((ax + bx + cx) / 3, (ay + by + cy) / 3, (az + bz + cz) / 3, n);
+    const lab = e1.length(), lca = e2.length(), lbc = Math.hypot(cx - bx, cy - by, cz - bz);
+    if (depth < REFINE_DEPTH && Math.max(lab, lca, lbc) > REFINE_EDGE &&
+        (cls(ax, ay, az, n) !== k || cls(bx, by, bz, n) !== k || cls(cx, cy, cz, n) !== k)) {
+      // bisect the longest edge (cheap on the long slivers CAD exports produce)
+      if (lab >= lca && lab >= lbc) { const m = mid(a, b); place(a, m, c, depth + 1); place(m, b, c, depth + 1); }
+      else if (lbc >= lca) { const m = mid(b, c); place(a, b, m, depth + 1); place(a, m, c, depth + 1); }
+      else { const m = mid(c, a); place(a, b, m, depth + 1); place(m, b, c, depth + 1); }
+      return;
+    }
+    buckets[k + 1].push(a, b, c);
+  };
+  for (let t = 0; t < nt0; t++) { tri0 = t; place(idx[3 * t], idx[3 * t + 1], idx[3 * t + 2], 0); }
+  if (buckets.slice(1).every((b) => b.length === 0)) return false;
+  if (P.length > posAttr.array.length) {
+    geo.setAttribute("position", new THREE.BufferAttribute(Float32Array.from(P), 3));
+    const nn = Float32Array.from(N);
+    for (let i = 0; i < nn.length; i += 3) {       // re-normalise averaged normals
+      const l = Math.hypot(nn[i], nn[i + 1], nn[i + 2]) || 1;
+      nn[i] /= l; nn[i + 1] /= l; nn[i + 2] /= l;
+    }
+    geo.setAttribute("normal", new THREE.BufferAttribute(nn, 3));
+  }
+  geo.setIndex(new THREE.BufferAttribute(Uint32Array.from(buckets.flat()), 1));
+  let start = 0;
+  buckets.forEach((b, i) => { geo.addGroup(start, b.length, i); start += b.length; });
+  return true;
+}
+
 export class SceneView {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
   readonly controls: OrbitControls;
   private geomMeshes: (THREE.Object3D | null)[] = [];
-  /** mesh name per rendered robot-mesh geom (null for primitives/floor) */
-  private geomMeshNames: (string | null)[] = [];
   private readonly tmp = new THREE.Matrix4();
 
   constructor(readonly container: HTMLElement) {
@@ -156,12 +327,11 @@ export class SceneView {
       m.traverse((o) => {
         if (o instanceof THREE.Mesh) {
           o.geometry.dispose();
-          (o.material as THREE.Material).dispose();
+          for (const mat of [o.material].flat()) (mat as THREE.Material).dispose();
         }
       });
     }
     this.geomMeshes = [];
-    this.geomMeshNames = [];
     for (let g = 0; g < desc.ngeom; g++) {
       const a = desc.rgba[4 * g + 3];
       const isMesh = desc.type[g] === GEOM_MESH;
@@ -171,64 +341,140 @@ export class SceneView {
       // Worldbody geoms (terrain) always render.
       if (a <= 0 || desc.group[g] >= 3 ||
           (desc.bodyid[g] > 0 && desc.contype[g] !== 0)) {
-        this.geomMeshes.push(null); this.geomMeshNames.push(null); continue;
+        this.geomMeshes.push(null); continue;
       }
       if (desc.type[g] === GEOM_PLANE) {
         const floor = buildFloor(40);
         floor.matrixAutoUpdate = false;
         this.scene.add(floor);
         this.geomMeshes.push(floor);
-        this.geomMeshNames.push(null);
         continue;
       }
       const geo = this.buildGeometry(desc, g);
-      if (!geo) { this.geomMeshes.push(null); this.geomMeshNames.push(null); continue; }
+      if (!geo) { this.geomMeshes.push(null); continue; }
       const meshName = isMesh ? desc.meshes[desc.dataid[g]]?.name ?? "" : "";
-      // The paint palette / painter page is R1-specific (mesh-name keyed). Only
-      // R1-family meshes go through it; every other robot (Go2, later G1) uses
-      // the model's own rgba, which already carries its correct colors.
-      const painted = isMesh && desc.robot.startsWith("r1");
-      // DoubleSide: several R1 linkage STLs have inverted winding and vanish
-      // under back-face culling from outside
-      const mat = painted
-        ? new THREE.MeshPhysicalMaterial({ metalness: 0.0, side: THREE.DoubleSide })
-        : new THREE.MeshStandardMaterial({
-            color: new THREE.Color(desc.rgba[4 * g], desc.rgba[4 * g + 1], desc.rgba[4 * g + 2]),
-            transparent: a < 1, opacity: a,
-            metalness: 0.05, roughness: isMesh ? 0.6 : 0.8,
-          });
-      const mesh = new THREE.Mesh(geo, mat);
+      // Robots with a palette (R1, Go2) paint every mesh part by name with a
+      // colour + finish from the product colourway; others (G1) use the
+      // model's own rgba.
+      const painted = isMesh && hasPalette(desc.robot);
+      let mesh: THREE.Mesh;
+      if (painted) {
+        const { paint, regions } = resolve(desc.robot, meshName);
+        const md = desc.meshes[desc.dataid[g]];
+        const toFile = new THREE.Matrix4().compose(
+          new THREE.Vector3(...md.pos),
+          new THREE.Quaternion(md.quat[1], md.quat[2], md.quat[3], md.quat[0]),
+          new THREE.Vector3(1, 1, 1));
+        const split = regions.length > 0 && splitRegions(geo, regions, toFile);
+        mesh = new THREE.Mesh(geo, split
+          ? [paint, ...regions.map((r) => r.paint)].map(paintMaterial)
+          : paintMaterial(paint));
+        mesh.visible = !paint.hidden;
+      } else {
+        mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+          color: new THREE.Color(desc.rgba[4 * g], desc.rgba[4 * g + 1], desc.rgba[4 * g + 2]),
+          transparent: a < 1, opacity: a,
+          metalness: 0.05, roughness: isMesh ? 0.6 : 0.8,
+        }));
+      }
       mesh.matrixAutoUpdate = false;
       mesh.userData.meshName = painted ? meshName : null;
       this.scene.add(mesh);
       this.geomMeshes.push(mesh);
-      this.geomMeshNames.push(painted ? meshName : null);
     }
-    this.applyPaint(loadPaint());
   }
 
-  /** Robot mesh names present in the current scene (rendered geoms only). */
-  partMeshNames(): string[] {
-    return [...new Set(this.geomMeshNames.filter((n): n is string => n !== null))];
+  /** Project a pointer event onto the horizontal plane z=`z` (world xy). */
+  groundPoint(ev: PointerEvent | MouseEvent, z = 0): [number, number] | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+      -((ev.clientY - rect.top) / rect.height) * 2 + 1);
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(ndc, this.camera);
+    const hit = new THREE.Vector3();
+    return ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), -z), hit)
+      ? [hit.x, hit.y] : null;
   }
 
-  /** Apply default palette + user paint overrides to every robot mesh:
-   * color, glossy/matte finish, visibility. Cheap — call on every change. */
-  applyPaint(paint: PaintMap) {
-    for (let g = 0; g < this.geomMeshes.length; g++) {
-      const name = this.geomMeshNames[g];
-      const obj = this.geomMeshes[g];
-      if (!name || !obj || !(obj instanceof THREE.Mesh)) continue;
-      const { color, finish, hidden } = resolve(name, paint);
-      const m = obj.material as THREE.MeshPhysicalMaterial;
-      m.color.set(color);
-      const glossy = finish === "glossy";
-      m.roughness = glossy ? 0.18 : 0.5;
-      m.clearcoat = glossy ? 1.0 : 0.35;
-      m.clearcoatRoughness = glossy ? 0.1 : 0.4;
-      m.needsUpdate = true;
-      obj.visible = !hidden;
+  // ---- leash rope (drag policies) --------------------------------------
+  private leashLine: THREE.Line | null = null;
+
+  /** Draw (or hide, with null) a sagging rope from the robot's collar to the
+   * pull anchor. Both points in world coordinates. */
+  setLeash(from: [number, number, number] | null, to?: [number, number, number]) {
+    if (!from || !to) {
+      if (this.leashLine) this.leashLine.visible = false;
+      return;
     }
+    const N = 16;
+    if (!this.leashLine) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position",
+        new THREE.BufferAttribute(new Float32Array((N + 1) * 3), 3));
+      this.leashLine = new THREE.Line(geo,
+        new THREE.LineBasicMaterial({ color: 0xffc07a, transparent: true, opacity: 0.9 }));
+      this.leashLine.frustumCulled = false;
+      this.scene.add(this.leashLine);
+    }
+    this.leashLine.visible = true;
+    const pos = (this.leashLine.geometry.getAttribute("position") as THREE.BufferAttribute);
+    const len = Math.hypot(to[0] - from[0], to[1] - from[1]);
+    const sag = Math.max(0.03, 0.25 - 0.15 * Math.min(len, 1.5)); // taut when far
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      pos.setXYZ(i,
+        from[0] + (to[0] - from[0]) * t,
+        from[1] + (to[1] - from[1]) * t,
+        from[2] + (to[2] - from[2]) * t - sag * 4 * t * (1 - t));
+    }
+    pos.needsUpdate = true;
+  }
+
+  // ---- virtual hoist (suspension harness) -----------------------------
+  private hoistGroup: THREE.Group | null = null;
+  private hoistLine: THREE.Line | null = null;
+  private hoistRing: THREE.Mesh | null = null;
+  private hoistGantry: THREE.Mesh | null = null;
+
+  /** Draw (or hide, with null) overhead suspension cable and hook. */
+  setHoist(anchor: [number, number, number] | null) {
+    if (!anchor) {
+      if (this.hoistGroup) this.hoistGroup.visible = false;
+      return;
+    }
+    if (!this.hoistGroup) {
+      this.hoistGroup = new THREE.Group();
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3));
+      this.hoistLine = new THREE.Line(geo,
+        new THREE.LineBasicMaterial({ color: 0xffee55, transparent: true, opacity: 0.85 }));
+      this.hoistLine.frustumCulled = false;
+      this.hoistGroup.add(this.hoistLine);
+
+      const ringGeo = new THREE.TorusGeometry(0.04, 0.008, 8, 16);
+      ringGeo.rotateX(Math.PI / 2);
+      this.hoistRing = new THREE.Mesh(ringGeo,
+        new THREE.MeshStandardMaterial({ color: 0xffaa00, roughness: 0.3, metalness: 0.8 }));
+      this.hoistGroup.add(this.hoistRing);
+
+      const gantryGeo = new THREE.BoxGeometry(0.14, 0.14, 0.03);
+      this.hoistGantry = new THREE.Mesh(gantryGeo,
+        new THREE.MeshStandardMaterial({ color: 0x3a4a5a, roughness: 0.5, metalness: 0.6 }));
+      this.hoistGroup.add(this.hoistGantry);
+
+      this.scene.add(this.hoistGroup);
+    }
+    this.hoistGroup.visible = true;
+    const topZ = Math.max(2.2, anchor[2] + 1.4);
+    const pos = this.hoistLine!.geometry.getAttribute("position") as THREE.BufferAttribute;
+    pos.setXYZ(0, anchor[0], anchor[1], topZ);
+    pos.setXYZ(1, anchor[0], anchor[1], anchor[2]);
+    pos.needsUpdate = true;
+
+    this.hoistRing!.position.set(anchor[0], anchor[1], anchor[2]);
+    this.hoistGantry!.position.set(anchor[0], anchor[1], topZ);
   }
 
   /** Raycast a pointer event to the robot part under the cursor (or null). */

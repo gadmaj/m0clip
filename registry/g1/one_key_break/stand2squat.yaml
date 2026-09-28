@@ -1,0 +1,42 @@
+# ai_sport FsmOneKeyBreak (FSM 706, L2+A), stand -> squat branch ("stand2squat", enter_posture 1 = entered
+# standing from a locomotion FSM). Measured on the EDU bench (captures_154/probe2/706_nolowcmd.bin is exactly this
+# branch) + decompiled humanoid (fsm_one_key_break.cpp sub_489B10 / sub_488F20), fsm_cfg_test.yaml:
+#   decoder squat2stand_test2_23000, p_obs 10 x 93 = gyro*0.2, projected gravity, q-default_test, dq*0.05, last act
+#   cmd 64 = row of vq_squat12_50hz_modify_without_gravity.csv (unit rows), rows 0,1,..,170 (one per 50 Hz tick),
+#   then row 170 held; actions clipped to +-20; target = default + act; joint_kp_test / kd_test, no kp ramp.
+# Replayed in MuJoCo against the capture (rows 20..170 + hold): joint angles within ~0.05 rad over the squat.
+# Firmware: after row 170 it scales kp by (1 - c/N) and drops to damping; the capture shows the posture held,
+# so the pack just holds the squat.
+name: one_key_break/stand2squat
+robot: g1
+family: g1_mimic_vq
+control: {step_dt: 0.02, sim_dt: 0.0005, duration: 10.0}
+policy: {path: assets/policies/g1/one_key_break/squat2stand_test2_23000_decoder.mnn, arch: vq, num_obs: 930, num_act: 29}
+g1:
+  models: [edu]   # G1 variants it runs on (Air = machinetype 4, EDU = 5)
+  obs_scheme: vq
+  fsm_id: 706
+  control_joints: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+  num_obs: 93
+  num_act: 29
+  memory_size: 10
+  maneuver: true
+  default_dof_pos: [-0.3, 0.0, 0.0, 0.6, -0.3, 0.0, -0.3, 0.0, 0.0, 0.6, -0.3, 0.0, 0.0, 0.0, 0.0,
+    0.3, 0.3, 0.0, 0.97, 0.0, 0.0, 0.0, 0.3, -0.3, 0.0, 0.97, 0.0, 0.0, 0.0]
+  action_scale: 1.0
+  kp: [40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 28.5, 28.5,
+    14.3, 14.3, 14.3, 14.3, 14.3, 16.8, 16.8, 14.3, 14.3, 14.3, 14.3, 14.3, 16.8, 16.8]
+  kd: [2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 1.8, 1.8,
+    0.9, 0.9, 0.9, 0.9, 0.9, 1.1, 1.1, 0.9, 0.9, 0.9, 0.9, 0.9, 1.1, 1.1]
+  tau: [88, 88, 88, 139, 50, 30, 88, 88, 88, 139, 50, 30, 88, 60, 60, 20, 20, 20, 20, 20, 20, 20,
+    20, 20, 20, 20, 20, 20, 20]
+  aux_files:
+    latent: assets/policies/g1/one_key_break/latents/vq_squat12_50hz_modify_without_gravity.csv
+  vq:
+    mode: getup
+    stand_start: true
+    latent: latent
+    frames: [0, 170, 1]
+    jumps: []
+    kp_ramp: 0
+    act_clip: 20

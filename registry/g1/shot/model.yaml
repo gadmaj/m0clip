@@ -1,0 +1,65 @@
+# ai_sport FsmShot (FSM 210, a kick; entered from standing 200 hybrid_run, runs one gait period = 76 ticks at
+# 100 Hz, then the firmware hands back to 200). Decoded from the bench MNN I/O capture (1.5.4, EDU), replayed
+# bit-exact (net out max|d| 1.6e-5):
+#   input.1[420] = 10 x 42 frame; hybrid_run's 40 with cmd 0, clock legs [pi, 0] at entry (period 0.75 s),
+#   frame[37:40] = [1, 0.5, -0.1], frame[40:42] = [cos thR, sin thR]; filters and history restart on entry
+#   upper body during the kick (lowcmd): waist roll + left wrist yaw key frames, left shoulder roll = 0.25 + 2*waist
+#   roll, left elbow = 0.97 + wrist yaw / 2 (interpolated between the captured ticks)
+# In the web sim the driver runs hybrid_run (aux walk) and fires the kick kick_delay s after Reset, again every
+# kick_repeat s while standing.
+name: shot/model.24_10_10_20_13_58_39200
+robot: g1
+family: g1_locomotion
+control: {step_dt: 0.01, sim_dt: 0.0005, duration: 12.0}
+policy: {path: assets/policies/g1/shot/model.24_10_10_20_13_58_39200.mnn, arch: legacy, num_obs: 420, num_act: 12}
+g1:
+  models: [air, edu]   # G1 variants it runs on (Air = machinetype 4, EDU = 5)
+  fsm_id: 210
+  obs_scheme: legacy
+  control_joints: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  num_obs: 42
+  num_act: 12
+  memory_size: 10
+  default_dof_pos: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0.3, 0.25, 0, 0.97, 0.15, 0, 0, 0.3, -0.25, 0, 0.97, -0.15, 0, 0]
+  action_scale: [0.6, 0.4, 0.4, 1.4, 0.4, 0.2, 0.6, 0.4, 0.4, 1.4, 0.4, 0.2]
+  action_clip: 10.0
+  obs_clip: 100.0
+  dt: 0.01
+  vel_range: [-1.0, 1.0, -0.5, 0.5, -1.0, 1.0]
+  kp: [150, 150, 150, 250, 60, 40, 150, 150, 150, 250, 60, 40, 100, 1200, 1200,
+    90, 60, 20, 60, 4, 4, 4, 90, 60, 20, 60, 4, 4, 4]
+  kd: [6, 6, 6, 10, 0.3, 0.1, 6, 6, 6, 10, 0.3, 0.1, 10, 5, 5,
+    2, 1, 0.4, 1, 0.2, 0.2, 0.2, 2, 1, 0.4, 1, 0.2, 0.2, 0.2]
+  tau: [88, 88, 88, 139, 50, 50, 88, 88, 88, 139, 50, 50, 88, 60, 60,
+    20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20]
+  aux_models: {walk: assets/policies/g1/hybrid_run/model.24_08_15_17_59_26_28800.mnn}
+  legacy:
+    frame_dim: 42
+    num_latent: 0
+    omega_alpha: 0.99
+    cmd_alpha: 0.03
+    vx_max: 0.0
+    delta_phi: [1, 0]
+    velocity_points: [0.8, 2.0]
+    duty_factor_points: [0.5, 0.3]
+    period_points: [0.75, 0.5]
+    duty_mean: 0.4
+    duty_scale: 0.2
+    obs_tail: [1.0, -0.1]
+    stand_phase: 0.0
+    swing: none
+    rules: false
+    kick: true
+    kick_delay: 2.0
+    kick_repeat: 6.0
+    kick_upper: [[0, 0, 0], [3, -0.014, -0.041], [4, -0.019, -0.048], [5, -0.028, -0.062], [6, -0.032, -0.071],
+      [7, -0.037, -0.084], [8, -0.041, -0.093], [9, -0.043, -0.103], [10, -0.045, -0.117], [11, -0.045, -0.127],
+      [35, -0.035, -0.106], [36, -0.035, -0.101], [37, -0.035, -0.095], [38, -0.035, -0.09], [39, -0.037, -0.085],
+      [40, -0.047, -0.082], [41, -0.06, -0.083], [42, -0.081, -0.087], [67, -0.125, -0.047], [68, -0.118, -0.049],
+      [69, -0.11, -0.052], [70, -0.1, -0.054], [71, -0.096, -0.054], [72, -0.08, -0.057], [73, -0.071, -0.057],
+      [74, -0.059, -0.057], [75, -0.059, -0.057]]
+    walk:
+      omega_alpha: 0.6
+      cmd_alpha: 0.03
+      vx_max: 1.0

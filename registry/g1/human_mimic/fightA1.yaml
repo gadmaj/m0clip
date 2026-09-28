@@ -1,0 +1,40 @@
+# ai_sport FsmHumanMimic2 (FSM 503, R1+B then a combo). fightA1 is listed only in the generic
+# fsm_human_mimic2_config.yaml (SELECT+R1 -> fightA1; offline_trajs [hz 50, rot_detect 1, cool_time 0]);
+# the shipped 29dof/23dof configs leave it out. Same interface as the other EDU dances (see g1_vq.ts):
+#   p_obs 10 x 93 (oldest first) = gyro*0.2, projected gravity, q-default, dq*0.05, last raw action (29 each)
+#   cmd 64 = row k of the clip latent CSV / ||row||, k = 0,1,2.. one per 50 Hz tick;
+#   stance_decoder + vq_stance_new while idle, one shared history; target = default + act, config kp/kd.
+# The web has no remote: the clip plays automatically after pre_s of stance, then stance holds.
+#   fightA1_s1_decoder: SELECT+R1, vq_fightAndSports1_subject1_short (419 rows, 8.4 s; travels ~3 m forward)
+name: human_mimic/fightA1
+robot: g1
+family: g1_mimic_vq
+control: {step_dt: 0.02, sim_dt: 0.0005, duration: 16.0}
+policy: {path: assets/policies/g1/human_mimic/fightA1_25000_decoder.mnn, arch: vq, num_obs: 930, num_act: 29}
+g1:
+  models: [edu]   # G1 variants it runs on (Air = machinetype 4, EDU = 5)
+  obs_scheme: vq
+  fsm_id: 503
+  control_joints: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+  num_obs: 93
+  num_act: 29
+  memory_size: 10
+  default_dof_pos: [-0.3, 0.0, 0.0, 0.6, -0.3, 0.0, -0.3, 0.0, 0.0, 0.6, -0.3, 0.0, 0.0, 0.0, 0.0,
+    0.3, 0.3, 0.0, 0.97, 0.0, 0.0, 0.0, 0.3, -0.3, 0.0, 0.97, 0.0, 0.0, 0.0]
+  action_scale: 1.0
+  kp: [40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 28.5, 28.5,
+    14.3, 14.3, 14.3, 14.3, 14.3, 16.8, 16.8, 14.3, 14.3, 14.3, 14.3, 14.3, 16.8, 16.8]
+  kd: [2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 1.8, 1.8,
+    0.9, 0.9, 0.9, 0.9, 0.9, 1.1, 1.1, 0.9, 0.9, 0.9, 0.9, 0.9, 1.1, 1.1]
+  tau: [88, 88, 88, 139, 50, 30, 88, 88, 88, 139, 50, 30, 88, 60, 60, 20, 20, 20, 20, 20, 20, 20,
+    20, 20, 20, 20, 20, 20, 20]
+  aux_models: {stance: assets/policies/g1/human_mimic/stance_decoder.mnn}
+  aux_files:
+    stance: assets/policies/g1/human_mimic/post_train/vq_stance_new.csv
+    clip0: assets/policies/g1/human_mimic/post_train/vq_fightAndSports1_subject1_short.csv
+  vq:
+    mode: dance
+    stance_latent: stance
+    clips: [clip0]
+    pre_s: 2.0
+    gap_s: 1.0

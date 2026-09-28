@@ -6,7 +6,8 @@
  *     pack.json                     manifest (below)
  *     config.yaml                   the policy config (obs scheme, gains, family)
  *     checkpoints/<id>.onnx …       one or more weight checkpoints (same obs)
- *     traj.csv                      optional reference clip (motion-tracking)
+ *     aux/<role>.onnx|csv|…         optional extra networks / data files (manifest aux / auxFiles)
+ *     motion_clip.csv               optional reference clip (G1 mimic)
  *
  * Each checkpoint becomes one selectable policy; all checkpoints in a pack
  * share `config.yaml` (only the weights differ). `group` is the obs-scheme
@@ -20,12 +21,13 @@ import type { EvalConfig, PolicyEntry } from "../core/types";
 export interface PackManifest {
   schemaVersion: number;
   group: string;                 // obs-scheme label to group by in the UI
-  robot: string;                 // r1 | r1_air | …
-  family: string;                // motion_tracking | locomotion | mimic | …
-  baseName: string;              // e.g. "dances/gongfu"
+  robot: string;                 // g1 | r1 | r1_air | go2
+  family: string;                // g1_* | r1_fw | go2_fw
+  baseName: string;              // e.g. "cpy_walk_run_29dofs/actor"
   config: string;                // path in zip to the config yaml
-  traj?: string;                 // path in zip to the reference csv (optional)
-  walker?: string;               // path in zip to an aux low-level walker net
+  clip?: string;                 // path in zip to reference motion clip (G1 mimic)
+  aux?: Record<string, string>;  // extra networks by role (G1 stance / run, R1 / Go2 aux nets) -> path in zip
+  auxFiles?: Record<string, string>;  // extra data files (csv / tables) by role -> path in zip
   checkpoints: { id: string; file: string }[];
 }
 
@@ -33,7 +35,7 @@ export interface StoredPack {
   id: string;                    // unique pack id (baseName)
   manifest: PackManifest;
   config: EvalConfig;            // parsed config.yaml
-  files: Record<string, Uint8Array>;   // in-zip path -> bytes (onnx, traj)
+  files: Record<string, Uint8Array>;   // in-zip path -> bytes (onnx, csv, tables)
 }
 
 /** Metadata sent to the UI (no bytes). */
@@ -82,13 +84,14 @@ export function parsePack(zip: Uint8Array): StoredPack {
     if (!files[c.file]) throw new Error(`checkpoint "${c.file}" missing from zip`);
     kept[c.file] = files[c.file];
   }
-  if (manifest.traj) {
-    if (!files[manifest.traj]) throw new Error(`traj "${manifest.traj}" missing from zip`);
-    kept[manifest.traj] = files[manifest.traj];
+  // networks and data files may share a role name, so keep both maps' files independently
+  for (const [role, file] of [...Object.entries(manifest.aux ?? {}), ...Object.entries(manifest.auxFiles ?? {})]) {
+    if (!files[file]) throw new Error(`aux "${role}" (${file}) missing from zip`);
+    kept[file] = files[file];
   }
-  if (manifest.walker) {
-    if (!files[manifest.walker]) throw new Error(`walker "${manifest.walker}" missing from zip`);
-    kept[manifest.walker] = files[manifest.walker];
+  if (manifest.clip) {
+    if (!files[manifest.clip]) throw new Error(`clip "${manifest.clip}" missing from zip`);
+    kept[manifest.clip] = files[manifest.clip];
   }
   return { id: manifest.baseName, manifest, config, files: kept };
 }
@@ -128,12 +131,16 @@ export async function deletePack(id: string): Promise<void> {
   await tx("readwrite", (s) => s.delete(id));
 }
 
+export async function deleteAllPacks(): Promise<void> {
+  await tx("readwrite", (s) => s.clear());
+}
+
 // ---- resolution to catalog entries + configs -------------------------
 
 /** One policy entry per checkpoint (name = baseName or baseName@id). */
 export function packEntries(pack: StoredPack): PolicyEntry[] {
   const multi = pack.manifest.checkpoints.length > 1;
-  const dof = pack.config.policy?.num_act ?? pack.config.gains?.default_joint_pos?.length ?? 0;
+  const dof = pack.config.policy?.num_act ?? 0;
   return pack.manifest.checkpoints.map((c) => ({
     name: multi ? `${pack.manifest.baseName}@${c.id}` : pack.manifest.baseName,
     family: pack.manifest.family,
@@ -142,6 +149,9 @@ export function packEntries(pack: StoredPack): PolicyEntry[] {
     group: pack.manifest.group,
     packId: pack.id,
     checkpointFile: c.file,
+    fsmId: pack.config.g1?.fsm_id ?? (pack.config.r1?.fsm_id as number | undefined)
+      ?? (pack.config.go2?.fsm_id as number | undefined),
+    models: pack.config.g1?.models ?? pack.config.r1?.models,
   }));
 }
 
@@ -165,20 +175,45 @@ export function revokePack(id: string) {
 }
 
 /** Resolve an imported entry to a ready-to-run EvalConfig: clone the pack's
- * config, point policy/traj at blob URLs for this checkpoint. */
+ * config, point the policy / aux nets / data files at blob URLs for this checkpoint. */
 export function resolvePackConfig(pack: StoredPack, entry: PolicyEntry): EvalConfig {
   const cfg: EvalConfig = structuredClone(pack.config);
   cfg.name = entry.name;
   cfg.robot = pack.manifest.robot;
   cfg.policy = { ...cfg.policy, path: blobUrl(pack.id, entry.checkpointFile,
                                               pack.files[entry.checkpointFile]) };
-  if (pack.manifest.traj) {
-    cfg.traj = { ...(cfg.traj ?? {}), path: blobUrl(pack.id, pack.manifest.traj,
-                                                    pack.files[pack.manifest.traj]) };
+  if (pack.manifest.aux && cfg.g1) {
+    const aux: Record<string, string> = { ...(cfg.g1.aux_models ?? {}) };
+    for (const [role, file] of Object.entries(pack.manifest.aux))
+      aux[role] = blobUrl(pack.id, file, pack.files[file]);
+    cfg.g1.aux_models = aux;
   }
-  if (pack.manifest.walker && cfg.go2?.walker) {
-    cfg.go2.walker.path = blobUrl(pack.id, pack.manifest.walker,
-                                  pack.files[pack.manifest.walker]);
+  if (pack.manifest.auxFiles && cfg.g1) {
+    const files: Record<string, string> = { ...(cfg.g1.aux_files ?? {}) };
+    for (const [role, file] of Object.entries(pack.manifest.auxFiles))
+      files[role] = blobUrl(pack.id, file, pack.files[file]);
+    cfg.g1.aux_files = files;
+  }
+  // R1 firmware packs keep their extra nets / motion CSVs under `r1:` (same manifest aux / auxFiles)
+  if (pack.manifest.aux && cfg.r1) {
+    const aux: Record<string, string> = { ...((cfg.r1.aux_models as Record<string, string>) ?? {}) };
+    for (const [role, file] of Object.entries(pack.manifest.aux)) aux[role] = blobUrl(pack.id, file, pack.files[file]);
+    cfg.r1.aux_models = aux;
+  }
+  if (pack.manifest.auxFiles && cfg.r1) {
+    const files: Record<string, string> = { ...((cfg.r1.aux_files as Record<string, string>) ?? {}) };
+    for (const [role, file] of Object.entries(pack.manifest.auxFiles)) files[role] = blobUrl(pack.id, file, pack.files[file]);
+    cfg.r1.aux_files = files;
+  }
+  // Go2 firmware packs: extra nets under `go2.aux_models`
+  if (pack.manifest.aux && cfg.go2) {
+    const aux: Record<string, string> = { ...(cfg.go2.aux_models ?? {}) };
+    for (const [role, file] of Object.entries(pack.manifest.aux)) aux[role] = blobUrl(pack.id, file, pack.files[file]);
+    cfg.go2.aux_models = aux;
+  }
+  if (pack.manifest.clip && cfg.g1) {
+    cfg.g1.motion_clip = blobUrl(pack.id, pack.manifest.clip,
+                                 pack.files[pack.manifest.clip]);
   }
   return cfg;
 }

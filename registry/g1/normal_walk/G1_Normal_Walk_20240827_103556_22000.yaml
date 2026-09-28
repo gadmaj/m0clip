@@ -1,0 +1,35 @@
+name: normal_walk/G1_Normal_Walk_20240827_103556_22000
+robot: g1
+family: g1_locomotion
+control: {step_dt: 0.01, sim_dt: 0.0005, duration: 12.0}
+policy: {path: assets/policies/g1/normal_walk/G1_Normal_Walk_20240827_103556_22000.mnn,
+  arch: concat, num_obs: 49, num_act: 13}
+g1:
+  fsm_id: 704   # ai_sport FSM id on the robot
+  obs_scheme: concat
+  control_joints: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+  num_obs: 49
+  num_act: 13
+  memory_size: 1
+  dof_pos_rel: true
+  default_dof_pos: [0.0, 0.0, 0.0, 0.35, -0.175, 0, 0.0, 0.0, 0.0, 0.35, -0.175, 0,
+    0.0, 0.0, 0.0, 0.381418, 0.4, 0, 0.782123, 0, 0.0, 0.0, 0.381418, -0.4, 0, 0.782123,
+    0, 0.0, 0.0]
+  action_scale: [0.7, 0.5, 0.5, 0.35, 0.345, 0.25, 0.7, 0.5, 0.5, 0.35, 0.345, 0.25,
+    1.5, 0.0, 0.0, 1.5, 1.2, 1.5, 1.0, 1.5, 0.0, 0.0, 1.5, 1.2, 1.5, 1.0, 1.5, 0.0,
+    0.0]
+  action_clip: 2.0
+  obs_clip: 100.0
+  ang_vel_scale: 0.25
+  dof_pos_scale: 1.0
+  dof_vel_scale: 0.05
+  dt: 0.01
+  cmd_in_obs: true
+  has_phase: true
+  kp: [100, 100, 100, 200, 40, 20, 100, 100, 100, 200, 40, 20, 120, 1000.0, 1000.0,
+    60.0, 60, 60, 60, 40, 40, 40, 60.0, 60, 60, 60, 40, 40, 40]
+  kd: [2.5, 2.5, 2.5, 5, 0.3, 0.2, 2.5, 2.5, 2.5, 5, 0.3, 0.2, 2.0, 6, 6, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+  tau: [88, 88, 88, 139, 50, 50, 88, 88, 88, 139, 50, 50, 88, 50, 50, 25, 25, 25,
+    25, 25, 5, 5, 25, 25, 25, 25, 25, 5, 5]
+  maneuver: false

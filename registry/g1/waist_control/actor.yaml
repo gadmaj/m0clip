@@ -1,0 +1,50 @@
+# ai_sport FsmWaistControl (FSM 203, 2024 legacy loco, EDU only). Decoded from the bench MNN I/O capture
+# (1.5.4, EDU), replayed bit-exact (net out max|d| 2e-5):
+#   encoder input.1[1500] = 50 x 30 proprio (frame[0:6] ++ frame[9:33]), oldest first -> [44]; first 24 = latent
+#   actor input.1[444] = 10 x 42 frame ++ latent[24], 100 Hz; frame = hybrid_run's 40 + [q waist pitch, -q waist roll]
+#   gyro lpf a=0.99, cmd lpf 0.05/tick; gait period 0.7 s (0.5 s past 1.2 m/s), duty 0.5;
+#   frame[37:40] = [0, (duty-0.5)/0.1 = 0, -0.2]; waist held at 0 (the firmware's stick waist moves aren't modelled)
+name: waist_control/actor.24_08_29_22_07_27_11600
+robot: g1
+family: g1_locomotion
+control: {step_dt: 0.01, sim_dt: 0.0005, duration: 20.0}
+policy: {path: assets/policies/g1/waist_control/actor.24_08_29_22_07_27_11600.mnn, arch: legacy, num_obs: 444, num_act: 12}
+g1:
+  models: [edu]   # G1 variants it runs on (Air = machinetype 4, EDU = 5)
+  fsm_id: 203
+  obs_scheme: legacy
+  control_joints: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  num_obs: 42
+  num_act: 12
+  memory_size: 10
+  default_dof_pos: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0.3, 0.25, 0, 0.97, 0.15, 0, 0, 0.3, -0.25, 0, 0.97, -0.15, 0, 0]
+  action_scale: [0.6, 0.4, 0.4, 1.4, 0.4, 0.2, 0.6, 0.4, 0.4, 1.4, 0.4, 0.2]
+  action_clip: 10.0
+  obs_clip: 100.0
+  dt: 0.01
+  vel_range: [-0.8, 0.8, -0.5, 0.5, -1.0, 1.0]
+  kp: [100, 100, 100, 200, 40, 20, 100, 100, 100, 200, 40, 20, 100, 1200, 1200,
+    90, 60, 20, 60, 4, 4, 4, 90, 60, 20, 60, 4, 4, 4]
+  kd: [4, 4, 4, 8, 0.3, 0.1, 4, 4, 4, 8, 0.3, 0.1, 6, 6, 6,
+    2, 1, 0.4, 1, 0.2, 0.2, 0.2, 2, 1, 0.4, 1, 0.2, 0.2, 0.2]
+  tau: [88, 88, 88, 139, 50, 50, 88, 88, 88, 139, 50, 50, 88, 60, 60,
+    20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20]
+  aux_models: {encoder: assets/policies/g1/waist_control/encoder.24_08_29_22_07_27_11600.mnn}
+  legacy:
+    frame_dim: 42
+    num_latent: 24
+    omega_alpha: 0.99
+    cmd_alpha: 0.05
+    vx_max: 0.8
+    delta_phi: [0, 1]
+    velocity_points: [0.8, 1.2]
+    duty_factor_points: [0.5, 0.5]
+    period_points: [0.7, 0.5]
+    duty_mean: 0.5
+    duty_scale: 0.1
+    obs_tail: [0.0, -0.2]
+    stand_phase: 0.0
+    swing: leg
+    rules: true
+    waist_obs: true

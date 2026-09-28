@@ -18,13 +18,6 @@ import type { Engine, HingeSet } from "./engine";
 export type FsmState = "zero_torque" | "damping" | "lock" | "stance" | "policy";
 
 export const STATES: FsmState[] = ["zero_torque", "damping", "lock", "stance", "policy"];
-export const LABELS: Record<FsmState, string> = {
-  zero_torque: "ZeroTorque (motors off)",
-  damping: "Damping (soft)",
-  lock: "Lock (freeze pose)",
-  stance: "Stance (hold home)",
-  policy: "Policy",
-};
 
 export class SimFSM {
   state: FsmState = "damping";
@@ -78,10 +71,12 @@ export class SimFSM {
     }
     if ((this.state === "stance" || this.state === "policy") && driver && target) {
       for (let i = 0; i < driver.vadr.length; i++) {
+        if (driver.vadr[i] < 0) continue;          // spec slot the model lacks (G1 Air)
         const tq = driver.kp[i] * (target[i] - eng.qpos[driver.qadr[i]])
                  - driver.kd[i] * eng.qvel[driver.vadr[i]];
         qfrc[driver.vadr[i]] = clip(tq, -driver.lim[i], driver.lim[i]);
       }
+      driver.pairPD(qfrc, target);
       driver.holdExtras(qfrc);
     }
   }
