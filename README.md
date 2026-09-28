@@ -17,21 +17,21 @@ Recorded in the browser app, flat terrain, hoist off, real time. The number is t
 
 <table>
 <tr><td align="center" width="33%"><img src="docs/media/r1_walk.gif" alt="Walk · 811 amp_locomotion"><br><sub>Walk · 811 amp_locomotion</sub></td><td align="center" width="33%"><img src="docs/media/r1_flip.gif" alt="Somersault · 804 actor (Take 125)"><br><sub>Somersault · 804 actor (Take 125)</sub></td><td align="center" width="33%"><img src="docs/media/r1_kick.gif" alt="Side kicks · 805 fight mode"><br><sub>Side kicks · 805 fight mode</sub></td></tr>
-<tr><td align="center" width="33%"><img src="docs/media/r1_dance.gif" alt="Dance · 608 jiequandao"><br><sub>Dance · 608 jiequandao</sub></td><td align="center" width="33%"><img src="docs/media/r1_getup.gif" alt="Lie down and rise · qishen1 floor routine"><br><sub>Lie down and rise · qishen1 floor routine</sub></td></tr>
+<tr><td align="center" width="33%"><img src="docs/media/r1_dance.gif" alt="Dance · 608 jiequandao"><br><sub>Dance · 608 jiequandao</sub></td><td align="center" width="33%"><img src="docs/media/r1_getup.gif" alt="Lie down and rise · qishen1 floor routine"><br><sub>Lie down and rise · qishen1 floor routine</sub></td><td align="center" width="33%"><img src="docs/media/r1_dance2.gif" alt="Dance · 603 dance1 segment 3"><br><sub>Dance · 603 dance1 segment 3</sub></td></tr>
 </table>
 
 ### Go2
 
 <table>
 <tr><td align="center" width="33%"><img src="docs/media/go2_walk.gif" alt="Walk · 1003 FreeWalk"><br><sub>Walk · 1003 FreeWalk</sub></td><td align="center" width="33%"><img src="docs/media/go2_backflip.gif" alt="Back flip · 2013"><br><sub>Back flip · 2013</sub></td><td align="center" width="33%"><img src="docs/media/go2_leftflip.gif" alt="Left flip · 2014"><br><sub>Left flip · 2014</sub></td></tr>
-<tr><td align="center" width="33%"><img src="docs/media/go2_tripleflip.gif" alt="Triple flip · ContinuousFlipX3"><br><sub>Triple flip · ContinuousFlipX3</sub></td><td align="center" width="33%"><img src="docs/media/go2_handstand.gif" alt="Hand stand · 2011"><br><sub>Hand stand · 2011</sub></td></tr>
+<tr><td align="center" width="33%"><img src="docs/media/go2_tripleflip.gif" alt="Triple flip · ContinuousFlipX3"><br><sub>Triple flip · ContinuousFlipX3</sub></td><td align="center" width="33%"><img src="docs/media/go2_handstand.gif" alt="Hand stand · 2011"><br><sub>Hand stand · 2011</sub></td><td align="center" width="33%"><img src="docs/media/go2_backstand.gif" alt="Walk on hind legs · 2017 back stand"><br><sub>Walk on hind legs · 2017 back stand</sub></td></tr>
 </table>
 
 ### G1
 
 <table>
 <tr><td align="center" width="33%"><img src="docs/media/g1_run.gif" alt="Run · 802 CpyWalkRun (high speed)"><br><sub>Run · 802 CpyWalkRun (high speed)</sub></td><td align="center" width="33%"><img src="docs/media/g1_kick.gif" alt="Kicks · 505 punch mode"><br><sub>Kicks · 505 punch mode</sub></td><td align="center" width="33%"><img src="docs/media/g1_leap.gif" alt="Walk-jump leap · 813"><br><sub>Walk-jump leap · 813</sub></td></tr>
-<tr><td align="center" width="33%"><img src="docs/media/g1_dance.gif" alt="Bruce Lee take · 503 human mimic"><br><sub>Bruce Lee take · 503 human mimic</sub></td><td align="center" width="33%"><img src="docs/media/g1_getup.gif" alt="Get up from the floor · 1001"><br><sub>Get up from the floor · 1001</sub></td></tr>
+<tr><td align="center" width="33%"><img src="docs/media/g1_dance.gif" alt="Bruce Lee take · 503 human mimic"><br><sub>Bruce Lee take · 503 human mimic</sub></td><td align="center" width="33%"><img src="docs/media/g1_getup.gif" alt="Get up from the floor · 1001"><br><sub>Get up from the floor · 1001</sub></td><td align="center" width="33%"><img src="docs/media/g1_dance2.gif" alt="Dance · 503 human mimic"><br><sub>Dance · 503 human mimic</sub></td></tr>
 </table>
 
 ## Quick start
