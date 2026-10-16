@@ -363,7 +363,7 @@ export class SceneView {
       // Robots with a palette (R1, Go2) paint every mesh part by name with a
       // colour + finish from the product colourway; others (G1) use the
       // model's own rgba.
-      const painted = isMesh && hasPalette(desc.robot);
+      const painted = isMesh && hasPalette(desc.robot) && desc.bodyid[g] > 0;   // terrain keeps its rgba
       let mesh: THREE.Mesh;
       if (painted) {
         const { paint, regions } = resolve(desc.robot, meshName);

@@ -14,7 +14,7 @@ import { download, screenshot, stamp } from "./render/recorder";
 import { SceneView } from "./render/scene";
 import type { FromWorker, InspectMsg, RenderModel, StatusMsg, ToWorker } from "./sim/protocol";
 import type { FsmState } from "./sim/fsm";
-import { TERRAINS, type TerrainName } from "./sim/terrain";
+import { isTerrain, listMaps, type TerrainName } from "./sim/terrain";
 import { Panel, type StatusRow } from "./ui/panel";
 
 /** Robot family: r1 + r1_air (EDU 24-DOF / Air 20-DOF) share one UI slot, g1 + g1_air (EDU 29-DOF / Air 23-DOF) one UI
@@ -263,14 +263,22 @@ class App {
     window.addEventListener("blur", () => { if (this.keysHeld.size) { this.keysHeld.clear(); this.applyKeys(false); } });
     this.wireLeash();
     // restore the previous session's robot / terrain / policy
-    const prefs = loadPrefs();
-    if (prefs.terrain && (TERRAINS as readonly string[]).includes(prefs.terrain))
-      this.panel.setTerrain(prefs.terrain);
     this.pad.scale = [...this.cmdMax] as Command;
-    this.send({ t: "init", robot: prefs.robot,
-                terrain: this.panel.terrain, policy: prefs.policy });
-    this.send({ t: "inspect", on: true });   // left column always streams
+    void this.start();
     this.renderLoop();
+  }
+
+  /** Restore the previous session's robot / terrain / policy (a map terrain only while its bundle
+   * is still listed), then boot the sim. */
+  private async start() {
+    const prefs = loadPrefs();
+    const maps = await listMaps();
+    this.panel.setMaps(maps);
+    if (isTerrain(prefs.terrain) &&
+        (!prefs.terrain.startsWith("map:") || maps.some((m) => `map:${m.id}` === prefs.terrain)))
+      this.panel.setTerrain(prefs.terrain);
+    this.send({ t: "init", robot: prefs.robot, terrain: this.panel.terrain, policy: prefs.policy });
+    this.send({ t: "inspect", on: true });   // left column always streams
   }
 
   private send(m: ToWorker) { this.worker.postMessage(m); }

@@ -7,7 +7,7 @@ import { allPacks, deletePack, deleteAllPacks, importAny, packEntries, resolvePa
          revokePack, type StoredPack } from "../packs";
 import { Engine, MissingBundleError } from "../sim/engine";
 import { SimFSM, type FsmState } from "../sim/fsm";
-import { TERRAINS, terrainTransform, type TerrainName } from "../sim/terrain";
+import { isTerrain, mapId, MAPS_DIR, terrainTransform, type TerrainName } from "../sim/terrain";
 import { getSpec, SPECS } from "../robots";
 
 /** Robot family: r1 + r1_air (+ r1_air_edu) share one UI slot (EDU 24-DOF / Air 20-DOF, two scenes of one
@@ -231,8 +231,7 @@ class SimWorker {
   async init(m: { robot?: string; terrain?: TerrainName; policy?: string }) {
     post({ t: "busy", msg: "loading imported policy packs…" });
     this.packs = await allPacks().catch(() => []);
-    if (m.terrain && (TERRAINS as readonly string[]).includes(m.terrain))
-      this.terrain = m.terrain;
+    if (isTerrain(m.terrain)) this.terrain = m.terrain;
     const robots = [...new Set(this.allEntries().map((e) => e.robot))]
       .filter((r) => r in SPECS);
     this.robot = m.robot && m.robot in SPECS ? m.robot
@@ -292,7 +291,9 @@ class SimWorker {
   private async buildEngine() {
     const prev = this.eng as Engine | undefined;
     const spec0 = getSpec(this.robot);
-    this.eng = await Engine.create(spec0.model_dir, terrainTransform(this.terrain), spec0.scene);
+    const map = mapId(this.terrain), mount = "/work/map";
+    this.eng = await Engine.create(spec0.model_dir, terrainTransform(this.terrain, {}, mount), spec0.scene,
+                                   map ? { dir: `${MAPS_DIR}/${map}`, mount } : undefined);
     if (prev) {
       // the old driver is bound to the old engine's model/data; every caller
       // reloads one (or runs driverless) — drop it before freeing the wasm side
@@ -504,13 +505,21 @@ class SimWorker {
         return this.reenter();
       case "terrain":
         this.busy = true;
+        const prevTerrain = this.terrain;
         this.terrain = m.terrain;
         post({ t: "busy", msg: `rebuilding scene (${m.terrain})…` });
-        await this.buildEngine();
+        try {
+          await this.buildEngine();
+        } catch (e) {
+          this.terrain = prevTerrain;
+          throw e;
+        } finally {
+          this.busy = false;          // a map that fails to load leaves the previous scene running
+        }
         if (this.playback) this.rebindPlayback();
         else if (this.policies.length) await this.loadDriver(this.polIdx);
-        this.busy = false;
-        return this.playback ? this.sendStatus() : this.reenter();
+        else post({ t: "ready" });    // nothing else clears the overlay without a policy
+        return this.playback ? (post({ t: "ready" }), this.sendStatus()) : this.reenter();
       case "command":
         this.command = m.cmd;
         return;
