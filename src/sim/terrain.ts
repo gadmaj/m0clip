@@ -2,8 +2,28 @@
  * cheap presets (flat / rough / slope); stairs & friends come later. All
  * randomness is seeded so a preset builds the same field every reload. */
 
-export type TerrainName = "flat" | "rough" | "slope" | "stairs" | "park";
-export const TERRAINS: TerrainName[] = ["flat", "rough", "slope", "stairs", "park"];
+export type BuiltinTerrain = "flat" | "rough" | "slope" | "stairs" | "park";
+/** A built-in preset, or `map:<id>` — a converted game map under public/assets/maps/<id>/
+ * (scripts/import_source_bsp.py), listed in public/assets/maps/index.json. */
+export type TerrainName = BuiltinTerrain | `map:${string}`;
+export const TERRAINS: BuiltinTerrain[] = ["flat", "rough", "slope", "stairs", "park"];
+export const MAPS_DIR = "/assets/maps";
+
+export interface MapEntry { id: string; name: string; game: string }
+
+export const mapId = (t: string): string | null => (t.startsWith("map:") ? t.slice(4) : null);
+/** A known terrain name: a built-in preset, or any well-formed map id (checked when its bundle loads). */
+export const isTerrain = (t: unknown): t is TerrainName =>
+  typeof t === "string" && ((TERRAINS as readonly string[]).includes(t) || /^map:[A-Za-z0-9_.-]+$/.test(t));
+
+/** The converted maps on disk (empty when none were generated). */
+export async function listMaps(): Promise<MapEntry[]> {
+  try {
+    const r = await fetch(`${MAPS_DIR}/index.json`);
+    if (!r.ok || !(r.headers.get("content-type") ?? "").includes("json")) return [];
+    return ((await r.json()).maps ?? []) as MapEntry[];
+  } catch { return []; }
+}
 
 function mulberry32(seed: number) {
   let a = seed >>> 0;
@@ -109,9 +129,16 @@ function parkXml(seed = 11): string {
   return parts.join("\n    ");
 }
 
-/** Returns a transform for Engine.create — injects preset geoms into scene.xml. */
-export function terrainTransform(preset: TerrainName, args: Record<string, number> = {}) {
+/** Returns a transform for Engine.create — injects preset geoms into scene.xml. A map terrain
+ * drops every ground plane (G1 keeps its floor in the robot file, not scene.xml) and includes the
+ * map bundle, which Engine.create mounts at `mount`. */
+export function terrainTransform(preset: TerrainName, args: Record<string, number> = {}, mount = "/work/map") {
   return (name: string, xml: string): string => {
+    if (mapId(preset)) {
+      xml = xml.replace(/<geom\b[^>]*\btype="plane"[^>]*\/>/g, "");
+      if (name.endsWith("scene.xml")) xml = xml.replace("</mujoco>", `  <include file="${mount}/map.xml"/>\n</mujoco>`);
+      return xml;
+    }
     if (!name.endsWith("scene.xml") || preset === "flat") return xml;
     const inject =
       preset === "rough" ? roughXml(args.amplitude, args.tile, args.extent, args.seed)

@@ -5,7 +5,7 @@ import type { RemoteActionGroup } from "../core/types";
 import type { FsmState } from "../sim/fsm";
 import { STATES } from "../sim/fsm";
 import type { PackInfo, PolicyInfo } from "../sim/protocol";
-import { TERRAINS, type TerrainName } from "../sim/terrain";
+import { TERRAINS, type MapEntry, type TerrainName } from "../sim/terrain";
 
 export interface PanelCallbacks {
   onRobot(robot: string): void;
@@ -434,6 +434,21 @@ export class Panel {
   get terrain(): TerrainName { return this.terrainSel.value as TerrainName; }
 
   setTerrain(t: TerrainName) { this.terrainSel.value = t; }
+
+  /** Converted game maps as extra terrains, one group per game (value `map:<id>`). */
+  setMaps(maps: MapEntry[]) {
+    const cur = this.terrainSel.value;
+    this.terrainSel.querySelectorAll("optgroup").forEach((g) => g.remove());
+    const byGame = new Map<string, MapEntry[]>();
+    for (const m of maps) byGame.set(m.game, [...(byGame.get(m.game) ?? []), m]);
+    for (const [game, list] of byGame) {
+      const g = document.createElement("optgroup");
+      g.label = game;
+      for (const m of list) g.appendChild(new Option(m.name, `map:${m.id}`));
+      this.terrainSel.appendChild(g);
+    }
+    this.terrainSel.value = cur;
+  }
 
   setState(s: FsmState) {
     for (const [k, b] of this.stateBtns) {

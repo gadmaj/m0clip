@@ -22,7 +22,8 @@ export default defineConfig({
       ],
     },
   },
-  preview: { headers: crossOriginIsolation },
+  // ".trycloudflare.com": a public Cloudflare quick tunnel to `vite preview` (vite rejects unknown hosts)
+  preview: { headers: crossOriginIsolation, allowedHosts: [".trycloudflare.com"] },
   build: {
     target: "es2022",
     rollupOptions: {

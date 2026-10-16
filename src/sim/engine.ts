@@ -75,7 +75,8 @@ export class Engine {
    * scene file of the same bundle (the G1 Air model shares the G1 bundle's meshes). */
   static async create(modelDir: string,
                       transformXml?: (name: string, xml: string) => string,
-                      scene = "scene.xml"):
+                      scene = "scene.xml",
+                      extra?: { dir: string; mount: string }):
       Promise<Engine> {
     const mj = await mujocoModule();
     const manifest: { files: string[] } =
@@ -116,12 +117,30 @@ export class Engine {
         mj.FS.writeFile(`${root}/${rel}`, new Uint8Array(ab));
       }
     }
+    if (extra) await Engine.mountExtra(mj, extra.dir, extra.mount);
     console.log(`[engine] bundle written (${manifest.files.length} files), compiling`);
     const model = mj.MjModel.mj_loadXML(`${root}/${scene}`);
     console.log(`[engine] model compiled: nq=${model.nq} ngeom=${model.ngeom}`);
     const data = new mj.MjData(model);
     mj.mj_forward(model, data);
     return new Engine(mj, model, data, modelDir);
+  }
+
+  /** Write a second bundle (a terrain map: manifest.json + files) into MEMFS at `mount`; its XML
+   * refers to its own files as MAPDIR/…, rewritten here to the absolute mount path. */
+  private static async mountExtra(mj: MainModule, dir: string, mount: string) {
+    const res = await fetch(`${dir}/manifest.json`);
+    if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json"))
+      throw new Error(`map bundle not found: ${dir} (run scripts/import_source_bsp.py)`);
+    const man: { files: string[] } = await res.json();
+    mkdirTree(mj.FS, mount);
+    await Promise.all(man.files.map(async (rel) => {
+      const r = await fetch(`${dir}/${rel}`);
+      if (!r.ok) throw new Error(`map file missing: ${dir}/${rel} (${r.status})`);
+      if (rel.endsWith(".xml"))
+        mj.FS.writeFile(`${mount}/${rel}`, (await r.text()).replaceAll("MAPDIR/", `${mount}/`));
+      else mj.FS.writeFile(`${mount}/${rel}`, new Uint8Array(await r.arrayBuffer()));
+    }));
   }
 
   /** Free the wasm-side MjData/MjModel. Every terrain/robot switch compiles a

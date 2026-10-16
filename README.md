@@ -80,6 +80,41 @@ Pack format: [policy-packs/README.md](policy-packs/README.md).
 | RT+A, RT+B, RT+dpad ◀▶ | Policy, reset, switch policy |
 | LB / RB / LT / RT + buttons | the active policy's remote combos |
 
+## Game maps as terrain
+
+Source-engine maps from the [noclip.website](https://noclip.website) catalogue can be converted
+into terrains with real collision. Neo Tokyo (all 24 maps) is wired up:
+
+```bash
+python3 scripts/import_source_bsp.py --game neotokyo            # every map (~300 MB of BSPs, cached)
+python3 scripts/import_source_bsp.py --game neotokyo --maps nt_rise_ctg nt_dawn_ctg
+python3 scripts/import_source_bsp.py --bsp some_map.bsp --name "Some map"   # any Source BSP
+```
+
+The maps then appear in the **Terrain** list, grouped by game. Each one becomes
+`public/assets/maps/<id>/` (`map.xml`, a few `vis_*.stl`, `manifest.json`), listed in
+`public/assets/maps/index.json`. These are third-party game assets, so they stay out of git
+(`public/assets/*` is ignored); the BSP downloads are cached in `assets/bsp-cache/`.
+
+- **Collision:** the world model's player-solid brushes (solid, window, grate, player clip),
+  found by walking the BSP tree, so triggers and brush entities never become invisible walls.
+  Axis-aligned brushes become box geoms and the rest convex meshes. Displacement terrain becomes
+  one heightfield per displacement, with convex prisms for the few on non-rectangular bases.
+- **Visuals:** the world's drawn faces and displacements, coloured by each texture's average
+  colour from the BSP (not the textures themselves).
+- **Placement:** 1 Source unit = 1 inch. The map is centred on a team spawn that has a floor
+  under it and headroom above, with that floor at z = 0, facing +x. The default ground plane is
+  removed while a map is loaded.
+
+Checked across all 24 Neo Tokyo maps: each compiles in under 0.3 s natively (about 25 s in a
+software-rendered browser), the robot lands on the floor at spawn, and under 1% of sampled
+visible surfaces lack collision directly beneath them (Isolation is the worst at 9%).
+
+Not converted yet: static props (cars, crates and other placed models have their own model and
+physics formats), the skybox, and textures. Other noclip games use their own formats; Source
+games (Half-Life 2, Portal, TF2, …) can go through `--bsp`, though BSPs with LZMA-compressed
+lumps (newer Source branches) are not supported yet.
+
 ## Recording and export
 
 **Record.** Press **Record** (or `V`) and drive the robot as usual: keyboard, gamepad, panel moves,
