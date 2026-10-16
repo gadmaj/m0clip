@@ -37,8 +37,112 @@
       :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
       #app { display: flex; height: 100%; }
-      #viewport { flex: 1; position: relative; min-width: 0; }
+      #stage { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      #viewport { flex: 1; position: relative; min-width: 0; min-height: 0; }
       #viewport canvas { display: block; }
+
+      /* ---- recording badge + shot frame guide (over the viewport) -------- */
+      #rec-badge { position: absolute; top: 12px; left: 12px; z-index: 5; display: flex; align-items: center; gap: 8px;
+                   padding: 4px 10px 4px 8px; border-radius: var(--r); background: rgba(14, 16, 18, .78);
+                   border: 1px solid rgba(229, 72, 77, .5); font: 600 12px/1.2 var(--mono); color: #f2a7a9;
+                   pointer-events: none; }
+      #rec-badge .dot { background: var(--rec); animation: blink 1s steps(2, start) infinite; }
+      #rec-badge[hidden], #shot-frame[hidden] { display: none; }
+      #shot-frame { position: absolute; z-index: 4; pointer-events: none; outline: 1px solid rgba(224, 162, 60, .7);
+                    background:
+                      linear-gradient(rgba(255,255,255,.08), rgba(255,255,255,.08)) 33.333% 0 / 1px 100% no-repeat,
+                      linear-gradient(rgba(255,255,255,.08), rgba(255,255,255,.08)) 66.667% 0 / 1px 100% no-repeat,
+                      linear-gradient(rgba(255,255,255,.08), rgba(255,255,255,.08)) 0 33.333% / 100% 1px no-repeat,
+                      linear-gradient(rgba(255,255,255,.08), rgba(255,255,255,.08)) 0 66.667% / 100% 1px no-repeat; }
+      #shot-frame span { position: absolute; left: 6px; bottom: 6px; padding: 2px 6px; border-radius: 3px;
+                         background: rgba(14, 16, 18, .7); font: 11px var(--mono); color: var(--text-2); white-space: nowrap; }
+
+      /* ---- take timeline deck (under the viewport) ----------------------- */
+      #deck { flex: 0 0 auto; height: 240px; display: flex; flex-direction: column; min-height: 0;
+              background: var(--panel); border-top: 1px solid var(--line); }
+      #deck[hidden] { display: none; }
+      .dk-drag { height: 5px; margin-top: -3px; flex: 0 0 auto; cursor: ns-resize; z-index: 5; }
+      .dk-drag:hover { background: var(--accent-dim); }
+      .dk-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 4px 12px 6px; flex: 0 0 auto; }
+      .dk-grp { display: flex; align-items: center; gap: 4px; }
+      .dk-sp { flex: 1 1 0; min-width: 0; }
+      .tb { min-width: 28px; height: 26px; padding: 0 6px; border: 1px solid var(--line-hi); border-radius: var(--r);
+            background: var(--raised); color: var(--text-2); font: 11px var(--sans); cursor: pointer; }
+      .tb:hover { color: var(--text); background: var(--raised-hi); }
+      .tb.play { min-width: 34px; color: var(--text); }
+      .tb[aria-pressed=true] { background: var(--accent-dim); color: var(--accent); border-color: transparent; }
+      .dk-clock { min-width: 128px; font: 12px var(--mono); color: var(--text); font-variant-numeric: tabular-nums; }
+      .dk-clock i { font-style: normal; color: var(--text-3); }
+      .dk-frame, .dk-range { font: 11px var(--mono); color: var(--text-3); white-space: nowrap; }
+      .dk-sel { width: auto; min-height: 26px; padding: 2px 22px 2px 8px; font-size: 11px; background-position: right 7px center; }
+      .dk-seg { display: flex; border: 1px solid var(--line-hi); border-radius: var(--r); overflow: hidden; }
+      .dk-seg button { height: 24px; padding: 0 9px; border: 0; border-left: 1px solid var(--line-hi); background: var(--bg);
+                       color: var(--text-2); font: 11px var(--sans); cursor: pointer; }
+      .dk-seg button:first-child { border-left: 0; }
+      .dk-seg button:hover { color: var(--text); background: var(--raised); }
+      .dk-seg button.on { background: var(--raised-hi); color: var(--accent); font-weight: 600; }
+      .dk-bar .btn { min-height: 26px; padding: 2px 10px; font-size: 11.5px; }
+      .dk-tl { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+      .dk-tl canvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+      .dk-tip { position: absolute; display: none; z-index: 6; max-width: 220px; padding: 4px 8px; pointer-events: none;
+                border: 1px solid var(--line-hi); border-radius: var(--r); background: var(--raised);
+                font-size: 11px; color: var(--text); box-shadow: 0 6px 18px rgba(0,0,0,.4); }
+      .dk-tip span { display: block; color: var(--text-3); font: 10px var(--mono); margin-top: 2px; }
+
+      /* take summary in the inspector while reviewing */
+      .take-evs { display: flex; flex-direction: column; margin: 0 -8px; }
+      .take-ev { display: grid; grid-template-columns: 7ch 10px 6ch minmax(0, 1fr); align-items: center; gap: 6px;
+                 padding: 3px 8px; border: 0; border-radius: var(--r); background: none; color: var(--text);
+                 font: 11px var(--mono); text-align: left; cursor: pointer; }
+      .take-ev:hover { background: var(--raised); }
+      .take-ev i { width: 8px; height: 8px; transform: rotate(45deg); }
+      .take-ev .t { color: var(--text-3); text-align: right; }
+      .take-ev .k { color: var(--text-2); font-family: var(--sans); }
+      .take-ev .l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+      /* ---- export panel: takes the right column's place while open ------ */
+      #export { width: 380px; flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0;
+                background: var(--panel); border-left: 1px solid var(--line); }
+      #export[hidden] { display: none; }
+      body.x-open #panel, body.x-open #policy-manager { display: none; }
+      #export .p-head h1 { flex: 0 0 auto; }
+      .x-tabs { display: flex; gap: 2px; flex: 1; justify-content: center; }
+      .x-tabs button { height: 28px; padding: 0 10px; border: 0; border-radius: var(--r); background: none; color: var(--text-2);
+                       font: 12px var(--sans); cursor: pointer; }
+      .x-tabs button:hover { color: var(--text); background: var(--raised); }
+      .x-tabs button.on { color: var(--accent); background: var(--accent-dim); font-weight: 600; }
+      .x-body { flex: 1; overflow-y: auto; }
+      #export.busy .x-body section { opacity: .45; pointer-events: none; }
+      .xf { display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: 8px; align-items: center; margin-top: 8px; }
+      .xf > label { color: var(--text-2); font-size: 12px; }
+      .xf .u, .x-dims .u, .x-slider .u { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+      .x-slider { display: grid; grid-template-columns: minmax(0, 1fr) 64px 14px; gap: 6px; align-items: center; }
+      .x-slider input[type=range] { width: 100%; accent-color: var(--accent); }
+      .x-dims { display: flex; gap: 6px; align-items: center; }
+      .x-dims input:disabled { opacity: .5; }
+      .x-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+      .chip { height: 24px; padding: 0 9px; border: 1px solid var(--line-hi); border-radius: 12px; background: var(--raised);
+              color: var(--text-2); font: 11px var(--sans); cursor: pointer; }
+      .chip:hover { color: var(--text); border-color: #414952; }
+      .chip.on { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
+      .chip.accent { color: var(--accent); }
+      .x-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+      .x-check input { accent-color: var(--accent); }
+      .x-ro { font: 11px var(--mono); color: var(--text-2); }
+      .x-note { margin: 8px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-3); }
+      .x-det { margin-top: 8px; font-size: 11px; color: var(--text-2); }
+      .x-det summary { cursor: pointer; }
+      .x-det pre { margin: 6px 0 0; max-height: 160px; overflow: auto; font: 10.5px/1.5 var(--mono); color: var(--text-2); }
+      .x-act { margin-top: 12px; }
+      .x-foot { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px;
+                background: var(--panel); border-top: 1px solid var(--line); }
+      .x-summary { flex: 1; min-width: 0; font: 11px var(--mono); color: var(--text-2); }
+      .x-progress { flex: 1 1 100%; height: 6px; border-radius: 3px; background: var(--raised); overflow: hidden; }
+      .x-progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .1s; }
+      .x-foot > span { flex: 1; font: 11px var(--mono); color: var(--text-2); }
+      .x-status { padding: 8px 16px 16px; font-size: 11px; color: var(--text-2); min-height: 1em; }
+      .x-status.err { color: var(--danger); }
+      .x-range { padding: 12px 16px 0; font: 11px var(--mono); color: var(--text-3); }
 
       /* ---- shared controls ---------------------------------------------- */
       kbd { display: inline-block; min-width: 16px; padding: 0 4px; border: 1px solid var(--line-hi);
@@ -232,7 +336,10 @@
       @media (max-width: 760px) {
         html, body { overflow: auto; height: auto; }
         #app { flex-direction: column; height: auto; }
-        #viewport { order: 0; flex: none; height: 52vh; min-height: 280px; }
+        #stage { order: 0; flex: none; }
+        #viewport { flex: none; height: 52vh; min-height: 280px; }
+        #deck { height: 260px; }
+        #export { position: fixed; inset: 0; width: auto; z-index: 50; }
         #panel { order: 1; width: 100%; border-left: 0; overflow: visible; }
         #inspector { order: 2; width: 100%; border-right: 0; border-top: 1px solid var(--line); overflow: visible; }
         #policy-manager { position: fixed; inset: 0; width: auto; z-index: 50; border: 0; }
@@ -247,11 +354,17 @@
         <h2>Inspector</h2>
         <div class="ins-wrap"><div class="body" id="inspector-body"><span class="ins-empty">Waiting for the simulator…</span></div></div>
       </aside>
-      <div id="viewport">
-        <div id="overlay"><div id="overlay-msg" data-kind="busy">Loading…</div></div>
+      <div id="stage">
+        <div id="viewport">
+          <div id="overlay"><div id="overlay-msg" data-kind="busy">Loading…</div></div>
+          <div id="rec-badge" hidden><span class="dot"></span><span id="rec-time">REC 0.0 s</span></div>
+          <div id="shot-frame" hidden><span></span></div>
+        </div>
+        <div id="deck" hidden></div>
       </div>
       <aside id="policy-manager" class="hidden"></aside>
       <div id="panel"></div>
+      <aside id="export" hidden></aside>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

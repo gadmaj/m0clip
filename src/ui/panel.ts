@@ -17,6 +17,8 @@ export interface PanelCallbacks {
   onZeroCmd(): void;
   onScreenshot(): void;
   onRecordToggle(): void;
+  onOpenTimeline(): void;
+  onLoadTake(file: File): void;
   onLoadCsv(file: File, fps: number): void;
   onStopPlayback(): void;
   onImportPack(file: File): void;
@@ -45,6 +47,7 @@ const ICON = {
   upload: '<path d="M8 10.5V3M5 6l3-3 3 3M3 10.5V13h10v-2.5"/>',
   box: '<path d="M2.5 5L8 2.5 13.5 5v6L8 13.5 2.5 11zM2.5 5L8 7.5 13.5 5M8 7.5v6"/>',
   file: '<path d="M4 2.5h5l3 3v8H4zM9 2.5v3h3"/>',
+  timeline: '<path d="M2.5 4.5h11M2.5 11.5h11M5 2.5v4M10 9.5v4M7.5 6.5v3"/>',
 };
 function icon(name: keyof typeof ICON, size = 14): string {
   return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" stroke="currentColor" ` +
@@ -97,6 +100,8 @@ export class Panel {
   private statusEl!: HTMLElement;
   private padDebugEl!: HTMLElement;
   private recBtn!: HTMLButtonElement;
+  private recInfo!: HTMLElement;
+  private timelineBtn!: HTMLButtonElement;
   private hoistBtn!: HTMLButtonElement;
   private remoteEl!: HTMLElement;
   private remoteKey = "";
@@ -159,8 +164,6 @@ export class Panel {
     this.hoistBtn = button("Hoist", { key: "H", title: "Overhead gantry: hang the robot from a support (H)",
                                       onclick: () => this.cb.onHoist(!this.hoistOn) });
     this.hoistBtn.setAttribute("aria-pressed", "false");
-    this.recBtn = button("Record", { title: "Record the viewport to a video file", onclick: cb.onRecordToggle });
-    this.recBtn.prepend(el("span.dot"));
     sim.append(
       el("div.row", null,
         button("Reset", { key: "R", title: "Reset the robot pose (R)", onclick: cb.onReset }),
@@ -168,8 +171,27 @@ export class Panel {
         button("Stop", { key: "Space", title: "Zero the command and re-arm the gamepad (Space)", onclick: cb.onZeroCmd })),
       el("div.row", null,
         this.hoistBtn,
-        button("Screenshot", { title: "Save a PNG of the viewport", onclick: cb.onScreenshot }),
-        this.recBtn));
+        button("Screenshot", { title: "Save a PNG of the viewport", onclick: cb.onScreenshot })));
+
+    // recording: motion + inputs into a take → timeline → video / Blender export
+    const rec = block(root, "Recording", el("kbd", null, "V"));
+    this.recBtn = button("Record", { key: "V", title: "Record the robot's motion and your inputs (V)",
+                                     onclick: cb.onRecordToggle });
+    this.recBtn.prepend(el("span.dot"));
+    this.timelineBtn = button("Timeline", { icon: "timeline", title: "Open the last take on the timeline",
+                                            onclick: cb.onOpenTimeline });
+    this.timelineBtn.disabled = true;
+    const takeInput = el("input", { type: "file", accept: ".zip,.take.zip", style: "display:none" });
+    takeInput.onchange = () => {
+      const f = takeInput.files?.[0];
+      if (f) cb.onLoadTake(f);
+      takeInput.value = "";
+    };
+    this.recInfo = el("div.sub", null, "Records the motion and your inputs; stop to scrub it on a timeline and " +
+                                       "export video or a Blender scene.");
+    rec.append(el("div.row", null, this.recBtn, this.timelineBtn,
+                  button("Open…", { icon: "file", title: "Open a saved take (.take.zip)", onclick: () => takeInput.click() })),
+               takeInput, this.recInfo);
 
     // remote-controller moves of the active policy (505 / 805 fight modes, 801/802 speed levels); hidden
     // when none. Placed below the fixed controls so those never shift when a policy brings moves.
@@ -225,6 +247,7 @@ export class Panel {
         k("R"), el("dd", null, "Reset"),
         k("C"), el("dd", null, "Recenter camera"),
         k("H"), el("dd", null, "Toggle hoist"),
+        k("V"), el("dd", null, "Start / stop recording a take"),
         k("Space"), el("dd", null, "Stop and re-arm the pad")),
       el("p.keys-note", null,
         "Gamepad: left stick vx / vy, right stick yaw. LT+Up stance, LT+B damping, RT+A policy, " +
@@ -432,10 +455,15 @@ export class Panel {
   setPadDebug(text: string) { this.padDebugEl.textContent = text; }
 
   setRecording(on: boolean) {
-    this.recBtn.querySelector(".lbl")!.textContent = on ? "Stop rec" : "Record";
+    this.recBtn.querySelector(".lbl")!.textContent = on ? "Stop" : "Record";
     this.recBtn.classList.toggle("recording", on);
-    this.recBtn.title = on ? "Stop recording and save the video" : "Record the viewport to a video file";
+    this.recBtn.title = on ? "Stop recording and open the timeline (V)" : "Record the robot's motion and your inputs (V)";
   }
+
+  /** Line under the record buttons: live length while recording, else the last take. */
+  setRecordInfo(text: string) { this.recInfo.textContent = text; }
+
+  setTakeAvailable(on: boolean) { this.timelineBtn.disabled = !on; }
 
   setPlayback(name: string | null) {
     this.pbBar.style.display = name ? "flex" : "none";

@@ -1,11 +1,18 @@
 /** UI shell — rendering, panel, keyboard and gamepad. All simulation runs in
  * the sim worker (see src/sim/protocol.ts for why); this side only exchanges
  * messages: commands in, model description + frames + status out. */
+import * as THREE from "three";
 import type { Command } from "./core/types";
 import { GamepadInput, type ComboAction } from "./input/gamepad";
-import { CanvasRecorder, screenshot } from "./render/recorder";
+import { ExportDialog, loadPrefs as loadExportPrefs } from "./record/export-dialog";
+import { exportGlb } from "./record/export-blender";
+import type { Stage } from "./record/export-video";
+import { defaultShot, ShotPath, type Shot } from "./record/shot";
+import { loadTake, motionCsv, saveTake, Take, TakeRecorder } from "./record/take";
+import { eventList, fmtTime, Timeline, type ViewMode } from "./record/timeline";
+import { download, screenshot, stamp } from "./render/recorder";
 import { SceneView } from "./render/scene";
-import type { FromWorker, InspectMsg, StatusMsg, ToWorker } from "./sim/protocol";
+import type { FromWorker, InspectMsg, RenderModel, StatusMsg, ToWorker } from "./sim/protocol";
 import type { FsmState } from "./sim/fsm";
 import { TERRAINS, type TerrainName } from "./sim/terrain";
 import { Panel, type StatusRow } from "./ui/panel";
@@ -30,6 +37,14 @@ function loadPrefs(): Prefs {
   try { return JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") as Prefs; }
   catch { return {}; }
 }
+
+/** FSM state names as the timeline labels them. */
+const STATE_NAME: Record<FsmState, string> = {
+  zero_torque: "ZeroTorque", damping: "Damping", lock: "Lock", stance: "Stance", policy: "Policy",
+};
+/** Longest take kept in memory (≈ 100 MB of R1 frames). */
+const MAX_TAKE_S = 20 * 60;
+const slug = (x: string) => x.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "take";
 
 const esc = (x: string) => x.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 const sgn = (x: number, d = 2) => (x >= 0 ? "+" : "-") + Math.abs(x).toFixed(d);
@@ -82,7 +97,6 @@ class App {
   view = new SceneView(document.getElementById("viewport")!);
   panel: Panel;
   pad = new GamepadInput();
-  recorder = new CanvasRecorder();
   worker = new Worker(new URL("./worker/sim.worker.ts", import.meta.url),
                       { type: "module" });
 
@@ -103,6 +117,37 @@ class App {
   private leashCapable = false;         // active policy follows a leash pull
   private leashDrag: [number, number] | null = null;   // anchor while dragging
   private hoistOn = false;
+
+  // ---- recording / review ----
+  private model: RenderModel | null = null;       // the live model (last "model" message)
+  private viewModel: RenderModel | null = null;   // the model the scene currently shows
+  private rec: TakeRecorder | null = null;
+  /** last value logged per input: a change the user makes is logged when they make it (at the frame
+   * they were looking at), and the status that confirms it later is not logged again */
+  private logged: { state?: FsmState; policy?: string; hoist?: boolean } = {};
+  /** the user's latest request per input until a status confirms it: statuses already in flight carry
+   * the old value and must not be logged as changes (counted, not timed — a busy main thread can hold
+   * them for seconds) */
+  private pending: Partial<Record<keyof App["logged"], { v: unknown; stale: number }>> = {};
+  private recModel: RenderModel | null = null;
+  private take: Take | null = null;
+  private takeModel: RenderModel | null = null;
+  private takeTitle = "";
+  private takeNo = 0;
+  private timeline: Timeline;
+  private dialog: ExportDialog;
+  private shot: Shot;
+  private shotPath: ShotPath | null = null;
+  private readonly shotCam = new THREE.PerspectiveCamera(40, 16 / 9, 0.05, 100);
+  private readonly exportCam = new THREE.PerspectiveCamera(40, 16 / 9, 0.05, 100);
+  private exporting = false;
+  private reviewXpos = new Float32Array(0);
+  private reviewXmat = new Float32Array(0);
+  private shotDrag: { az: number; el: number; d: number; off: THREE.Vector3 } | null = null;
+  private viewBeforeDialog: ViewMode = "free";
+  private recBadge = document.getElementById("rec-badge")!;
+  private recTime = document.getElementById("rec-time")!;
+  private shotFrame = document.getElementById("shot-frame")!;
 
   /** LIDAR occupancy minimap (vision policies): canvas + caption, hidden
    * until inspect messages carry a grid. Robot at center, forward = up. */
@@ -156,21 +201,50 @@ class App {
                            document.getElementById("policy-manager")!, [], {
       onRobot: (r) => this.send({ t: "robot", robot: r }),
       onTerrain: (t) => this.send({ t: "terrain", terrain: t }),
-      onPolicy: (name) => this.send({ t: "policy", name }),
+      onPolicy: (name) => { this.logInput("policy", name); this.send({ t: "policy", name }); },
       onState: (s) => this.setState(s),
-      onReset: () => this.send({ t: "reset" }),
+      onReset: () => this.reset(),
       onRecenter: () => this.send({ t: "recenter" }),
       onZeroCmd: () => this.stopAndRearm(),
       onScreenshot: () => screenshot(this.view.renderer.domElement),
       onRecordToggle: () => this.toggleRecording(),
+      onOpenTimeline: () => this.openReview(),
+      onLoadTake: (file) => void this.openTakeFile(file),
       onLoadCsv: (file, fps) => this.loadCsv(file, fps),
       onStopPlayback: () => this.send({ t: "stopPlayback" }),
       onImportPack: (file) => this.importPack(file),
       onDeletePack: (id) => this.send({ t: "deletePack", id }),
       onDeleteAllPacks: () => this.send({ t: "deleteAllPacks" }),
       onHoist: (on) => this.setHoist(on),
-      onRemote: (combo) => this.send({ t: "remote", combo }),
+      onRemote: (combo) => this.remote(combo),
     });
+    this.timeline = new Timeline(document.getElementById("deck")!, {
+      close: () => this.closeReview(),
+      exportVideo: () => this.openExport("video"),
+      exportData: () => this.openExport("data"),
+      save: () => void this.saveTakeFile(),
+      viewMode: (m) => this.setViewMode(m),
+    });
+    const saved = loadExportPrefs();
+    this.shot = { ...defaultShot(0.7), ...(saved.shot ?? {}) };
+    this.dialog = new ExportDialog(document.getElementById("export")!, {
+      take: () => this.take!,
+      range: () => [this.timeline.rangeIn, this.timeline.rangeOut],
+      shot: this.shot,
+      shotChanged: () => this.rebuildShot(),
+      grabView: () => ShotPath.grab(this.take!, this.timeline.time, this.view.camera.position, this.view.controls.target),
+      path: () => this.shotPath!,
+      stage: () => this.stage(),
+      setExporting: (on) => { this.exporting = on; this.view.controls.enabled = !on; },
+      glb: (fps, camera, floor) => exportGlb(this.take!, this.view, this.takeModel!, {
+        fps, t0: this.timeline.rangeIn, t1: this.timeline.rangeOut, floor,
+        camera: camera ? { path: this.shotPath!, shot: this.shot, aspect: this.dialog.aspect } : null }),
+      csv: (fps) => motionCsv(this.take!, fps, this.timeline.rangeIn, this.timeline.rangeOut),
+      saveTake: () => void this.saveTakeFile(),
+      save: (blob, ext) => download(blob, `${this.fileStem()}.${ext}`),
+      onClose: () => this.setViewMode(this.viewBeforeDialog),
+    });
+    this.wireShotOrbit();
     this.worker.onmessage = (ev: MessageEvent<FromWorker>) => this.onWorker(ev.data);
     this.worker.onerror = (e) =>
       this.showOverlay(`sim worker crashed: ${e.message ?? e}`);
@@ -202,6 +276,7 @@ class App {
   private send(m: ToWorker) { this.worker.postMessage(m); }
 
   private setHoist(on: boolean) {
+    this.logInput("hoist", on);
     this.hoistOn = on;
     this.send({ t: "hoist", on });
     this.panel.setHoist(on);
@@ -225,7 +300,7 @@ class App {
     const anchorAt = (ev: PointerEvent): [number, number] | null =>
       this.view.groundPoint(ev, 0.12);
     dom.addEventListener("pointerdown", (ev) => {
-      if (!this.leashCapable || ev.button !== 0) return;
+      if (!this.leashCapable || ev.button !== 0 || this.timeline.isOpen) return;
       const p = anchorAt(ev);
       if (!p) return;
       const nearRobot = Math.hypot(p[0] - this.baseXY[0], p[1] - this.baseXY[1]) < 0.8;
@@ -263,7 +338,45 @@ class App {
     this.overlay.classList.remove("hidden");
   }
 
-  private setState(s: FsmState) { this.send({ t: "state", state: s }); }
+  private setState(s: FsmState) {
+    this.logInput("state", s);
+    this.send({ t: "state", state: s });
+  }
+
+  /** A state / policy / hoist value reported by the worker: logged when it is a change nobody asked
+   * for here (policy hand-over, a failed step dropping to damping, [ / ] cycling). */
+  private statusInput<K extends keyof App["logged"]>(kind: K, v: NonNullable<App["logged"][K]>) {
+    const p = this.pending[kind];
+    if (p) {
+      if (p.v !== v && ++p.stale <= 3) return;            // the request is still in flight
+      delete this.pending[kind];
+    }
+    this.logInput(kind, v, false);
+  }
+
+  /** Log a state / policy / hoist input on the take being recorded, unless it is already the value. */
+  private logInput<K extends keyof App["logged"]>(kind: K, v: NonNullable<App["logged"][K]>, byUser = true) {
+    if (!this.rec) return;
+    if (byUser) this.pending[kind] = { v, stale: 0 };
+    if (this.logged[kind] === v) return;
+    this.logged[kind] = v;
+    this.rec.mark(kind, kind === "state" ? STATE_NAME[v as FsmState]
+                      : kind === "hoist" ? (v ? "Hoist on" : "Hoist off") : String(v));
+  }
+
+  private reset() {
+    this.rec?.mark("reset", "Reset");
+    this.send({ t: "reset" });
+  }
+
+  /** A remote combo of the active policy (panel button, pad pass-through, G cycling). */
+  private remote(combo: string) {
+    if (this.rec) {
+      const item = this.status?.actions?.flatMap((g) => g.items).find((i) => i.combo === combo);
+      this.rec.mark("move", item ? `${item.label} (${combo})` : combo);
+    }
+    this.send({ t: "remote", combo });
+  }
 
   private setCommand(cmd: Command) {
     this.command = cmd;
@@ -301,12 +414,202 @@ class App {
     });
   }
 
+  // ---- recording -------------------------------------------------------
   private toggleRecording() {
-    if (this.recorder.recording) {
-      void this.recorder.stop().then(() => this.panel.setRecording(false));
-    } else {
-      this.recorder.start(this.view.renderer.domElement);
-      this.panel.setRecording(true);
+    if (this.rec) this.stopRecording();
+    else this.startRecording();
+  }
+
+  private startRecording() {
+    const m = this.model;
+    if (!m || this.exporting) return;
+    if (this.timeline.isOpen) this.closeReview();
+    const s = this.status;
+    this.recModel = m;
+    this.rec = new TakeRecorder({
+      robot: m.robot, model: s?.model, terrain: this.panel.terrain, policy: s?.policy ?? "-",
+      created: new Date().toISOString(), ngeom: m.ngeom, nq: m.nq, baseQadr: m.baseQadr, hinges: m.hinges,
+    });
+    this.logged = {};
+    this.pending = {};
+    if (s?.playback) this.rec.mark("clip", s.playback);
+    else if (s && s.policy !== "-") this.logInput("policy", s.policy, false);
+    if (s && !s.playback) this.logInput("state", s.state, false);
+    this.logged.hoist = this.hoistOn;
+    this.panel.setRecording(true);
+    this.recBadge.hidden = false;
+    this.recTime.textContent = "REC 0.0 s";
+  }
+
+  /** Stop and open the take on the timeline (`why` explains an automatic stop). */
+  private stopRecording(why?: string) {
+    const rec = this.rec;
+    if (!rec) return;
+    this.rec = null;
+    this.panel.setRecording(false);
+    this.recBadge.hidden = true;
+    const take = rec.finish();
+    if (!take) {
+      this.panel.setRecordInfo("Nothing recorded — the sim posted no frames (is it loading?).");
+      return;
+    }
+    this.take = take;
+    this.takeModel = this.recModel;
+    this.takeNo++;
+    this.takeTitle = `#${this.takeNo} · ${take.meta.model ?? take.meta.robot} · ${take.meta.policy}`;
+    this.panel.setTakeAvailable(true);
+    this.panel.setRecordInfo(`Take #${this.takeNo}: ${fmtTime(take.duration)} s, ${take.n} frames, ` +
+                             `${take.events.length} inputs.` + (why ? ` ${why}` : ""));
+    this.openReview();
+  }
+
+  private camPose() {
+    const c = this.view.camera, t = this.view.controls.target;
+    return { pos: [c.position.x, c.position.y, c.position.z] as [number, number, number],
+             target: [t.x, t.y, t.z] as [number, number, number], fov: c.fov };
+  }
+
+  // ---- review (timeline) ----------------------------------------------------
+  private openReview() {
+    const take = this.take, tm = this.takeModel;
+    if (!take || !tm) return;
+    if (this.viewModel !== tm) { this.view.build(tm); this.viewModel = tm; }
+    this.send({ t: "pause", on: true });
+    this.keysHeld.clear();
+    if (this.command.some((v) => v !== 0)) this.setCommand([0, 0, 0]);
+    this.reviewXpos = new Float32Array(3 * tm.ngeom);
+    this.reviewXmat = new Float32Array(9 * tm.ngeom);
+    this.followZ = tm.robot.startsWith("go2") ? 0.35 : 0.7;
+    if (this.shot.height <= 0) this.shot.height = this.followZ;
+    this.timeline.open(take, this.takeTitle);
+    this.rebuildShot();
+    this.setViewMode(this.timeline.mode);
+    this.lidarBox.box.style.display = "none";
+    this.inspectorBody.replaceChildren(eventList(take, this.takeTitle, (t) => this.timeline.seek(t)));
+  }
+
+  private closeReview() {
+    if (this.exporting) return;
+    if (this.dialog.isOpen) this.dialog.close();
+    this.timeline.close();
+    this.setViewMode("free");
+    if (this.model && this.viewModel !== this.model) {
+      this.view.build(this.model);
+      this.viewModel = this.model;
+      this.lastFrame = null;
+    }
+    this.followZ = this.model?.robot.startsWith("go2") ? 0.35 : 0.7;
+    this.send({ t: "pause", on: false });
+    this.inspectorBody.innerHTML = `<span class="ins-empty">Back to the live sim…</span>`;
+  }
+
+  private setViewMode(m: ViewMode) {
+    this.timeline.setMode(m);
+    const cam = this.view.camera;
+    if (m !== "recorded" && cam.fov !== 45) { cam.fov = 45; cam.updateProjectionMatrix(); }
+    this.shotFrame.hidden = m !== "shot";
+    this.view.controls.enabled = m !== "recorded" && !this.exporting;
+  }
+
+  private rebuildShot() {
+    if (!this.take) return;
+    this.shotPath = new ShotPath(this.take, this.shot, this.timeline.rangeIn);
+    const s = this.shot;
+    const [w, h] = this.dialog.outSize;
+    this.shotFrame.querySelector("span")!.textContent = `${w} × ${h} · ${s.focal} mm · ${s.mode}`;
+  }
+
+  private openExport(tab: "video" | "data") {
+    if (!this.take) return;
+    if (!this.dialog.isOpen) this.viewBeforeDialog = this.timeline.mode;
+    this.timeline.setPlaying(false);
+    this.dialog.open(tab);
+    this.setViewMode("shot");
+  }
+
+  /** Pose the scene from the take at time t (review frames and export frames alike). */
+  private poseTake(t: number) {
+    const take = this.take!;
+    take.geomXformAt(t, this.reviewXpos, this.reviewXmat);
+    this.view.sync(this.reviewXpos, this.reviewXmat);
+    this.view.setHoist(take.hoistAt(t));
+  }
+
+  private stage(): Stage {
+    return {
+      view: this.view, camera: this.exportCam,
+      pose: (t) => this.poseTake(t),
+      aim: (cam, t, aspect) => this.shotPath!.apply(cam, t, aspect),
+    };
+  }
+
+  /** In the Shot view, orbiting the viewport re-frames the shot camera itself (azimuth, elevation,
+   * distance), so a shot can be composed by hand and then fine-tuned in the export panel. */
+  private wireShotOrbit() {
+    const c = this.view.controls, R2D = 180 / Math.PI;
+    const offset = () => this.view.camera.position.clone().sub(c.target);
+    const azEl = (v: THREE.Vector3) => {
+      const r = v.length() || 1;
+      return [Math.atan2(v.y, v.x) * R2D, Math.asin(Math.max(-1, Math.min(1, v.z / r))) * R2D, r];
+    };
+    c.addEventListener("start", () => {
+      if (this.timeline.mode !== "shot" || !this.shotPath || this.shot.mode === "viewport") return;
+      const p = this.shotPath.at(this.timeline.time);   // start from what the shot shows now
+      c.target.copy(p.target);
+      this.view.camera.position.copy(p.pos);
+      this.shotDrag = { az: this.shot.azimuth, el: this.shot.elevation, d: this.shot.distance, off: offset() };
+    });
+    c.addEventListener("change", () => {
+      const dr = this.shotDrag;
+      if (!dr) return;
+      const [az, el, r] = azEl(offset()), [az0, el0, r0] = azEl(dr.off);
+      let daz = az - az0;
+      if (daz > 180) daz -= 360; else if (daz < -180) daz += 360;
+      this.shot.azimuth = Math.round(((dr.az + daz + 540) % 360) - 180);
+      this.shot.elevation = Math.round(Math.max(-10, Math.min(89, dr.el + el - el0)));
+      this.shot.distance = +Math.max(0.3, dr.d * r / r0).toFixed(2);
+      this.rebuildShot();
+    });
+    c.addEventListener("end", () => {
+      if (!this.shotDrag) return;
+      this.shotDrag = null;
+      this.dialog.refresh();
+    });
+  }
+
+  private fileStem(): string {
+    const m = this.take?.meta;
+    if (!m) return `take_${stamp()}`;
+    const d = new Date(m.created);
+    return `${m.robot}_${slug(m.policy === "-" ? "idle" : m.policy)}_${stamp(Number.isNaN(+d) ? undefined : d)}`;
+  }
+
+  private async saveTakeFile() {
+    if (!this.take) return;
+    download(await saveTake(this.take), `${this.fileStem()}.take.zip`);
+  }
+
+  private async openTakeFile(file: File) {
+    try {
+      const take = await loadTake(await file.arrayBuffer());
+      const m = this.model, meta = take.meta;
+      if (!m || m.robot !== meta.robot || m.ngeom !== meta.ngeom || m.nq !== meta.nq || this.panel.terrain !== meta.terrain) {
+        this.panel.showNotice("Different scene loaded",
+          `${file.name} was recorded on ${meta.model ?? meta.robot} with the ${meta.terrain} terrain ` +
+          `(${meta.ngeom} geoms). Load that robot model and terrain first (the policy decides between ` +
+          `variants such as EDU and Air), then open the take again.`);
+        return;
+      }
+      if (this.rec) this.stopRecording();
+      this.take = take;
+      this.takeModel = m;
+      this.takeNo++;
+      this.takeTitle = `${file.name.replace(/\.take\.zip$|\.zip$/, "")}`;
+      this.panel.setTakeAvailable(true);
+      this.panel.setRecordInfo(`Opened ${file.name}: ${fmtTime(take.duration)} s, ${take.n} frames.`);
+      this.openReview();
+    } catch (e) {
+      this.panel.showNotice("Could not open the take", `${file.name}: ${e instanceof Error ? e.message : e}`);
     }
   }
 
@@ -351,21 +654,38 @@ class App {
   private onWorker(m: FromWorker) {
     switch (m.t) {
       case "model":
+        // a rebuild mid-recording ends the take there: its frames belong to the old model
+        if (this.rec) this.stopRecording("Stopped when the scene was rebuilt.");
+        this.model = m.desc;
+        if (this.timeline.isOpen) return;          // the review keeps showing the take's model
         this.view.build(m.desc);
+        this.viewModel = m.desc;
         this.lastFrame = null;
         // aim the camera at torso height: ~0.7 m for humanoids, lower for
         // the quadruped so its body doesn't sit at the bottom of the frame
         this.followZ = m.desc.robot.startsWith("go2") ? 0.35 : 0.7;
         return;
       case "frame":
+        if (this.viewModel !== this.model) return;   // reviewing another model's take
         this.lastFrame = { xpos: m.xpos, xmat: m.xmat };
         this.baseXY = [m.baseX, m.baseY];
-        this.view.setHoist(m.hoistAnchor ?? null);
+        if (!this.timeline.isOpen) this.view.setHoist(m.hoistAnchor ?? null);
+        if (this.rec) {
+          this.rec.push(m, this.command, this.camPose());
+          const e = this.rec.elapsed;
+          const txt = `REC ${fmtTime(e, 1)} s`;
+          if (txt !== this.recTime.textContent) {
+            this.recTime.textContent = txt;
+            this.panel.setRecordInfo(`Recording… ${fmtTime(e, 1)} s, ${this.rec.frames} frames.`);
+          }
+          if (e >= MAX_TAKE_S) this.stopRecording(`Stopped at the ${MAX_TAKE_S / 60} min limit.`);
+        }
         return;
       case "status":
         this.applyStatus(m);
         return;
       case "inspect":
+        if (this.timeline.isOpen) return;            // the take summary owns the inspector
         this.inspectorBody.innerHTML = formatInspect(m);
         this.renderLidar(m.lidar);
         return;
@@ -399,6 +719,13 @@ class App {
   private applyStatus(s: StatusMsg) {
     const prev = this.status;
     this.status = s;
+    // changes the user did not make directly (policy hand-over, a step error dropping to damping, [ / ])
+    if (this.rec && prev) {
+      if ((s.playback ?? "") !== (prev.playback ?? "")) this.rec.mark("clip", s.playback ?? "clip stopped");
+      if (s.policy !== "-") this.statusInput("policy", s.policy);
+      if (!s.playback) this.statusInput("state", s.state);
+      if (s.hoist !== undefined) this.statusInput("hoist", s.hoist);
+    }
     if (!prev || prev.robots.join() !== s.robots.join() || prev.robot !== s.robot)
       this.panel.setRobots(s.robots, s.robot);
     const polKey = (m: StatusMsg) => m.policies.map((p) => p.name).join("|");
@@ -460,6 +787,17 @@ class App {
   // ---- input ----------------------------------------------------------
   private onKey(e: KeyboardEvent) {
     if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;
+    if (this.exporting || document.getElementById("policy-notice")) return;
+    if ((e.key === "v" || e.key === "V") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      return this.toggleRecording();
+    }
+    if (this.timeline.isOpen) {
+      // the deck owns the keyboard while reviewing; the sim is paused, so nothing drives it
+      if (e.key === "Escape" && this.dialog.isOpen) { this.dialog.close(); e.preventDefault(); return; }
+      if (this.timeline.onKey(e)) e.preventDefault();
+      return;
+    }
     const mk = e.key.toLowerCase();
     if (mk === "shift") { if (this.keysHeld.size) this.applyKeys(true); return; }
     if (mk in App.MOVE_KEYS) {
@@ -472,7 +810,7 @@ class App {
     switch (e.key) {
       case "]": return this.send({ t: "cycle", step: 1 });
       case "[": return this.send({ t: "cycle", step: -1 });
-      case "r": case "R": return this.send({ t: "reset" });
+      case "r": case "R": return this.reset();
       case "c": case "C": return this.send({ t: "recenter" });
       case "h": case "H": return this.setHoist(!this.hoistOn);
       case "g": case "G": return this.cycleRemote(e.key === "G" ? -1 : 1);
@@ -487,22 +825,28 @@ class App {
     const c = this.status?.combos;
     if (!c?.length) return;
     this.remoteIdx = (this.remoteIdx + step + c.length) % c.length;
-    this.send({ t: "remote", combo: c[this.remoteIdx] });
+    this.remote(c[this.remoteIdx]);
   }
 
   private onPadAction(a: ComboAction) {
     if (a.kind === "state") this.setState(a.state);
     else if (a.kind === "cycle") this.send({ t: "cycle", step: a.step });
-    else if (a.kind === "reset") this.send({ t: "reset" });
+    else if (a.kind === "reset") this.reset();
   }
 
   // ---- render loop ----------------------------------------------------
   private renderLoop() {
     let lastPadCmd = "";
     let padWasActive = false;
-    const tick = () => {
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
+      last = now;
+      requestAnimationFrame(tick);
+      if (this.exporting) return;                    // the export owns the canvas
+      if (this.timeline.isOpen && this.take) return this.reviewFrame(dt);
       const padCmd = this.pad.poll((a) => this.onPadAction(a), this.status?.combos,
-                                   (combo) => this.send({ t: "remote", combo }));
+                                   (combo) => this.remote(combo));
       if (padCmd) {
         padWasActive = true;
         const key = padCmd.map((v) => v.toFixed(2)).join(",");
@@ -522,9 +866,37 @@ class App {
                            [this.leashDrag[0], this.leashDrag[1], 0.12]);
       this.view.render();
       if (this.panel.padDebugOpen()) this.updatePadDebug();
-      requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
+  }
+
+  /** One animation frame of the review: advance the playhead, pose the take, render the chosen view. */
+  private reviewFrame(dt: number) {
+    const take = this.take!, tl = this.timeline;
+    tl.tick(dt);
+    if (this.shotPath && this.shotPath.t0 !== tl.rangeIn) this.rebuildShot();   // range start anchors fixed / orbit
+    const t = tl.time;
+    this.poseTake(t);
+    const b = take.basePosAt(t);
+    if (tl.mode === "recorded") {
+      const c = take.camAt(t), cam = this.view.camera;
+      cam.position.set(...c.pos);
+      this.view.controls.target.set(...c.target);
+      cam.lookAt(this.view.controls.target);
+      if (cam.fov !== c.fov) { cam.fov = c.fov; cam.updateProjectionMatrix(); }
+      this.view.renderWith(cam);
+    } else if (tl.mode === "shot" && this.shotPath) {
+      if (!this.shotDrag) this.view.follow(b[0], b[1], this.followZ);
+      else this.view.controls.update();
+      const aspect = this.dialog.aspect;
+      this.shotPath.apply(this.shotCam, t, aspect);
+      const r = this.view.renderFramed(this.shotCam, aspect);
+      const st = this.shotFrame.style;
+      st.left = `${r.x}px`; st.top = `${r.y}px`; st.width = `${r.w}px`; st.height = `${r.h}px`;
+    } else {
+      this.view.follow(b[0], b[1], this.followZ);
+      this.view.render();
+    }
   }
 }
 

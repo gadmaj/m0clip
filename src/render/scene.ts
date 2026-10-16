@@ -18,7 +18,7 @@ THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 // material reflectance="0.2" → blend 20% mirror under an 80%-opaque checker.
 const FLOOR_REFLECTANCE = 0.2;
 
-function checkerTexture(): THREE.CanvasTexture {
+export function checkerTexture(): THREE.CanvasTexture {
   // one MuJoCo texture tile = 2x2 checker cells; mark="edge" draws the light
   // border around the TILE (not each cell), exactly like the builtin checker
   const px = 128;                       // one checker cell
@@ -274,11 +274,15 @@ export class SceneView {
   readonly camera: THREE.PerspectiveCamera;
   readonly controls: OrbitControls;
   private geomMeshes: (THREE.Object3D | null)[] = [];
+  private floors: THREE.Object3D[] = [];
   private readonly tmp = new THREE.Matrix4();
+  /** set while an export owns the canvas size (beginOffscreen … endOffscreen) */
+  private offscreen: { ratio: number; background: THREE.Scene["background"]; fog: THREE.Scene["fog"] } | null = null;
 
   constructor(readonly container: HTMLElement) {
-    // preserveDrawingBuffer: screenshots/recording read the canvas anytime
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    // preserveDrawingBuffer: screenshots and video export read the canvas anytime;
+    // alpha: transparent-background renders (the scene background keeps it opaque otherwise)
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(this.renderer.domElement);
 
@@ -312,6 +316,7 @@ export class SceneView {
   }
 
   private resize() {
+    if (this.offscreen) return;
     const w = this.container.clientWidth || 1;
     const h = this.container.clientHeight || 1;
     this.renderer.setSize(w, h);
@@ -332,6 +337,7 @@ export class SceneView {
       });
     }
     this.geomMeshes = [];
+    this.floors = [];
     for (let g = 0; g < desc.ngeom; g++) {
       const a = desc.rgba[4 * g + 3];
       const isMesh = desc.type[g] === GEOM_MESH;
@@ -347,6 +353,7 @@ export class SceneView {
         const floor = buildFloor(40);
         floor.matrixAutoUpdate = false;
         this.scene.add(floor);
+        this.floors.push(floor);
         this.geomMeshes.push(floor);
         continue;
       }
@@ -542,6 +549,70 @@ export class SceneView {
   render() {
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
+  }
+
+  /** Render through `cam` into the largest centred rect of the given aspect (letterboxed), the way
+   * an export with that camera will frame it. Returns the rect in CSS pixels, top-left origin. */
+  renderFramed(cam: THREE.PerspectiveCamera, aspect: number): { x: number; y: number; w: number; h: number } {
+    const r = this.renderer, size = r.getSize(new THREE.Vector2());
+    let w = size.x, h = size.x / aspect;
+    if (h > size.y) { h = size.y; w = h * aspect; }
+    const x = (size.x - w) / 2, y = (size.y - h) / 2;
+    r.setScissorTest(false);
+    r.setClearColor(0x050607, 1);
+    r.clear();
+    r.setClearColor(0x000000, 0);
+    r.setViewport(x, y, w, h);
+    r.setScissor(x, y, w, h);
+    r.setScissorTest(true);
+    r.render(this.scene, cam);
+    r.setScissorTest(false);
+    r.setViewport(0, 0, size.x, size.y);
+    return { x, y, w, h };
+  }
+
+  // ---- export rendering ------------------------------------------------
+  /** Give the canvas a `w`×`h` backing store (CSS size untouched) for frame-accurate rendering.
+   * Transparent drops the background and fog; `floor` false hides the ground plane. */
+  beginOffscreen(w: number, h: number, opts: { transparent?: boolean; floor?: boolean } = {}) {
+    const r = this.renderer;
+    if (!this.offscreen)
+      this.offscreen = { ratio: r.getPixelRatio(), background: this.scene.background, fog: this.scene.fog };
+    r.setPixelRatio(1);
+    r.setSize(w, h, false);
+    const gl = r.getContext();
+    if (gl.drawingBufferWidth !== w || gl.drawingBufferHeight !== h) {
+      this.endOffscreen();
+      throw new Error(`the GPU cannot render ${w}×${h} (got ${gl.drawingBufferWidth}×${gl.drawingBufferHeight})`);
+    }
+    this.scene.background = opts.transparent ? null : this.offscreen.background;
+    this.scene.fog = opts.transparent ? null : this.offscreen.fog;
+    r.setClearColor(0x000000, 0);
+    for (const f of this.floors) f.visible = opts.floor !== false;
+  }
+
+  /** Render through another camera (export frames at the offscreen size, the recorded-camera view). */
+  renderWith(cam: THREE.Camera) { this.renderer.render(this.scene, cam); }
+
+  endOffscreen() {
+    const o = this.offscreen;
+    if (!o) return;
+    this.offscreen = null;
+    this.scene.background = o.background;
+    this.scene.fog = o.fog;
+    for (const f of this.floors) f.visible = true;
+    this.renderer.setPixelRatio(o.ratio);
+    this.resize();
+  }
+
+  /** The rendered parts for a scene export: every visible geom mesh (ground planes excluded) with
+   * its geom index. Their matrices are whatever the last sync() put there. */
+  exportParts(): { geom: number; mesh: THREE.Mesh }[] {
+    const out: { geom: number; mesh: THREE.Mesh }[] = [];
+    this.geomMeshes.forEach((m, geom) => {
+      if (m instanceof THREE.Mesh && m.visible) out.push({ geom, mesh: m });
+    });
+    return out;
   }
 
   /** Keep the camera orbiting around the robot base. */
