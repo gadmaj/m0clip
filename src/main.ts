@@ -14,8 +14,9 @@ import { download, screenshot, stamp } from "./render/recorder";
 import { SceneView } from "./render/scene";
 import type { FromWorker, InspectMsg, RenderModel, StatusMsg, ToWorker } from "./sim/protocol";
 import type { FsmState } from "./sim/fsm";
-import { isTerrain, listMaps, type TerrainName } from "./sim/terrain";
+import { isTerrain, listMaps, mapId, MAPS_DIR, type TerrainName } from "./sim/terrain";
 import { Panel, type StatusRow } from "./ui/panel";
+import { LookPanel, type MapLight } from "./ui/look";
 
 /** Robot family: r1 + r1_air (EDU 24-DOF / Air 20-DOF) share one UI slot, g1 + g1_air (EDU 29-DOF / Air 23-DOF) one UI
  * slot; go2 is its own. */
@@ -145,6 +146,7 @@ class App {
   private reviewXmat = new Float32Array(0);
   private shotDrag: { az: number; el: number; d: number; off: THREE.Vector3 } | null = null;
   private viewBeforeDialog: ViewMode = "free";
+  private look!: LookPanel;
   private recBadge = document.getElementById("rec-badge")!;
   private recTime = document.getElementById("rec-time")!;
   private shotFrame = document.getElementById("shot-frame")!;
@@ -245,6 +247,8 @@ class App {
       onClose: () => this.setViewMode(this.viewBeforeDialog),
     });
     this.wireShotOrbit();
+    this.look = new LookPanel(document.getElementById("panel")!, this.view);
+    this.wirePartPicking();
     this.worker.onmessage = (ev: MessageEvent<FromWorker>) => this.onWorker(ev.data);
     this.worker.onerror = (e) =>
       this.showOverlay(`sim worker crashed: ${e.message ?? e}`);
@@ -481,7 +485,7 @@ class App {
   private openReview() {
     const take = this.take, tm = this.takeModel;
     if (!take || !tm) return;
-    if (this.viewModel !== tm) { this.view.build(tm); this.viewModel = tm; }
+    if (this.viewModel !== tm) { this.buildView(tm); this.viewModel = tm; }
     this.send({ t: "pause", on: true });
     this.keysHeld.clear();
     if (this.command.some((v) => v !== 0)) this.setCommand([0, 0, 0]);
@@ -502,7 +506,7 @@ class App {
     this.timeline.close();
     this.setViewMode("free");
     if (this.model && this.viewModel !== this.model) {
-      this.view.build(this.model);
+      this.buildView(this.model);
       this.viewModel = this.model;
       this.lastFrame = null;
     }
@@ -553,6 +557,31 @@ class App {
 
   /** In the Shot view, orbiting the viewport re-frames the shot camera itself (azimuth, elevation,
    * distance), so a shot can be composed by hand and then fine-tuned in the export panel. */
+  /** Build the scene for a model and re-apply the robot's paint (+ the map's own light). */
+  private buildView(desc: RenderModel) {
+    this.view.build(desc);
+    this.look.onModel(desc.robot);
+    const id = mapId(this.panel.terrain);
+    if (desc === this.model) void this.view.setTerrainVisual(id ? `${MAPS_DIR}/${id}/visual.glb` : null)
+      .catch((e) => console.warn("map visual failed to load", e));
+    if (desc !== this.model || !id) { if (!id) this.look.setMapLight(null); return; }
+    void fetch(`${MAPS_DIR}/${id}/manifest.json`).then((r) => r.json())
+      .then((m: { light?: MapLight }) => this.look.setMapLight(m.light ?? null))
+      .catch(() => this.look.setMapLight(null));
+  }
+
+  /** While the paint editor's Pick is on, a click (not a drag) on the robot selects that part. */
+  private wirePartPicking() {
+    const dom = this.view.renderer.domElement;
+    let down: [number, number] | null = null;
+    dom.addEventListener("pointerdown", (e) => { down = this.look.picking ? [e.clientX, e.clientY] : null; });
+    dom.addEventListener("pointerup", (e) => {
+      if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;
+      const part = this.view.pickPart(e);
+      if (part) this.look.select(part);
+    });
+  }
+
   private wireShotOrbit() {
     const c = this.view.controls, R2D = 180 / Math.PI;
     const offset = () => this.view.camera.position.clone().sub(c.target);
@@ -666,7 +695,7 @@ class App {
         if (this.rec) this.stopRecording("Stopped when the scene was rebuilt.");
         this.model = m.desc;
         if (this.timeline.isOpen) return;          // the review keeps showing the take's model
-        this.view.build(m.desc);
+        this.buildView(m.desc);
         this.viewModel = m.desc;
         this.lastFrame = null;
         // aim the camera at torso height: ~0.7 m for humanoids, lower for

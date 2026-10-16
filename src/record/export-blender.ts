@@ -91,6 +91,15 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
     }
   }
 
+  // a converted game map's textured visual (already in the MuJoCo frame): wrapped into Y-up
+  if (view.terrainObject) {
+    const wrap = new THREE.Group();
+    wrap.name = unique("map");
+    wrap.quaternion.copy(TO_YUP);
+    wrap.add(view.terrainObject.clone());
+    world.add(wrap);
+  }
+
   if (job.floor) {
     const tex = checkerTexture();
     tex.repeat.set(20 / 0.2, 20 / 0.2);

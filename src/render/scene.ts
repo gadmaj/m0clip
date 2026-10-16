@@ -8,7 +8,33 @@ import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment
 import { GEOM_BOX, GEOM_CAPSULE, GEOM_CYLINDER, GEOM_ELLIPSOID, GEOM_MESH,
          GEOM_PLANE, GEOM_SPHERE } from "../sim/engine";
 import type { RenderModel } from "../sim/protocol";
-import { FINISH, hasPalette, resolve, type Paint, type Region } from "./paint";
+import { FINISH, hasPalette, resolve, type Finish, type Paint, type Region } from "./paint";
+
+/** How the robot is painted: one plain grey (default), the product colourway from paint.ts, or the
+ * model file's own rgba — then per-part overrides on top, keyed by mesh (STL) name. */
+export type Colorway = "grey" | "product" | "model";
+/** A part's paint: colour + finish preset, optionally fine-tuned (roughness 0 = mirror-shiny … 1 =
+ * dull matte; metalness; clearcoat = a glossy lacquer layer on top). */
+export interface PartPaint { color: number; finish: Finish; roughness?: number; metalness?: number; clearcoat?: number }
+export interface Appearance { colorway: Colorway; parts: Record<string, PartPaint> }
+export const GREY: PartPaint = { color: 0x9a9da2, finish: "satin" };
+
+/** Scene lighting. Angles in degrees (azimuth CCW from +x, elevation above the horizon), colours
+ * as 0xRRGGBB, intensities as three.js light intensities. */
+export interface Lighting {
+  sunAzimuth: number; sunElevation: number; sunIntensity: number; sunColor: number;
+  ambient: number; skyColor: number; groundColor: number;
+  fill: number;            // camera-side fill light
+  reflections: number;     // studio environment map intensity
+  exposure: number;        // tone-mapping exposure
+  shadows: boolean;
+  background: number;
+}
+export const STUDIO: Lighting = {
+  sunAzimuth: 27, sunElevation: 61, sunIntensity: 1.5, sunColor: 0xffffff,
+  ambient: 0.8, skyColor: 0xdfeaf5, groundColor: 0x1a2028, fill: 0.7, reflections: 0.55,
+  exposure: 1, shadows: false, background: 0x0b0e12,
+};
 
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 
@@ -274,6 +300,15 @@ export class SceneView {
   readonly camera: THREE.PerspectiveCamera;
   readonly controls: OrbitControls;
   private geomMeshes: (THREE.Object3D | null)[] = [];
+  readonly hemi = new THREE.HemisphereLight(0xdfeaf5, 0x1a2028, 0.8);
+  readonly sun = new THREE.DirectionalLight(0xffffff, 1.5);
+  readonly fill = new THREE.DirectionalLight(0xcfd8e6, 0.7);
+  private lighting: Lighting = { ...STUDIO };
+  /** robot meshes by mesh name: the materials each colourway gives them */
+  private parts = new Map<string, { mesh: THREE.Mesh; product: THREE.Material | THREE.Material[]; model: THREE.Material }>();
+  private appearance: Appearance = { colorway: "grey", parts: {} };
+  private paintCache = new Map<string, THREE.MeshPhysicalMaterial>();
+  private highlighted: string | null = null;
   private floors: THREE.Object3D[] = [];
   private readonly tmp = new THREE.Matrix4();
   /** set while an export owns the canvas size (beginOffscreen … endOffscreen) */
@@ -298,12 +333,18 @@ export class SceneView {
     this.controls.target.set(0, 0, 0.7);
     this.controls.enableDamping = true;
 
-    const hemi = new THREE.HemisphereLight(0xdfeaf5, 0x1a2028, 0.8);
+    const hemi = this.hemi;
     this.scene.add(hemi);
-    const dir = new THREE.DirectionalLight(0xffffff, 1.5);
+    const dir = this.sun;
     dir.position.set(2, 1, 4);
-    this.scene.add(dir);
-    const fill = new THREE.DirectionalLight(0xcfd8e6, 0.7);   // camera-side fill
+    dir.shadow.mapSize.set(2048, 2048);
+    Object.assign(dir.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: 0.5, far: 40 });
+    dir.shadow.bias = -0.0004;
+    dir.shadow.normalBias = 0.02;
+    this.scene.add(dir, dir.target);
+    this.renderer.toneMapping = THREE.NeutralToneMapping;   // exposure control; ~neutral at 1
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    const fill = this.fill;                                    // camera-side fill
     fill.position.set(-2, -3, 2.5);
     this.scene.add(fill);
     // neutral studio environment map — gives the plastic its highlights
@@ -338,6 +379,7 @@ export class SceneView {
     }
     this.geomMeshes = [];
     this.floors = [];
+    this.parts.clear();
     for (let g = 0; g < desc.ngeom; g++) {
       const a = desc.rgba[4 * g + 3];
       const isMesh = desc.type[g] === GEOM_MESH;
@@ -352,6 +394,7 @@ export class SceneView {
       if (desc.type[g] === GEOM_PLANE) {
         const floor = buildFloor(40);
         floor.matrixAutoUpdate = false;
+        floor.traverse((o) => { o.receiveShadow = true; });
         this.scene.add(floor);
         this.floors.push(floor);
         this.geomMeshes.push(floor);
@@ -363,7 +406,8 @@ export class SceneView {
       // Robots with a palette (R1, Go2) paint every mesh part by name with a
       // colour + finish from the product colourway; others (G1) use the
       // model's own rgba.
-      const painted = isMesh && hasPalette(desc.robot) && desc.bodyid[g] > 0;   // terrain keeps its rgba
+      const robotPart = isMesh && desc.bodyid[g] > 0;           // terrain keeps its rgba
+      const painted = robotPart && hasPalette(desc.robot);
       let mesh: THREE.Mesh;
       if (painted) {
         const { paint, regions } = resolve(desc.robot, meshName);
@@ -385,7 +429,16 @@ export class SceneView {
         }));
       }
       mesh.matrixAutoUpdate = false;
-      mesh.userData.meshName = painted ? meshName : null;
+      mesh.userData.meshName = robotPart ? meshName : null;
+      mesh.castShadow = robotPart;
+      mesh.receiveShadow = true;
+      if (robotPart && !this.parts.has(meshName)) {
+        const model = new THREE.MeshPhysicalMaterial({
+          color: new THREE.Color(desc.rgba[4 * g], desc.rgba[4 * g + 1], desc.rgba[4 * g + 2]),
+          side: THREE.DoubleSide, ...FINISH.satin });
+        this.parts.set(meshName, { mesh, product: mesh.material, model });
+        this.applyPart(meshName);
+      }
       this.scene.add(mesh);
       this.geomMeshes.push(mesh);
     }
@@ -615,6 +668,130 @@ export class SceneView {
     return out;
   }
 
+  // ---- robot appearance --------------------------------------------------
+  /** Robot mesh (STL) names in the scene, sorted. */
+  partNames(): string[] { return [...this.parts.keys()].sort(); }
+
+  setAppearance(a: Appearance) {
+    this.appearance = a;
+    for (const name of this.parts.keys()) this.applyPart(name);
+  }
+
+  private paintMat(p: PartPaint): THREE.MeshPhysicalMaterial {
+    const key = `${p.color}/${p.finish}/${p.roughness}/${p.metalness}/${p.clearcoat}`;
+    let m = this.paintCache.get(key);
+    if (!m) {
+      m = paintMaterial(p);
+      if (p.roughness !== undefined) m.roughness = p.roughness;
+      if (p.metalness !== undefined) m.metalness = p.metalness;
+      if (p.clearcoat !== undefined) m.clearcoat = p.clearcoat;
+      this.paintCache.set(key, m);
+    }
+    return m;
+  }
+
+  // ---- terrain visual (textured map glTF) -----------------------------------
+  private terrainVisual: THREE.Object3D | null = null;
+  private terrainUrl: string | null = null;
+
+  /** Show a converted map's textured scene (null removes it). Its positions are already in the
+   * MuJoCo frame, so it goes in as-is; the map's collision lives in MuJoCo, not here. */
+  async setTerrainVisual(url: string | null) {
+    if (url === this.terrainUrl) return;
+    this.terrainUrl = url;
+    if (this.terrainVisual) {
+      this.scene.remove(this.terrainVisual);
+      this.terrainVisual.traverse((o) => {
+        if (o instanceof THREE.Mesh) {
+          o.geometry.dispose();
+          for (const m of [o.material].flat()) {
+            for (const v of Object.values(m)) if (v instanceof THREE.Texture) v.dispose();
+            m.dispose();
+          }
+        }
+      });
+      this.terrainVisual = null;
+    }
+    if (!url) return;
+    const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
+    const gltf = await new GLTFLoader().loadAsync(url);
+    if (this.terrainUrl !== url) return;          // superseded while loading
+    gltf.scene.traverse((o) => {
+      if (o instanceof THREE.Mesh) {
+        o.receiveShadow = true;
+        o.castShadow = true;
+        for (const m of [o.material].flat()) {
+          const t = (m as THREE.MeshStandardMaterial).map;
+          if (t) t.anisotropy = 8;
+        }
+      }
+    });
+    this.terrainVisual = gltf.scene;
+    this.scene.add(gltf.scene);
+  }
+
+  /** The terrain's textured visual (for scene exports), or null. */
+  get terrainObject(): THREE.Object3D | null { return this.terrainVisual; }
+
+  private applyPart(name: string) {
+    const e = this.parts.get(name);
+    if (!e) return;
+    const o = this.appearance.parts[name], cw = this.appearance.colorway;
+    let mat: THREE.Material | THREE.Material[] = o ? this.paintMat(o)
+      : cw === "product" ? e.product : cw === "model" ? e.model : this.paintMat(GREY);
+    if (name === this.highlighted) {
+      const hl = (Array.isArray(mat) ? mat[0] : mat as THREE.MeshPhysicalMaterial).clone() as THREE.MeshPhysicalMaterial;
+      hl.emissive = new THREE.Color(0xe0a23c);
+      hl.emissiveIntensity = 0.35;
+      mat = hl;
+    }
+    e.mesh.material = mat;
+  }
+
+  /** Tint one part so the editor shows what is selected (null clears). */
+  highlight(name: string | null) {
+    const prev = this.highlighted;
+    this.highlighted = name;
+    if (prev) this.applyPart(prev);
+    if (name) this.applyPart(name);
+  }
+
+  // ---- lighting --------------------------------------------------------------
+  getLighting(): Lighting { return { ...this.lighting }; }
+
+  setLighting(l: Lighting) {
+    this.lighting = { ...l };
+    this.sun.color.set(l.sunColor);
+    this.sun.intensity = l.sunIntensity;
+    this.hemi.color.set(l.skyColor);
+    this.hemi.groundColor.set(l.groundColor);
+    this.hemi.intensity = l.ambient;
+    this.fill.intensity = l.fill;
+    this.scene.environmentIntensity = l.reflections;
+    this.renderer.toneMappingExposure = l.exposure;
+    this.renderer.shadowMap.enabled = l.shadows;
+    this.sun.castShadow = l.shadows;
+    const bg = new THREE.Color(l.background);
+    if (this.scene.background instanceof THREE.Color) this.scene.background.copy(bg);
+    if (this.scene.fog) this.scene.fog.color.copy(bg);
+    if (this.offscreen?.background instanceof THREE.Color) this.offscreen.background.copy(bg);
+    this.scene.traverse((o) => {                 // shadow-map on/off changes the shader variants
+      const m = (o as THREE.Mesh).material;
+      if (m) for (const x of [m].flat()) x.needsUpdate = true;
+    });
+    this.aimSun();
+  }
+
+  /** Keep the sun (and its shadow frustum) centred on the camera target. */
+  private aimSun() {
+    const l = this.lighting, t = this.controls.target, D = Math.PI / 180;
+    const az = l.sunAzimuth * D, el = l.sunElevation * D;
+    this.sun.position.set(t.x + 12 * Math.cos(el) * Math.cos(az), t.y + 12 * Math.cos(el) * Math.sin(az),
+                          t.z + 12 * Math.sin(el));
+    this.sun.target.position.copy(t);
+    this.sun.target.updateMatrixWorld();
+  }
+
   /** Keep the camera orbiting around the robot base. */
   follow(x: number, y: number, z: number) {
     const t = this.controls.target;
@@ -622,5 +799,6 @@ export class SceneView {
     t.set(x, y, z);
     this.camera.position.x += dx;
     this.camera.position.y += dy;
+    this.aimSun();
   }
 }

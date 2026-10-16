@@ -25,6 +25,7 @@ ignored) — run this script to produce them locally.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
@@ -44,6 +45,10 @@ GAMES = {
         "nt_oilstain_ctg", "nt_pissalley_ctg", "nt_redlight_ctg", "nt_ridgeline_ctg", "nt_rise_ctg",
         "nt_sentinel_ctg", "nt_shrine_ctg", "nt_skyline_ctg", "nt_subsurface_ctg", "nt_saitama_ctg",
         "nt_tarmac_ctg", "nt_threadplate_ctg", "nt_transit_ctg", "nt_vtol_ctg"]),
+}
+# texture mounts per game (noclip Scenes_*.ts): loose-file root with a dir.txt, then VPK archives
+MOUNTS = {
+    "neotokyo": ("NeoTokyo/NeotokyoSource/", ["HalfLife2/hl2_textures", "HalfLife2/hl2_misc"]),
 }
 
 # contents / surface flags (public/bspflags.h)
@@ -286,20 +291,122 @@ def facing(tris: np.ndarray, nrm: np.ndarray) -> np.ndarray:
     return tris
 
 
-def write_stl(path: str, tris: np.ndarray):
-    tris = tris.astype(np.float32)
-    nrm = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
-    nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-12)
-    rec = np.zeros(len(tris), dtype=np.dtype([("n", "<f4", 3), ("v", "<f4", 9), ("a", "<u2")]))
-    rec["n"], rec["v"] = nrm, tris.reshape(-1, 9)
+def map_light(m: dict, spawn_yaw: float) -> dict | None:
+    """The map's sun (light_environment) for the app's lighting: azimuth / elevation in degrees in the
+    app frame (map rotated by -spawn_yaw), colours as 0xRRGGBB, three.js-scale intensities."""
+    e = next((e for e in m["ents"] if e.get("classname") == "light_environment"), None)
+    if not e:
+        return None
+    ang = [float(x) for x in e.get("angles", "0 0 0").split()]
+    pitch = -float(e["pitch"]) if "pitch" in e else ang[0]          # "pitch" key: negative = down
+    rgbv = lambda k, d: ([float(x) for x in e.get(k, d).split()] + [255.0])[:4]
+    col, amb = rgbv("_light", "255 255 255 200"), rgbv("_ambient", "60 70 90 60")
+    tohex = lambda c: (int(min(c[0], 255)) << 16) | (int(min(c[1], 255)) << 8) | int(min(c[2], 255))
+    return dict(azimuth=round(((ang[1] + 180 - spawn_yaw + 180) % 360) - 180, 1),
+                elevation=round(float(np.clip(pitch, 5, 89)), 1),
+                # brightness is compressed (sqrt) and floored so night maps stay readable
+                color=tohex(col), intensity=round(float(np.clip(np.sqrt(col[3] / 255) * 1.8, 0.6, 4)), 2),
+                ambientColor=tohex(amb), ambient=round(float(np.clip(np.sqrt(amb[3] / 255) * 1.2, 0.35, 2)), 2))
+
+
+def load_textures(fs, names: list[str], max_px: int = 512) -> dict:
+    """material name -> (encoded image bytes, mime, alpha mode) for every material that resolves."""
+    from concurrent.futures import ThreadPoolExecutor
+    from PIL import Image
+    import source_assets as A
+
+    def one(name):
+        try:
+            mat = A.material(fs, name)
+            if not mat:
+                return name, None
+            raw = fs.read("materials/" + mat["basetexture"].replace("\\", "/").lower().removesuffix(".vtf") + ".vtf")
+            img = A.decode_vtf(raw) if raw else None
+            if img is None:
+                return name, None
+            im = Image.fromarray(img, "RGBA")
+            if max(im.size) > max_px:
+                sc = max_px / max(im.size)
+                im = im.resize((max(1, round(im.width * sc)), max(1, round(im.height * sc))), Image.LANCZOS)
+            alpha = (mat["alphatest"] or mat["translucent"]) and np.asarray(im)[..., 3].min() < 250
+            buf = io.BytesIO()
+            if alpha:
+                im.save(buf, "PNG", optimize=True)
+                return name, (buf.getvalue(), "image/png", "MASK" if mat["alphatest"] else "BLEND")
+            im.convert("RGB").save(buf, "JPEG", quality=85)
+            return name, (buf.getvalue(), "image/jpeg", "OPAQUE")
+        except Exception as e:                          # a bad texture keeps its average colour
+            print(f"    texture {name}: {e}", file=sys.stderr)
+            return name, None
+    with ThreadPoolExecutor(16) as ex:
+        return {n: r for n, r in ex.map(one, names) if r}
+
+
+def write_glb(path: str, prims: dict, textures: dict, title: str):
+    """Binary glTF: one node, one mesh, a primitive per material. Positions are the MuJoCo frame
+    (metres, Z up): the app's renderer is Z-up, so they are not converted to glTF's Y-up."""
+    binbuf = bytearray()
+    js = {"asset": {"version": "2.0", "generator": "unitree-mujoco-web import_source_bsp"},
+          "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"name": "map", "mesh": 0, "extras": {"up": "+Z"}}],
+          "meshes": [{"name": title, "primitives": []}], "materials": [], "accessors": [], "bufferViews": [],
+          "buffers": [], "samplers": [{"wrapS": 10497, "wrapT": 10497, "magFilter": 9729, "minFilter": 9987}]}
+
+    def view(data: bytes, target: int | None = None) -> int:
+        while len(binbuf) % 4:
+            binbuf.append(0)
+        v = {"buffer": 0, "byteOffset": len(binbuf), "byteLength": len(data)}
+        if target:
+            v["target"] = target
+        binbuf.extend(data)
+        js["bufferViews"].append(v)
+        return len(js["bufferViews"]) - 1
+
+    def acc(arr: np.ndarray, typ: str, comp: int, target: int, minmax=False) -> int:
+        a = {"bufferView": view(arr.tobytes(), target), "componentType": comp, "count": len(arr), "type": typ}
+        if minmax:
+            a["min"], a["max"] = arr.min(0).tolist(), arr.max(0).tolist()
+        js["accessors"].append(a)
+        return len(js["accessors"]) - 1
+
+    for name in sorted(prims):
+        pr = prims[name]
+        P = np.concatenate(pr["p"]).astype(np.float32)
+        N = np.concatenate(pr["n"]).astype(np.float32)
+        UV = np.concatenate(pr["uv"]).astype(np.float32)
+        I = np.concatenate(pr["i"]).astype(np.uint32).ravel()
+        mat = {"name": name, "pbrMetallicRoughness": {"metallicFactor": 0.0, "roughnessFactor": 0.85}}
+        tex = textures.get(name)
+        if tex:
+            data, mime, mode = tex
+            js.setdefault("images", []).append({"bufferView": view(data), "mimeType": mime})
+            js.setdefault("textures", []).append({"sampler": 0, "source": len(js["images"]) - 1})
+            mat["pbrMetallicRoughness"]["baseColorTexture"] = {"index": len(js["textures"]) - 1}
+            if mode != "OPAQUE":
+                mat["alphaMode"], mat["doubleSided"] = mode, True
+                if mode == "MASK":
+                    mat["alphaCutoff"] = 0.5
+        else:
+            mat["pbrMetallicRoughness"]["baseColorFactor"] = [*map(float, pr["refl"]), 1.0]
+        js["materials"].append(mat)
+        js["meshes"][0]["primitives"].append({
+            "attributes": {"POSITION": acc(P, "VEC3", 5126, 34962, True), "NORMAL": acc(N, "VEC3", 5126, 34962),
+                           "TEXCOORD_0": acc(UV, "VEC2", 5126, 34962)},
+            "indices": acc(I, "SCALAR", 5125, 34963), "material": len(js["materials"]) - 1})
+    while len(binbuf) % 4:
+        binbuf.append(0)
+    js["buffers"].append({"byteLength": len(binbuf)})
+    jb = json.dumps(js, separators=(",", ":")).encode()
+    jb += b" " * (-len(jb) % 4)
     with open(path, "wb") as fh:
-        fh.write(b"unitree-mujoco-web map".ljust(80, b"\0"))
-        fh.write(struct.pack("<I", len(tris)))
-        fh.write(rec.tobytes())
+        fh.write(struct.pack("<III", 0x46546C67, 2, 12 + 8 + len(jb) + 8 + len(binbuf)))
+        fh.write(struct.pack("<II", len(jb), 0x4E4F534A) + jb)
+        fh.write(struct.pack("<II", len(binbuf), 0x004E4942) + bytes(binbuf))
 
 
-def convert(data: bytes, mid: str, name: str, game: str, out_root: str) -> dict:
-    m = parse(BSP(data))
+def convert(data: bytes, mid: str, name: str, game: str, out_root: str, mounts=None) -> dict:
+    bsp = BSP(data)
+    m = parse(bsp)
+    fs = mounts(bsp) if mounts else None
     origin, yaw, spawn_cls = spawn(m)
     c, s = np.cos(np.radians(-yaw)), np.sin(np.radians(-yaw))
     R = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
@@ -308,9 +415,6 @@ def convert(data: bytes, mid: str, name: str, game: str, out_root: str) -> dict:
     f6 = lambda a: " ".join(f"{x:.4f}".rstrip("0").rstrip(".") if abs(x) >= 5e-5 else "0" for x in np.ravel(a))
     out = os.path.join(out_root, mid)
     os.makedirs(out, exist_ok=True)
-    for old in os.listdir(out):
-        if old.startswith("vis_") and old.endswith(".stl"):
-            os.remove(os.path.join(out, old))
 
     assets, geoms = [], []
     FR = 'friction="1 0.005 0.0001"'
@@ -337,8 +441,14 @@ def convert(data: bytes, mid: str, name: str, game: str, out_root: str) -> dict:
             geoms.append(f'<geom type="mesh" mesh="{mid}_c{nmesh}" group="3" {FR}/>')
             nmesh += 1
 
-    # ---- visuals (+ displacement collision)
-    buckets: dict[tuple, list] = {}
+    # ---- visuals (per material: positions, normals, UVs) + displacement collision
+    prims: dict[str, dict] = {}
+
+    def add(tex: str, refl, P, N, UV, I):
+        pr = prims.setdefault(tex, {"p": [], "n": [], "uv": [], "i": [], "nv": 0, "refl": refl})
+        pr["p"].append(P); pr["n"].append(N); pr["uv"].append(UV); pr["i"].append(I + pr["nv"])
+        pr["nv"] += len(P)
+
     ndisp = nhf = 0
     w = m["models"][0]
     for fi in range(w["firstface"], w["firstface"] + w["numfaces"]):
@@ -351,15 +461,29 @@ def convert(data: bytes, mid: str, name: str, game: str, out_root: str) -> dict:
         tex = m["texname"](ti["texdata"]).lower()
         if tex.startswith("tools/"):
             continue
-        refl = np.clip(m["texdata"][ti["texdata"]]["refl"], 0, 1)
-        key = tuple(np.round(refl * 8) / 8)
+        td = m["texdata"][ti["texdata"]]
+        refl = np.clip(td["refl"], 0, 1)
+        sv, tv = ti["vecs"][0:4].astype(float), ti["vecs"][4:8].astype(float)
+        tw, th = max(int(td["w"][0]), 1), max(int(td["w"][1]), 1)
+        uv_of = lambda pts: np.stack([(pts @ sv[:3] + sv[3]) / tw, (pts @ tv[:3] + tv[3]) / th], -1)
+        front = R @ front_normal(face_points(m, f))
         if f["disp"] >= 0:
-            g, base = (to_m(x) for x in displacement(m, f))
-            a, b2, c2, d = g[:-1, :-1], g[:-1, 1:], g[1:, 1:], g[1:, :-1]
-            tris = np.concatenate([np.stack([a, d, c2], -2), np.stack([a, c2, b2], -2)], 0).reshape(-1, 3, 3)
-            nrm = R @ front_normal(face_points(m, f))
-            buckets.setdefault(key, []).append(facing(tris, nrm))
-            hf = disp_hfield(g, base, nrm)
+            gs, bs = displacement(m, f)
+            g, base = to_m(gs), to_m(bs)
+            n = g.shape[0]
+            a = (np.arange(n - 1)[:, None] * n + np.arange(n - 1)[None, :]).ravel()
+            idx = np.concatenate([np.stack([a, a + n, a + n + 1], 1), np.stack([a, a + n + 1, a + 1], 1)])
+            P = g.reshape(-1, 3)
+            t0 = np.cross(P[idx[0, 1]] - P[idx[0, 0]], P[idx[0, 2]] - P[idx[0, 0]])
+            if t0 @ front < 0:
+                idx = idx[:, ::-1]
+            vn = np.zeros_like(P)
+            fn = np.cross(P[idx[:, 1]] - P[idx[:, 0]], P[idx[:, 2]] - P[idx[:, 0]])
+            for k in range(3):
+                np.add.at(vn, idx[:, k], fn)
+            vn /= np.maximum(np.linalg.norm(vn, axis=1, keepdims=True), 1e-9)
+            add(tex, refl, P, vn, uv_of(bs.reshape(-1, 3)), idx)
+            hf = disp_hfield(g, base, front)
             if hf:
                 name = f"{mid}_h{nhf}"
                 assets.append(f'<hfield name="{name}" nrow="{hf["nrow"]}" ncol="{hf["ncol"]}" '
@@ -368,40 +492,35 @@ def convert(data: bytes, mid: str, name: str, game: str, out_root: str) -> dict:
                              f'group="3" {FR}/>')
                 nhf += 1
             else:                       # skewed base quad: convex prisms over 2x2-quad cells
-                n = g.shape[0]
                 for y in range(0, n - 1, 2):
                     for x in range(0, n - 1, 2):
                         top = g[y:y + 3, x:x + 3].reshape(-1, 3)
-                        pr = np.concatenate([top, top - nrm * 0.15])
+                        pr = np.concatenate([top, top - front * 0.15])
                         assets.append(f'<mesh name="{mid}_d{ndisp}" vertex="{f6(pr)}"/>')
                         geoms.append(f'<geom type="mesh" mesh="{mid}_d{ndisp}" group="3" {FR}/>')
                         ndisp += 1
         else:
-            p = to_m(face_points(m, f))
-            if len(p) >= 3:
-                p = p[::-1]                     # Source winds front faces clockwise
-                tris = np.stack([np.repeat(p[:1], len(p) - 2, 0), p[1:-1], p[2:]], 1)
-                buckets.setdefault(key, []).append(tris)
+            pts = face_points(m, f)[::-1]        # Source winds front faces clockwise
+            if len(pts) >= 3:
+                k = len(pts)
+                idx = np.stack([np.zeros(k - 2, int), np.arange(1, k - 1), np.arange(2, k)], 1)
+                add(tex, refl, to_m(pts), np.repeat(front[None], k, 0), uv_of(pts), idx)
 
-    files, nvis = [], 0
-    for k, (key, parts) in enumerate(sorted(buckets.items())):
-        tris = np.concatenate(parts, 0)
-        fn = f"vis_{k}.stl"
-        write_stl(os.path.join(out, fn), tris)
-        files.append(fn)
-        nvis += len(tris)
-        assets.append(f'<mesh name="{mid}_v{k}" file="MAPDIR/{fn}" inertia="shell"/>')
-        geoms.append(f'<geom type="mesh" mesh="{mid}_v{k}" group="2" contype="0" conaffinity="0" '
-                     f'rgba="{f6(key)} 1"/>')
+    for old in os.listdir(out):
+        if old.startswith("vis_") and old.endswith(".stl"):
+            os.remove(os.path.join(out, old))
+    nvis = sum(int(sum(len(i) for i in pr["i"])) for pr in prims.values())
+    files = ["map.xml"]
+    textures = load_textures(fs, sorted(prims)) if fs else {}
+    write_glb(os.path.join(out, "visual.glb"), prims, textures, f"{name} ({game})")
 
     xml = (f'<mujoco model="{mid}">\n  <!-- {name} ({game}), generated by scripts/import_source_bsp.py -->\n'
            f'  <asset>\n    ' + "\n    ".join(assets) + "\n  </asset>\n"
            f'  <worldbody>\n    ' + "\n    ".join(geoms) + "\n  </worldbody>\n</mujoco>\n")
     with open(os.path.join(out, "map.xml"), "w") as fh:
         fh.write(xml)
-    files.insert(0, "map.xml")
-    info = dict(id=mid, name=name, game=game, files=files, boxes=nbox, hulls=nmesh, hfields=nhf, disp_prisms=ndisp,
-                vis_triangles=nvis, spawn=spawn_cls, spawn_source=[float(x) for x in origin], spawn_yaw=yaw)
+    info = dict(id=mid, name=name, game=game, files=files, visual="visual.glb", boxes=nbox, hulls=nmesh,
+                hfields=nhf, disp_prisms=ndisp, vis_triangles=nvis, textured=len(textures), materials=len(prims), light=map_light(m, yaw), spawn=spawn_cls, spawn_source=[float(x) for x in origin], spawn_yaw=yaw)
     with open(os.path.join(out, "manifest.json"), "w") as fh:
         json.dump(info, fh, indent=1)
     return info
@@ -436,7 +555,21 @@ def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     ap.add_argument("--out", default=os.path.join(root, "public", "assets", "maps"))
     ap.add_argument("--cache", default=os.path.join(root, "assets", "bsp-cache"))
+    ap.add_argument("--no-textures", action="store_true", help="flat texture-average colours only")
     a = ap.parse_args()
+
+    import source_assets as A
+    vpks: dict[str, A.VPK] = {}
+
+    def mounts(bsp: BSP):
+        if a.no_textures:
+            return None
+        loose, archives = MOUNTS.get(a.game or "", (None, []))
+        for v in archives:
+            if v not in vpks:
+                vpks[v] = A.VPK(f"{a.storage}/{v}", a.cache)
+        return A.FileSystem(bsp.lump(40), f"{a.storage}/{loose}" if loose else None,
+                            [vpks[v] for v in archives], a.cache)
 
     jobs = []
     if a.bsp:
@@ -454,13 +587,14 @@ def main():
     for src, mid, name, game in jobs:
         print(f"{mid}:", file=sys.stderr)
         try:
-            info = convert(fetch(src, a.cache), mid, name, game, a.out)
+            info = convert(fetch(src, a.cache), mid, name, game, a.out, mounts)
         except Exception as e:                                 # one bad map must not stop the batch
             print(f"  FAILED: {e}", file=sys.stderr)
             continue
         print(f"  {info['boxes']} boxes, {info['hulls']} hulls, {info['hfields']} heightfields, "
               f"{info['disp_prisms']} displacement prisms, "
-              f"{info['vis_triangles']} visual triangles", file=sys.stderr)
+              f"{info['vis_triangles']} visual triangles, {info['textured']}/{info['materials']} materials textured",
+              file=sys.stderr)
         index["maps"] = [x for x in index["maps"] if x["id"] != mid] + [{"id": mid, "name": name, "game": game}]
     index["maps"].sort(key=lambda x: (x["game"], x["name"]))
     os.makedirs(a.out, exist_ok=True)
