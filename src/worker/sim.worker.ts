@@ -79,6 +79,10 @@ class SimWorker {
   private scriptT0 = -1;
   playback: Playback | null = null;
   inspectOn = false;
+  /** take review: the control loop idles so the robot is where the recording left it on resume */
+  paused = false;
+  /** frame clock (s): advanced by every posted frame's step — the time base of recorded takes */
+  private clock = 0;
   private prevCmd: { target: Float64Array | null; kp: Float64Array; kd: Float64Array } | null = null;
   baseAddr = 0;                        // floating-base qpos addr (for driver-less frames)
   private baseVaddr = 0;               // floating-base qvel addr
@@ -343,6 +347,15 @@ class SimWorker {
       contype: Int32Array.from(m.geom_contype as Int32Array),
       bodyid: Int32Array.from(m.geom_bodyid as Int32Array),
       dataid, meshes,
+      nq: this.eng.model.nq,
+      bodyNames: Array.from({ length: this.eng.model.nbody }, (_, i) => {
+        const acc = m.body(i);
+        const name = acc.name as string;
+        acc.delete?.();
+        return name;
+      }),
+      baseQadr: this.baseAddr,
+      hinges: (() => { const h = this.eng.hinges(); return h.names.map((name, i) => ({ name, qadr: h.qadr[i] })); })(),
     };
   }
 
@@ -458,6 +471,7 @@ class SimWorker {
       case "deletePack": return this.doDeletePack(m.id);
       case "deleteAllPacks": return this.doDeleteAllPacks();
       case "inspect": this.inspectOn = m.on; return;
+      case "pause": this.paused = m.on; return;
       case "leash":
         this.leash = { on: m.on, x: m.x ?? this.leash.x, y: m.y ?? this.leash.y };
         return;
@@ -804,27 +818,30 @@ class SimWorker {
     });
   }
 
-  private postFrame() {
+  /** Post the scene state after a step of `dt` simulated seconds. */
+  private postFrame(dt: number) {
+    this.clock += dt;
     const xpos = Float32Array.from(this.eng.geomXpos);
     const xmat = Float32Array.from(this.eng.geomXmat);
+    const qpos = Float64Array.from(this.eng.qpos);
     const b = this.playback?.bqp ?? this.driver?.bqp ?? this.baseAddr;
     const hoistAnchor: [number, number, number] | null = this.hoistOn
       ? this.hoistPoint()
       : null;
     post({ t: "frame", xpos, xmat,
            baseX: this.eng.qpos[b], baseY: this.eng.qpos[b + 1],
-           hoistAnchor },
-         [xpos.buffer, xmat.buffer]);
+           hoistAnchor, clock: this.clock, qpos },
+         [xpos.buffer, xmat.buffer, qpos.buffer]);
   }
 
   private async controlLoop() {
     let lastStatus = 0;
     for (;;) {
-      if (this.busy) { await sleep(50); continue; }
+      if (this.busy || this.paused) { await sleep(50); continue; }
       if (this.playback) {
         const t0 = performance.now();
         this.playbackStep();
-        this.postFrame();
+        this.postFrame(0.02);
         this.maybeInspect(t0);
         if (t0 - lastStatus > 400) { this.sendStatus(); lastStatus = t0; }
         await sleep(Math.max(20 - (performance.now() - t0), 0));
@@ -834,7 +851,7 @@ class SimWorker {
         // robot selected but no policy loaded (e.g. go2 before importing a
         // pack): show it standing in its default pose, no physics stepping.
         const t0 = performance.now();
-        this.postFrame();
+        this.postFrame(0.1);
         this.maybeInspect(t0);
         if (t0 - lastStatus > 400) { this.sendStatus(); lastStatus = t0; }
         await sleep(100);
@@ -874,7 +891,7 @@ class SimWorker {
       }
       this.simT += stepDt;
       this.updateSpeed(stepDt);
-      this.postFrame();
+      this.postFrame(stepDt);
       this.maybeInspect(t0);
       const elapsed = performance.now() - t0;
       this.rtf = 0.9 * this.rtf + 0.1 * (stepDt * 1000 / Math.max(elapsed, 1e-3));

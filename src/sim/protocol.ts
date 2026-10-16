@@ -30,6 +30,7 @@ export type ToWorker =
   | { t: "leash"; on: boolean; x?: number; y?: number }  // drag: pull anchor (world xy)
   | { t: "hoist"; on: boolean }      // overhead suspension gantry support
   | { t: "remote"; combo: string }  // remote-controller combo for the active policy (e.g. 505 "R1+Up")
+  | { t: "pause"; on: boolean }     // freeze the control loop (take review: the timeline owns the scene)
   /** scripted stimulus on SIM time (tests / bench replays): at `at` s after receipt set the sticks
    * (ly, lx, rx in [-1, 1], scaled by the active policy's velRange every tick) and / or press a combo */
   | { t: "script"; steps: { at: number; stick?: [number, number, number]; combo?: string }[] };
@@ -54,6 +55,10 @@ export interface RenderModel {
     name: string; vert: Float32Array; face: Uint32Array;
     pos: [number, number, number]; quat: [number, number, number, number];
   }>;
+  nq: number;
+  bodyNames: string[];     // nbody (names the parts of a Blender export)
+  baseQadr: number;        // floating-base qpos address, -1 when the model has none
+  hinges: { name: string; qadr: number }[];   // every hinge joint, model order
 }
 
 export interface PolicyInfo {
@@ -106,8 +111,10 @@ export interface InspectMsg {
 
 export type FromWorker =
   | { t: "model"; desc: RenderModel }
+  /** `clock` is the frame clock: simulated seconds, advanced by each posted frame's step (so a take
+   * recorded under load still plays back at true speed); `qpos` is a copy of the full state. */
   | { t: "frame"; xpos: Float32Array; xmat: Float32Array; baseX: number; baseY: number;
-      hoistAnchor?: [number, number, number] | null }
+      hoistAnchor?: [number, number, number] | null; clock: number; qpos: Float64Array }
   | StatusMsg
   | InspectMsg
   | { t: "busy"; msg: string }
