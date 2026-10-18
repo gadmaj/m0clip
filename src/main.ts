@@ -2,6 +2,7 @@
  * the sim worker (see src/sim/protocol.ts for why); this side only exchanges
  * messages: commands in, model description + frames + status out. */
 import * as THREE from "three";
+import { NoclipFlight, isCameraKey, isCameraMovementKey } from "./input/noclip";
 import type { Command } from "./core/types";
 import { GamepadInput, type ComboAction } from "./input/gamepad";
 import { ExportDialog, loadPrefs as loadExportPrefs } from "./record/export-dialog";
@@ -10,13 +11,16 @@ import type { Stage } from "./record/export-video";
 import { defaultShot, ShotPath, type Shot } from "./record/shot";
 import { loadTake, motionCsv, saveTake, Take, TakeRecorder } from "./record/take";
 import { eventList, fmtTime, Timeline, type ViewMode } from "./record/timeline";
-import { download, screenshot, stamp } from "./render/recorder";
+import { download, capturePng, stamp } from "./render/recorder";
 import { SceneView } from "./render/scene";
+import { SceneCamera } from './render/scene-camera';
 import type { FromWorker, InspectMsg, RenderModel, StatusMsg, ToWorker } from "./sim/protocol";
 import type { FsmState } from "./sim/fsm";
 import { isTerrain, listMaps, mapId, MAPS_DIR, type TerrainName } from "./sim/terrain";
 import { Panel, type StatusRow } from "./ui/panel";
 import { LookPanel, type MapLight } from "./ui/look";
+import { ExplorePanel, sharedView, viewLink, type SavedView } from "./ui/explore";
+import { policyPresentation } from './ui/policy-names';
 
 /** Robot family: r1 + r1_air (EDU 24-DOF / Air 20-DOF) share one UI slot, g1 + g1_air (EDU 29-DOF / Air 23-DOF) one UI
  * slot; go2 is its own. */
@@ -64,7 +68,8 @@ function formatInspect(m: InspectMsg): string {
   };
   const [vx, vy, wz] = m.command;
   const H: string[] = [];
-  H.push(`<div class="ins-pol" title="${esc(m.policy)}">${esc(m.policy)}</div>`);
+  const policyLabel = m.policy === '-' ? 'No policy' : policyPresentation(m.policy).label;
+  H.push(`<div class="ins-pol" title="${esc(policyLabel)}">${esc(policyLabel)}</div>`);
   const kv: [string, string][] = [["state", m.state], ["base z", `${m.baseZ.toFixed(2)} m`]];
   if (m.baseXY) kv.push(["xy", `${sgn(m.baseXY[0])} ${sgn(m.baseXY[1])}`]);
   kv.push(["drive", m.drive]);
@@ -94,6 +99,9 @@ function formatInspect(m: InspectMsg): string {
   return H.join("");
 }
 
+interface ViewRestoreRequest {
+  id:number;view:SavedView;navigating:boolean;resolve:()=>void;reject:(error:Error)=>void;
+}
 class App {
   view = new SceneView(document.getElementById("viewport")!);
   panel: Panel;
@@ -107,6 +115,19 @@ class App {
   private velRangeKey = "";
   private lastFrame: { xpos: Float32Array; xmat: Float32Array } | null = null;
   private baseXY: [number, number] = [0, 0];
+  private baseZ = 0.7;
+  private noclip = false;
+  private noclipFov: number | null = null;
+  private flight!: NoclipFlight;
+  private flightReadout = "";
+  private flashlight = false;
+  private heldView = false;
+  private viewRestoreSequence=0;
+  private pendingViewRestore:ViewRestoreRequest|null=null;
+  private placingRobot = false;
+  private placementPending = false;
+  private placementPoint: THREE.Vector3 | null = null;
+  private explore!: ExplorePanel;
   private status: StatusMsg | null = null;
 
   private overlay = document.getElementById("overlay")!;
@@ -121,8 +142,16 @@ class App {
 
   // ---- recording / review ----
   private model: RenderModel | null = null;       // the live model (last "model" message)
+  private viewBuildGeneration=0;
   private viewModel: RenderModel | null = null;   // the model the scene currently shows
   private rec: TakeRecorder | null = null;
+  private recordStarting = false;
+  private screenshotPending=false;
+  private screenshotRequest=0;
+  private screenshotAbort:AbortController|null=null;
+  private screenshotIsCurrent:(()=>boolean)|null=null;
+  private liveAppearance: ReturnType<SceneView["getAppearance"]> | null = null;
+  private liveSourceHead: 'stock' | 'ghost' | null = null;
   /** last value logged per input: a change the user makes is logged when they make it (at the frame
    * they were looking at), and the status that confirms it later is not logged again */
   private logged: { state?: FsmState; policy?: string; hoist?: boolean } = {};
@@ -139,8 +168,8 @@ class App {
   private dialog: ExportDialog;
   private shot: Shot;
   private shotPath: ShotPath | null = null;
-  private readonly shotCam = new THREE.PerspectiveCamera(40, 16 / 9, 0.05, 100);
-  private readonly exportCam = new THREE.PerspectiveCamera(40, 16 / 9, 0.05, 100);
+  private readonly shotCam = new SceneCamera(40, 16 / 9, 0.05, 100);
+  private readonly exportCam = new SceneCamera(40, 16 / 9, 0.05, 100);
   private exporting = false;
   private reviewXpos = new Float32Array(0);
   private reviewXmat = new Float32Array(0);
@@ -201,14 +230,27 @@ class App {
   constructor() {
     this.panel = new Panel(document.getElementById("panel")!,
                            document.getElementById("policy-manager")!, [], {
-      onRobot: (r) => this.send({ t: "robot", robot: r }),
-      onTerrain: (t) => this.send({ t: "terrain", terrain: t }),
+      onRobot: (r) => { this.cancelScreenshot(); this.cancelViewRestore(); if (this.noclip) this.setNoclip(false); this.heldView = false; this.send({ t: "robot", robot: r }); },
+      onTerrain: (t) => {
+        this.cancelScreenshot();
+        this.cancelViewRestore();
+        if (this.noclip) this.setNoclip(false);
+        this.heldView = false;
+        const url = new URL(location.href);
+        if (url.hash.startsWith('#view=')) url.hash = '';
+        if (url.searchParams.has('map')) {
+          if (t.startsWith('map:')) url.searchParams.set('map', t.slice(4));
+          else url.searchParams.delete('map');
+        }
+        history.replaceState(null, '', url);
+        this.send({ t: "terrain", terrain: t });
+      },
       onPolicy: (name) => { this.logInput("policy", name); this.send({ t: "policy", name }); },
       onState: (s) => this.setState(s),
       onReset: () => this.reset(),
-      onRecenter: () => this.send({ t: "recenter" }),
+      onRecenter: () => this.recenterView(),
       onZeroCmd: () => this.stopAndRearm(),
-      onScreenshot: () => screenshot(this.view.renderer.domElement),
+      onScreenshot: () => {void this.takeScreenshot();},
       onRecordToggle: () => this.toggleRecording(),
       onOpenTimeline: () => this.openReview(),
       onLoadTake: (file) => void this.openTakeFile(file),
@@ -218,6 +260,8 @@ class App {
       onDeletePack: (id) => this.send({ t: "deletePack", id }),
       onDeleteAllPacks: () => this.send({ t: "deleteAllPacks" }),
       onHoist: (on) => this.setHoist(on),
+      onNoclip: (on) => this.setNoclip(on),
+      onFlashlight: (on) => this.setFlashlight(on),
       onRemote: (combo) => this.remote(combo),
     });
     this.timeline = new Timeline(document.getElementById("deck")!, {
@@ -248,10 +292,18 @@ class App {
     });
     this.wireShotOrbit();
     this.look = new LookPanel(document.getElementById("panel")!, this.view);
+    this.explore = new ExplorePanel(document.getElementById("panel")!, {
+      display: (display) => this.view.setDisplay(display),
+      capture: () => this.captureView(), restore: (view) => this.restoreView(view),
+    });
+    window.addEventListener('hashchange', () => { const view = sharedView(); if (view) void this.explore.restoreView(view); });
     this.wirePartPicking();
     this.worker.onmessage = (ev: MessageEvent<FromWorker>) => this.onWorker(ev.data);
     this.worker.onerror = (e) =>
       this.showOverlay(`sim worker crashed: ${e.message ?? e}`);
+    this.flight = new NoclipFlight(this.view.camera, this.view.controls.target,
+      this.view.renderer.domElement, () => this.send({ t: 'noclipMove', velocity: [0, 0, 0] }));
+    this.wireNavigation();
     window.addEventListener("keydown", (e) => this.onKey(e));
     window.addEventListener("keyup", (e) => this.onKeyUp(e));
     // Hand the keyboard back to the sim after using the panel: a dropdown keeps focus after a choice (so W/S would
@@ -278,10 +330,18 @@ class App {
     const prefs = loadPrefs();
     const maps = await listMaps();
     this.panel.setMaps(maps);
-    if (isTerrain(prefs.terrain) &&
-        (!prefs.terrain.startsWith("map:") || maps.some((m) => `map:${m.id}` === prefs.terrain)))
-      this.panel.setTerrain(prefs.terrain);
-    this.send({ t: "init", robot: prefs.robot, terrain: this.panel.terrain, policy: prefs.policy });
+    const mapQuery = new URLSearchParams(location.search).get('map');
+    const requested = maps.some(map => map.id === mapQuery) ? `map:${mapQuery}` : undefined;
+    const shared = sharedView(), terrain = shared?.terrain ?? requested ?? prefs.terrain;
+    if (isTerrain(terrain) &&
+        (!terrain.startsWith("map:") || maps.some((m) => `map:${m.id}` === terrain))) {
+      this.panel.setTerrain(terrain);
+      if (shared) void this.explore.restoreView(shared,v=>this.restoreView(v,false));
+    }
+    const bodyRobot=new URLSearchParams(location.search).get('body')==='dog'&&!prefs.robot?.startsWith('r1')?'r1':prefs.robot;
+    this.send({ t: "init", robot: shared?.robot ?? bodyRobot, terrain: this.panel.terrain,
+      policy: bodyRobot===prefs.robot?prefs.policy:undefined });
+    if(this.pendingViewRestore)this.send({t:'viewReady',request:this.pendingViewRestore.id});
     this.send({ t: "inspect", on: true });   // left column always streams
   }
 
@@ -312,7 +372,7 @@ class App {
     const anchorAt = (ev: PointerEvent): [number, number] | null =>
       this.view.groundPoint(ev, 0.12);
     dom.addEventListener("pointerdown", (ev) => {
-      if (!this.leashCapable || ev.button !== 0 || this.timeline.isOpen) return;
+      if (this.noclip || !this.leashCapable || ev.button !== 0 || this.timeline.isOpen) return;
       const p = anchorAt(ev);
       if (!p) return;
       const nearRobot = Math.hypot(p[0] - this.baseXY[0], p[1] - this.baseXY[1]) < 0.8;
@@ -377,6 +437,7 @@ class App {
   }
 
   private reset() {
+    this.stopAndRearm();
     this.rec?.mark("reset", "Reset");
     this.send({ t: "reset" });
   }
@@ -398,13 +459,260 @@ class App {
   /** Space / Stop: zero the command AND re-sample the pad's rest position, so
    * a drifting or mis-neutraled pad can always be recovered hands-off. */
   private stopAndRearm() {
+    this.keysHeld.clear();
+    this.flight?.stop();
+    this.send({ t: "noclipMove", velocity: [0, 0, 0] });
     this.pad.rearm();
     this.setCommand([0, 0, 0]);
+  }
+
+  private setNoclip(on: boolean) {
+    if (this.timeline.isOpen || this.exporting || this.noclip === on) return;
+    this.stopAndRearm();
+    this.cancelPlacement();
+    this.noclip = on;
+    this.view.setRobotHidden(on);
+    if (on) { this.noclipFov = this.view.camera.fov; this.view.camera.fov = 60; }
+    else if (this.noclipFov !== null) { this.view.camera.fov = this.noclipFov; this.noclipFov = null; }
+    this.view.camera.updateProjectionMatrix();
+    if (on) {
+      const damping = this.view.controls.enableDamping;
+      this.view.controls.enableDamping = false;
+      this.view.controls.update();
+      this.view.controls.enableDamping = damping;
+    }
+    this.view.controls.enabled = !on;
+    this.flight.setActive(on);
+    document.getElementById('flight-hud')!.hidden = !on;
+    if (on) this.view.renderer.domElement.focus({ preventScroll: true });
+    // Flying owns the camera directly. Keep the final view when returning to physics.
+    this.heldView = true;
+    this.panel.setNoclip(on);
+    this.rec?.mark("noclip", on ? "Noclip on" : "Noclip off");
+    this.send({ t: "noclip", on });
+  }
+
+  private wireNavigation() {
+    const panels = document.getElementById('toggle-panels') as HTMLButtonElement;
+    const inspector = document.getElementById('toggle-inspector') as HTMLButtonElement;
+    const menu = document.getElementById('toggle-menu') as HTMLButtonElement;
+    let visible = { inspector: true, menu: true };
+    let restore = { ...visible };
+    try {
+      const saved = JSON.parse(localStorage.getItem('ume-panel-visibility') ?? 'null');
+      if (typeof saved?.inspector === 'boolean' && typeof saved?.menu === 'boolean') {
+        visible = { inspector: saved.inspector, menu: saved.menu };
+        if (typeof saved.restore?.inspector === 'boolean' && typeof saved.restore?.menu === 'boolean'
+            && (saved.restore.inspector || saved.restore.menu)) restore = saved.restore;
+      }
+    } catch { /* Keep the default layout when stored preferences are unavailable. */ }
+    const update = (focus = true) => {
+      const hidden = !visible.inspector && !visible.menu;
+      document.body.classList.toggle('map-focus', hidden);
+      document.body.classList.toggle('inspector-hidden', !visible.inspector);
+      document.body.classList.toggle('menu-hidden', !visible.menu);
+      for (const [button, name, shown] of [[inspector, 'inspector', visible.inspector], [menu, 'menu', visible.menu]] as const) {
+        button.setAttribute('aria-pressed', String(shown));
+        button.setAttribute('aria-expanded', String(shown));
+        button.title = `${shown ? 'Hide' : 'Show'} ${name}`;
+        button.setAttribute('aria-label', button.title);
+      }
+      panels.textContent = hidden ? 'Show panels' : 'Hide panels';
+      panels.setAttribute('aria-pressed', String(hidden));
+      if (!hidden) restore = { ...visible };
+      try { localStorage.setItem('ume-panel-visibility', JSON.stringify({ ...visible, restore })); } catch { /* Layout still works without persistence. */ }
+      if (focus) this.view.renderer.domElement.focus({ preventScroll: true });
+    };
+    panels.onclick = () => {
+      if (this.exporting || this.dialog.isOpen) return;
+      visible = !visible.inspector && !visible.menu ? { ...restore } : { inspector: false, menu: false };
+      update();
+    };
+    inspector.onclick = () => { if (!this.exporting && !this.dialog.isOpen) { visible.inspector = !visible.inspector; update(); } };
+    menu.onclick = () => { if (!this.exporting && !this.dialog.isOpen) { visible.menu = !visible.menu; update(); } };
+    update(false);
+    const toolbar = document.getElementById('viewport-tools')!;
+    new ResizeObserver(() => {
+      document.getElementById('viewport')!.style.setProperty('--viewport-tools-height', `${toolbar.offsetHeight}px`);
+    }).observe(toolbar);
+    window.addEventListener('keydown', e => {
+      if (e.code === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey
+          && (e.target === this.view.renderer.domElement || document.body.classList.contains('map-focus'))) {
+        e.preventDefault(); panels.click();
+      }
+    });
+    const fullscreen = document.getElementById('fullscreen') as HTMLButtonElement;
+    if (!document.fullscreenEnabled) fullscreen.hidden = true;
+    fullscreen.onclick = async () => {
+      try {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        else await document.getElementById('app')!.requestFullscreen();
+      } catch { fullscreen.textContent = 'Full screen unavailable'; }
+    };
+    document.addEventListener('fullscreenchange', () => {
+      fullscreen.textContent = document.fullscreenElement ? 'Exit full screen' : 'Full screen';
+      fullscreen.setAttribute('aria-pressed', String(!!document.fullscreenElement));
+    });
+    const speed = document.getElementById('flight-speed') as HTMLInputElement;
+    speed.oninput = () => { this.flight.speed = Number(speed.value); this.updateFlightHud(); };
+    document.getElementById('flight-hover')!.onclick = () => { this.flight.hover = !this.flight.hover; this.updateFlightHud(); };
+    document.getElementById('flight-exit')!.onclick = () => this.setNoclip(false);
+    document.getElementById('flight-place')!.onclick = () => this.placingRobot ? this.cancelPlacement() : this.beginPlacement();
+    const canvas = this.view.renderer.domElement;
+    const hitAt = (event: PointerEvent) => {
+      const box = canvas.getBoundingClientRect();
+      return this.view.pickPlacement(new THREE.Vector2((event.clientX - box.left) / box.width * 2 - 1,
+        1 - (event.clientY - box.top) / box.height * 2));
+    };
+    canvas.addEventListener('pointermove', event => {
+      if (!this.placingRobot || this.placementPending) return;
+      const hit = hitAt(event);
+      this.view.showPlacement(hit?.point ?? null, hit?.normal, hit?.valid);
+      document.getElementById('flight-hint')!.textContent = hit?.valid
+        ? 'Click to place the robot here. Esc cancels.' : 'Choose a floor or upward-facing surface. Esc cancels.';
+    });
+    canvas.addEventListener('pointerdown', event => {
+      if (!this.placingRobot) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      if (event.button !== 0 || this.placementPending) return;
+      const hit = hitAt(event);
+      this.view.showPlacement(hit?.point ?? null, hit?.normal, hit?.valid);
+      if (!hit?.valid) return;
+      this.placementPending = true; this.placementPoint = hit.point;
+      const direction = this.view.camera.getWorldDirection(new THREE.Vector3());
+      document.getElementById('flight-hint')!.textContent = 'Placing robot…';
+      this.send({ t: 'placeRobot', position: hit.point.toArray() as [number, number, number], yaw: Math.atan2(direction.y, direction.x) });
+    }, true);
+  }
+
+  private beginPlacement() {
+    if (!this.noclip || this.timeline.isOpen || this.exporting || this.placementPending) return;
+    this.placingRobot = true;
+    this.flight.setActive(false);
+    const button = document.getElementById('flight-place')!;
+    button.querySelector('.lbl')!.textContent = 'Cancel placement'; button.setAttribute('aria-pressed', 'true');
+    document.getElementById('flight-hint')!.textContent = 'Click a floor or upward-facing surface to place the robot. Esc cancels.';
+    this.view.renderer.domElement.style.cursor = 'crosshair';
+    this.view.renderer.domElement.focus({ preventScroll: true });
+  }
+
+  private cancelPlacement() {
+    this.placingRobot = false; this.placementPending = false; this.placementPoint = null;
+    this.view.showPlacement(null);
+    const button = document.getElementById('flight-place')!;
+    button.querySelector('.lbl')!.textContent = 'Place robot'; button.setAttribute('aria-pressed', 'false');
+    document.getElementById('flight-hint')!.textContent = 'Drag to look · WASD / arrows fly · Numpad 8/2/4/6 move, 9/3 up/down, 5 stop · Shift faster';
+    if (this.noclip) this.flight.setActive(true);
+  }
+
+  private updateFlightHud() {
+    const speed = document.getElementById('flight-speed') as HTMLInputElement;
+    speed.value = String(this.flight.speed);
+    const text = `${(this.flight.speed * 60 / 20 * .0254).toFixed(1)} m/s`;
+    if (text !== this.flightReadout) {
+      this.flightReadout = text; document.getElementById('flight-readout')!.textContent = text;
+    }
+    document.getElementById('flight-hover')!.setAttribute('aria-pressed', String(this.flight.hover));
+  }
+
+  private setFlashlight(on: boolean) {
+    this.flashlight = on;
+    this.view.setFlashlight(on);
+    this.panel.setFlashlight(on);
+  }
+
+  private captureView(): SavedView {
+    if(this.pendingViewRestore)throw new Error('Wait for the view to finish restoring before saving or sharing it.');
+    const p = this.view.camera.position, t = this.view.controls.target;
+    return { version: 1, robot: this.viewModel?.robot ?? this.model?.robot ?? this.status?.robot ?? 'r1', terrain: this.viewModel?.terrain ?? this.panel.terrain,
+      position: [p.x, p.y, p.z], target: [t.x, t.y, t.z], fov: this.view.camera.fov,
+      display: this.explore.getDisplay(), flashlight: this.flashlight, look: this.look.getState(),
+      appearance:this.view.getAppearance(),sourceHead:this.view.getAppearance().sourceBody!=='dog'&&this.view.getHeadVisualState().available?this.view.getHeadVisual():'stock',
+      orientation:this.view.camera.quaternion.toArray(),noclip:this.noclip,flight:{speed:this.flight.speed,hover:this.flight.hover} };
+  }
+
+  private restoreView(view: SavedView, navigate = true):Promise<void> {
+    if(this.rec||this.recordStarting)return Promise.reject(new Error('Stop recording before restoring a view.'));
+    if(this.exporting)return Promise.reject(new Error('Wait for the export to finish before restoring a view.'));
+    if(this.timeline.isOpen)return Promise.reject(new Error('Close the timeline before restoring a view.'));
+    this.cancelScreenshot();
+    const replaceNavigation=this.pendingViewRestore?.navigating??false;
+    this.pendingViewRestore?.reject(new DOMException('A newer view was selected.','AbortError'));
+    const id=++this.viewRestoreSequence;
+    const promise=new Promise<void>((resolve,reject)=>{this.pendingViewRestore={id,view:structuredClone(view),navigating:true,resolve,reject}});
+    this.cancelPlacement();this.flight?.stop();
+    this.heldView=true;
+    if(view.noclip)this.view.controls.enabled=false;
+    this.applyViewCamera(view);
+    if(navigate) {
+      this.stopAndRearm();
+      if(replaceNavigation||this.viewModel?.robot!==view.robot)this.send({t:'robot',robot:view.robot});
+      if(replaceNavigation||this.panel.terrain!==view.terrain){this.panel.setTerrain(view.terrain);this.send({t:'terrain',terrain:view.terrain});}
+      history.replaceState(null,'',viewLink(view));
+      this.send({t:'viewReady',request:id});
+    }
+    return promise;
+  }
+
+  private cancelViewRestore() {
+    const request=this.pendingViewRestore;
+    if(!request)return;
+    this.pendingViewRestore=null;this.view.controls.enabled=!this.noclip;
+    request.reject(new DOMException('View restore canceled: the robot or map was changed.','AbortError'));
+  }
+
+  private applyViewCamera(view:SavedView) {
+    const damping=this.view.controls.enableDamping;
+    this.view.controls.enableDamping=false;this.view.controls.update();
+    this.view.camera.position.set(...view.position);this.view.camera.fov=view.fov;
+    this.view.camera.updateProjectionMatrix();this.view.controls.target.set(...view.target);
+    if(!view.orientation)this.view.controls.update();
+    if(view.orientation)this.view.camera.quaternion.fromArray(view.orientation);
+    this.view.camera.updateMatrixWorld(true);this.view.controls.enableDamping=damping;
+  }
+
+  private async finishViewRestore(message:Extract<FromWorker,{t:'viewReady'}>) {
+    const request=this.pendingViewRestore;if(!request||request.id!==message.request)return;
+    request.navigating=false;
+    try{
+      const view=request.view,family=(robot:string)=>robot.split('_')[0],model=this.viewModel;
+      if(!model||message.terrain!==view.terrain||model.terrain!==view.terrain||family(message.robot)!==family(view.robot))throw new Error('The requested robot or map did not load.');
+      if(view.appearance){
+        this.look.restoreAppearance(model.robot,view.appearance);
+        if(model.robot!==view.robot)this.look.restoreAppearance(view.robot,view.appearance);
+      }
+      if(view.sourceHead!==undefined)await this.view.setSourceHead(view.sourceHead);
+      await Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]);
+      if(this.pendingViewRestore!==request)return;
+      if(this.viewModel!==model||this.panel.terrain!==view.terrain)throw new Error('The robot or map changed while restoring the view.');
+      if(view.noclip!==undefined)this.setNoclip(view.noclip);
+      if(view.flight){this.flight.speed=view.flight.speed;this.flight.hover=view.flight.hover;this.updateFlightHud();}
+      this.applyViewCamera(view);this.flight.setActive(this.noclip);this.explore.setDisplay(view.display);this.look.setState(view.look);this.setFlashlight(view.flashlight);
+      this.look.refreshHead();this.pendingViewRestore=null;request.resolve();
+    }catch(error){
+      if(this.pendingViewRestore!==request)return;
+      this.pendingViewRestore=null;this.view.controls.enabled=!this.noclip;
+      request.reject(error instanceof Error?error:new Error(String(error)));
+    }
+  }
+
+  private recenterView() {
+    if (this.noclip) {
+      this.flight.stop();
+      this.view.camera.position.set(this.baseXY[0] + 2.2, this.baseXY[1] - 2.2, this.baseZ + 1.4);
+      this.view.controls.target.set(this.baseXY[0], this.baseXY[1], this.baseZ);
+      this.view.camera.lookAt(this.view.controls.target);
+      this.flight.setActive(true);
+      return;
+    }
+    if (this.heldView) { this.heldView = false; return; }
+    this.send({ t: 'recenter' });
   }
 
   private async loadCsv(file: File, fps: number) {
     try {
       const csv = await file.text();
+      if (this.noclip) this.setNoclip(false);
       this.send({ t: "playback", csv, fps, name: file.name });
     } catch (e) {
       this.showOverlay(`failed to read ${file.name}: ${e}`);
@@ -433,13 +741,34 @@ class App {
   }
 
   private startRecording() {
+    if(this.pendingViewRestore){this.panel.setRecordInfo('Wait for the saved view to finish restoring.');return;}
+    if (this.recordStarting || this.rec || !this.model || this.exporting) return;
+    if (this.timeline.isOpen) this.closeReview();
+    this.recordStarting = true;
+    const generation=this.viewBuildGeneration,model=this.model;
+    this.look.setHeadLocked(true);
+    this.panel.setRecordInfo('Preparing scene visuals…');
+    void Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]).then(() => {
+      if(generation!==this.viewBuildGeneration||this.model!==model||(model.terrain??this.panel.terrain)!==this.panel.terrain){
+        this.panel.setRecordInfo('The scene changed. Press Record again when it has loaded.');return;
+      }
+      if (!this.exporting && !this.timeline.isOpen) this.beginRecording();
+    }).catch(error => {
+      this.panel.setRecordInfo(`Recording could not start: ${error instanceof Error ? error.message : error}`);
+    }).finally(() => {
+      this.recordStarting = false;
+      if (!this.rec && !this.timeline.isOpen) this.look.setHeadLocked(false);
+    });
+  }
+
+  private beginRecording() {
     const m = this.model;
     if (!m || this.exporting) return;
     if (this.timeline.isOpen) this.closeReview();
     const s = this.status;
     this.recModel = m;
     this.rec = new TakeRecorder({
-      robot: m.robot, model: s?.model, terrain: this.panel.terrain, policy: s?.policy ?? "-",
+      robot: m.robot, model: s?.model, terrain: m.terrain??this.panel.terrain, sourceTime: this.view.getSourceTime(), appearance: this.view.getAppearance(), sourceHead: this.view.getSourceHead(), robotFade: this.view.getRobotFadeState(), policy: s?.policy ?? "-",
       created: new Date().toISOString(), ngeom: m.ngeom, nq: m.nq, baseQadr: m.baseQadr, hinges: m.hinges,
     });
     this.logged = {};
@@ -462,6 +791,7 @@ class App {
     this.recBadge.hidden = true;
     const take = rec.finish();
     if (!take) {
+      this.look.setHeadLocked(false);
       this.panel.setRecordInfo("Nothing recorded — the sim posted no frames (is it loading?).");
       return;
     }
@@ -478,14 +808,25 @@ class App {
   private camPose() {
     const c = this.view.camera, t = this.view.controls.target;
     return { pos: [c.position.x, c.position.y, c.position.z] as [number, number, number],
-             target: [t.x, t.y, t.z] as [number, number, number], fov: c.fov };
+             target: [t.x, t.y, t.z] as [number, number, number], fov: c.fov,orientation:c.quaternion.toArray() };
   }
 
   // ---- review (timeline) ----------------------------------------------------
   private openReview() {
     const take = this.take, tm = this.takeModel;
     if (!take || !tm) return;
+    this.cancelScreenshot();
+    if (!this.timeline.isOpen) {
+      this.liveAppearance = this.view.getAppearance();
+      this.liveSourceHead = this.view.getHeadVisualState().available ? this.view.getHeadVisual() : 'stock';
+    }
+    if (this.noclip) this.setNoclip(false);
     if (this.viewModel !== tm) { this.buildView(tm); this.viewModel = tm; }
+    this.view.setAppearance(take.meta.appearance ?? {...this.view.getAppearance(),sourceBody:'stock'});
+    this.look.setHeadLocked(true);
+    void this.view.setSourceHead(take.meta.sourceHead === 'ghost' ? 'ghost' : 'stock')
+      .then(() => this.look.refreshHead())
+      .catch(error => { if (this.timeline.isOpen && this.take === take) this.showOverlay(`Recorded head visual could not load: ${error instanceof Error ? error.message : error}`, 'error'); });
     this.send({ t: "pause", on: true });
     this.keysHeld.clear();
     if (this.command.some((v) => v !== 0)) this.setCommand([0, 0, 0]);
@@ -502,20 +843,31 @@ class App {
 
   private closeReview() {
     if (this.exporting) return;
+    this.cancelScreenshot();
     if (this.dialog.isOpen) this.dialog.close();
     this.timeline.close();
+    this.view.setSourceTime(null);
+    this.view.setRobotOpacityOverride(null);
     this.setViewMode("free");
     if (this.model && this.viewModel !== this.model) {
       this.buildView(this.model);
       this.viewModel = this.model;
       this.lastFrame = null;
     }
+    if (this.liveAppearance) this.view.setAppearance(this.liveAppearance);
+    this.liveAppearance = null;
+    const head = this.liveSourceHead ?? 'stock';
+    this.liveSourceHead = null;
+    this.look.setHeadLocked(false);
+    void this.view.setSourceHead(head).then(() => this.look.refreshHead())
+      .catch(error => { if (!this.timeline.isOpen && this.view.getHeadVisual() === head) this.showOverlay(`Head visual could not load: ${error instanceof Error ? error.message : error}`, 'error'); });
     this.followZ = this.model?.robot.startsWith("go2") ? 0.35 : 0.7;
     this.send({ t: "pause", on: false });
     this.inspectorBody.innerHTML = `<span class="ins-empty">Back to the live sim…</span>`;
   }
 
   private setViewMode(m: ViewMode) {
+    if(this.timeline.mode!==m)this.cancelScreenshot();
     this.timeline.setMode(m);
     const cam = this.view.camera;
     if (m !== "recorded" && cam.fov !== 45) { cam.fov = 45; cam.updateProjectionMatrix(); }
@@ -542,6 +894,8 @@ class App {
   /** Pose the scene from the take at time t (review frames and export frames alike). */
   private poseTake(t: number) {
     const take = this.take!;
+    this.view.setSourceTime((take.meta.sourceTime ?? 0) + t);
+    this.view.setRobotOpacityOverride(take.robotOpacityAt(t));
     take.geomXformAt(t, this.reviewXpos, this.reviewXmat);
     this.view.sync(this.reviewXpos, this.reviewXmat);
     this.view.setHoist(take.hoistAt(t));
@@ -549,6 +903,7 @@ class App {
 
   private stage(): Stage {
     return {
+      prepare: async () => {await Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]);},
       view: this.view, camera: this.exportCam,
       pose: (t) => this.poseTake(t),
       aim: (cam, t, aspect) => this.shotPath!.apply(cam, t, aspect),
@@ -559,15 +914,38 @@ class App {
    * distance), so a shot can be composed by hand and then fine-tuned in the export panel. */
   /** Build the scene for a model and re-apply the robot's paint (+ the map's own light). */
   private buildView(desc: RenderModel) {
+    this.cancelScreenshot();
+    const generation=++this.viewBuildGeneration,current=()=>generation===this.viewBuildGeneration;
     this.view.build(desc);
     this.look.onModel(desc.robot);
-    const id = mapId(this.panel.terrain);
-    if (desc === this.model) void this.view.setTerrainVisual(id ? `${MAPS_DIR}/${id}/visual.glb` : null)
-      .catch((e) => console.warn("map visual failed to load", e));
-    if (desc !== this.model || !id) { if (!id) this.look.setMapLight(null); return; }
-    void fetch(`${MAPS_DIR}/${id}/manifest.json`).then((r) => r.json())
-      .then((m: { light?: MapLight }) => this.look.setMapLight(m.light ?? null))
-      .catch(() => this.look.setMapLight(null));
+    const terrain=desc.terrain??(desc===this.takeModel&&isTerrain(this.take?.meta.terrain)?this.take!.meta.terrain:this.panel.terrain);
+    const id = mapId(terrain);
+    const loading = document.getElementById('map-loading')!;
+    const message = loading.querySelector('span')!, retry = loading.querySelector('button')!;
+    const loadVisual=()=>{
+      if(!current())return;
+      this.look.setMapLight(null);
+      if(id)void fetch(`${MAPS_DIR}/${id}/manifest.json`).then(r=>r.json())
+        .then((m:{light?:MapLight})=>{if(current())this.look.setMapLight(m.light??null)})
+        .catch(()=>{if(current())this.look.setMapLight(null)});
+      loading.hidden = !id; retry.hidden = true;
+      message.textContent = 'Loading map visuals…';
+      void this.view.setTerrainVisual(id ? `${MAPS_DIR}/${id}/visual.glb` : null, (phase, loaded, total) => {
+        if (!current()) return;
+        const megabytes = (bytes: number) => Math.ceil(bytes / 1048576);
+        const size = loaded ? ` · ${megabytes(loaded)}${total ? ` / ${megabytes(total)}` : ''} MB` : '';
+        const text = `${phase === 'preparing materials' ? 'Preparing map materials' : `Loading ${phase}`}…${size}`;
+        if (message.textContent !== text) message.textContent = text;
+      }).then(() => { if (current()) loading.hidden = true; })
+        .catch((error) => {
+          if (!current()) return;
+          console.warn('Map visual failed to load', error);
+          loading.hidden = false; message.textContent = 'Map visuals could not load. Try again.'; retry.hidden = false;
+          // Retry only map assets: keep the current robot pose and recorded appearance.
+          retry.onclick = () => { if(current())void this.view.setTerrainVisual(null).then(()=>{if(current())loadVisual()}); };
+        });
+    };
+    loadVisual();
   }
 
   /** While the paint editor's Pick is on, a click (not a drag) on the robot selects that part. */
@@ -630,7 +1008,7 @@ class App {
     try {
       const take = await loadTake(await file.arrayBuffer());
       const m = this.model, meta = take.meta;
-      if (!m || m.robot !== meta.robot || m.ngeom !== meta.ngeom || m.nq !== meta.nq || this.panel.terrain !== meta.terrain) {
+      if (!m || m.robot !== meta.robot || m.ngeom !== meta.ngeom || m.nq !== meta.nq || (m.terrain??this.panel.terrain) !== meta.terrain) {
         this.panel.showNotice("Different scene loaded",
           `${file.name} was recorded on ${meta.model ?? meta.robot} with the ${meta.terrain} terrain ` +
           `(${meta.ngeom} geoms). Load that robot model and terrain first (the policy decides between ` +
@@ -663,13 +1041,14 @@ class App {
   /** Movement keys are hold-to-move: while held the axis runs at half the policy's limit (full with
    * Shift); releasing every key stops the robot. */
   private static readonly MOVE_KEYS: Record<string, [0 | 1 | 2, 1 | -1]> = {
-    w: [0, 1], arrowup: [0, 1], s: [0, -1], arrowdown: [0, -1],
-    a: [2, 1], arrowleft: [2, 1], d: [2, -1], arrowright: [2, -1],
+    w: [0, 1], s: [0, -1],
+    a: [2, 1], d: [2, -1],
     q: [1, 1], e: [1, -1],
   };
   private keysHeld = new Set<string>();
 
   private applyKeys(shift: boolean) {
+    if (this.noclip) return;
     const max = this.cmdMax;
     const c: Command = [0, 0, 0];
     for (const k of this.keysHeld) {
@@ -681,6 +1060,7 @@ class App {
   }
 
   private onKeyUp(e: KeyboardEvent) {
+    if (this.flight.key(e, false)) return;
     const k = e.key.toLowerCase();
     if (k === "shift") { if (this.keysHeld.size) this.applyKeys(false); return; }
     if (!(k in App.MOVE_KEYS) || !this.keysHeld.delete(k)) return;
@@ -706,6 +1086,7 @@ class App {
         if (this.viewModel !== this.model) return;   // reviewing another model's take
         this.lastFrame = { xpos: m.xpos, xmat: m.xmat };
         this.baseXY = [m.baseX, m.baseY];
+        this.baseZ = this.model && this.model.baseQadr >= 0 ? m.qpos[this.model.baseQadr + 2] : this.followZ;
         if (!this.timeline.isOpen) this.view.setHoist(m.hoistAnchor ?? null);
         if (this.rec) {
           this.rec.push(m, this.command, this.camPose());
@@ -726,10 +1107,24 @@ class App {
         this.inspectorBody.innerHTML = formatInspect(m);
         this.renderLidar(m.lidar);
         return;
+      case 'viewReady':void this.finishViewRestore(m);return;
       case "busy": return this.showOverlay(m.msg, "busy");
       case "ready": return this.overlay.classList.add("hidden");
+      case 'robotPlaced': {
+        if (!this.placementPending) return;
+        const point = this.placementPoint?.clone();
+        this.setNoclip(false);
+        if (point) { this.view.controls.target.copy(point).z += this.followZ; this.view.camera.lookAt(this.view.controls.target); }
+        this.rec?.mark('reset', 'Robot placed on surface');
+        return;
+      }
+      case 'robotPlacementFailed':
+        if (this.placingRobot) { this.placementPending = false; document.getElementById('flight-hint')!.textContent = m.msg; }
+        return;
       case "notice": return this.showOverlay(m.msg, "notice");
-      case "error": return this.showOverlay(m.msg, "error");
+      case "error":
+        this.pendingViewRestore?.reject(new Error(m.msg));this.pendingViewRestore=null;
+        this.view.controls.enabled=!this.noclip;return this.showOverlay(m.msg, "error");
     }
   }
 
@@ -786,7 +1181,7 @@ class App {
     // a policy that needs special control explains itself once, when it becomes active
     if (s.notice && s.policy !== "-" && s.policy !== this.noticedPolicy) {
       this.noticedPolicy = s.policy;
-      this.panel.showNotice(s.notice.title ?? s.policy, s.notice.text);
+      this.panel.showNotice(s.notice.title ?? policyPresentation(s.policy).label, s.notice.text);
     } else if (!s.notice) this.noticedPolicy = undefined;
     if (s.hoist !== undefined && s.hoist !== this.hoistOn) {
       this.hoistOn = s.hoist;
@@ -804,7 +1199,7 @@ class App {
       : "none";
     const rows: StatusRow[] = [];
     if (s.playback) rows.push(["clip", s.playback, true]);
-    rows.push(["policy", s.policy]);
+    rows.push(["policy", s.policy === '-' ? 'No policy' : policyPresentation(s.policy).label]);
     rows.push(["model", s.model ? `${s.model}` : `${s.dof} DOF`]);
     rows.push(["state", s.playback ? "kinematic playback" : s.state]);
     rows.push(["cmd", `vx ${f(vx)}  vy ${f(vy)}  wz ${f(wz)}`]);
@@ -823,8 +1218,11 @@ class App {
 
   // ---- input ----------------------------------------------------------
   private onKey(e: KeyboardEvent) {
-    if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;
+    if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target instanceof HTMLElement && e.target.isContentEditable)) return;
     if (this.exporting || document.getElementById("policy-notice")) return;
+    const flightModifier = this.noclip && !e.metaKey && !e.altKey
+      && (e.code === 'Space' || e.code.startsWith('Control') || e.code.startsWith('Shift'));
+    if ((e.ctrlKey || e.metaKey || e.altKey) && !flightModifier) return;
     if ((e.key === "v" || e.key === "V") && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       return this.toggleRecording();
@@ -835,10 +1233,22 @@ class App {
       if (this.timeline.onKey(e)) e.preventDefault();
       return;
     }
+    if (this.placingRobot && e.key === 'Escape') { e.preventDefault(); this.cancelPlacement(); return; }
+    if (this.noclip && e.code === 'KeyP' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) {
+      e.preventDefault(); if (this.placingRobot) this.cancelPlacement(); else this.beginPlacement(); return;
+    }
+    if (isCameraKey(e.code)) {
+      if (this.placingRobot) { e.preventDefault(); return; }
+      if (!this.noclip && !e.repeat && isCameraMovementKey(e.code)) this.setNoclip(true);
+      // Reserved numpad keys must never leak into the robot's numbered FSM shortcuts.
+      if (!this.noclip) { e.preventDefault(); return; }
+    }
+    if (this.flight.key(e, true)) return;
     const mk = e.key.toLowerCase();
     if (mk === "shift") { if (this.keysHeld.size) this.applyKeys(true); return; }
     if (mk in App.MOVE_KEYS) {
       e.preventDefault();
+      if (e.repeat) return;
       if (!this.keysHeld.has(mk)) { this.keysHeld.add(mk); this.applyKeys(e.shiftKey); }
       return;
     }
@@ -848,8 +1258,10 @@ class App {
       case "]": return this.send({ t: "cycle", step: 1 });
       case "[": return this.send({ t: "cycle", step: -1 });
       case "r": case "R": return this.reset();
-      case "c": case "C": return this.send({ t: "recenter" });
+      case "c": case "C": return this.recenterView();
       case "h": case "H": return this.setHoist(!this.hoistOn);
+      case "n": case "N": if (!e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) this.setNoclip(!this.noclip); return;
+      case "f": case "F": if (!e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) this.setFlashlight(!this.flashlight); return;
       case "g": case "G": return this.cycleRemote(e.key === "G" ? -1 : 1);
       case " ": e.preventDefault(); return this.stopAndRearm();
     }
@@ -872,6 +1284,67 @@ class App {
   }
 
   // ---- render loop ----------------------------------------------------
+  private cancelScreenshot(message='The scene changed. Take the screenshot again when it has loaded.'){
+    if(!this.screenshotPending)return;
+    ++this.screenshotRequest;this.screenshotPending=false;this.screenshotIsCurrent=null;
+    this.screenshotAbort?.abort();this.screenshotAbort=null;
+    this.panel.setScreenshotState(false,message);
+  }
+
+  private async takeScreenshot(){
+    if(this.screenshotPending)return;
+    if(this.exporting){this.panel.setScreenshotState(false,'Wait for the export to finish, then take a screenshot.');return}
+    if(this.pendingViewRestore){this.panel.setScreenshotState(false,'Wait for the saved view to finish restoring, then take a screenshot.');return}
+    const model=this.viewModel,review=this.timeline.isOpen,take=this.take,mode=this.timeline.mode;
+    if(!model||!review&&(!this.lastFrame||model!==this.model||!this.overlay.classList.contains('hidden')||(model.terrain??this.panel.terrain)!==this.panel.terrain)){
+      this.panel.setScreenshotState(false,'Wait for the scene to finish loading, then take a screenshot.');return;
+    }
+    const request=++this.screenshotRequest,generation=this.viewBuildGeneration,revision=this.view.getVisualRevision(),controller=new AbortController();
+    const current=()=>request===this.screenshotRequest&&generation===this.viewBuildGeneration&&model===this.viewModel
+      &&review===this.timeline.isOpen&&(!review||take===this.take&&mode===this.timeline.mode)
+      &&revision===this.view.getVisualRevision()&&!this.exporting&&!this.pendingViewRestore
+      &&(review||model===this.model&&this.overlay.classList.contains('hidden')&&(model.terrain??this.panel.terrain)===this.panel.terrain);
+    this.screenshotPending=true;this.screenshotAbort=controller;this.screenshotIsCurrent=current;
+    this.panel.setScreenshotState(true,'Preparing scene visuals…');
+    const aborted=new Promise<never>((_,reject)=>controller.signal.addEventListener('abort',()=>reject(new DOMException('Screenshot cancelled.','AbortError')),{once:true}));
+    let phase:'prepare'|'capture'='prepare',message='';
+    try{
+      await Promise.race([Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]),aborted]);
+      if(!current()){this.cancelScreenshot();return}
+      phase='capture';
+      if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
+      if(review&&this.take)this.reviewFrame(0);else this.drawLiveFrame();
+      const terrain=model.terrain??(review&&isTerrain(take?.meta.terrain)?take!.meta.terrain:this.panel.terrain);
+      const filename=`${mapId(terrain)??terrain}_${model.robot}_${stamp()}.png`;
+      const blob=await Promise.race([capturePng(this.view.renderer.domElement),aborted]);
+      if(!current()){this.cancelScreenshot();return}
+      if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
+      download(blob,filename);message=`Saved ${filename}`;
+    }catch{
+      if(request!==this.screenshotRequest)return;
+      message=!current()?'The scene changed. Take the screenshot again when it has loaded.'
+        :this.view.renderer.getContext().isContextLost()?'The viewport is unavailable. Wait for it to recover, then try Screenshot again.'
+        :phase==='prepare'?'Scene visuals could not load. Retry the map or robot model, then try Screenshot again.'
+        :'The PNG could not be saved. Try Screenshot again.';
+    }finally{
+      if(request===this.screenshotRequest){
+        this.screenshotPending=false;this.screenshotAbort=null;this.screenshotIsCurrent=null;
+        this.panel.setScreenshotState(false,message);
+      }
+    }
+  }
+
+  /** Draw the latest live pose without polling controls or advancing the simulation. */
+  private drawLiveFrame(){
+    if(this.lastFrame){
+      if(!this.heldView&&!this.noclip)this.view.follow(this.baseXY[0],this.baseXY[1],this.baseZ);
+      else this.view.updateRobotLighting(this.baseXY[0],this.baseXY[1],this.baseZ);
+      this.view.sync(this.lastFrame.xpos,this.lastFrame.xmat);
+    }
+    if(this.leashDrag)this.view.setLeash([this.baseXY[0],this.baseXY[1],.3],[this.leashDrag[0],this.leashDrag[1],.12]);
+    this.view.render();
+  }
+
   private renderLoop() {
     let lastPadCmd = "";
     let padWasActive = false;
@@ -880,11 +1353,13 @@ class App {
       const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
       last = now;
       requestAnimationFrame(tick);
+      if(this.screenshotIsCurrent&&!this.screenshotIsCurrent())this.cancelScreenshot(this.exporting
+        ?'An export started. Take another screenshot after it finishes.':undefined);
       if (this.exporting) return;                    // the export owns the canvas
       if (this.timeline.isOpen && this.take) return this.reviewFrame(dt);
       const padCmd = this.pad.poll((a) => this.onPadAction(a), this.status?.combos,
                                    (combo) => this.remote(combo));
-      if (padCmd) {
+      if (padCmd && !this.noclip) {
         padWasActive = true;
         const key = padCmd.map((v) => v.toFixed(2)).join(",");
         if (key !== lastPadCmd) { lastPadCmd = key; this.setCommand(padCmd); }
@@ -894,14 +1369,12 @@ class App {
         lastPadCmd = "";
         this.setCommand([0, 0, 0]);
       }
-      if (this.lastFrame) {
-        this.view.follow(this.baseXY[0], this.baseXY[1], this.followZ);
-        this.view.sync(this.lastFrame.xpos, this.lastFrame.xmat);
+      if (this.noclip) {
+        const velocity = this.flight.update(dt);
+        this.updateFlightHud();
+        if (velocity.lengthSq() > 0) this.send({ t: 'noclipStep', delta: velocity.toArray().map(v => v * dt) as [number, number, number] });
       }
-      if (this.leashDrag)
-        this.view.setLeash([this.baseXY[0], this.baseXY[1], 0.3],
-                           [this.leashDrag[0], this.leashDrag[1], 0.12]);
-      this.view.render();
+      this.drawLiveFrame();
       if (this.panel.padDebugOpen()) this.updatePadDebug();
     };
     requestAnimationFrame(tick);
@@ -919,7 +1392,7 @@ class App {
       const c = take.camAt(t), cam = this.view.camera;
       cam.position.set(...c.pos);
       this.view.controls.target.set(...c.target);
-      cam.lookAt(this.view.controls.target);
+      if(c.orientation)cam.quaternion.fromArray(c.orientation);else cam.lookAt(this.view.controls.target);
       if (cam.fov !== c.fov) { cam.fov = c.fov; cam.updateProjectionMatrix(); }
       this.view.renderWith(cam);
     } else if (tl.mode === "shot" && this.shotPath) {

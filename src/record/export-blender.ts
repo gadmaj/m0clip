@@ -5,10 +5,14 @@
  * MuJoCo is Z-up and glTF is Y-up, so poses are converted on the way out (Blender's importer
  * converts back): objects arrive in Blender with clean world transforms and no wrapper rotation. */
 import * as THREE from "three";
+import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { checkerTexture, type SceneView } from "../render/scene";
 import type { RenderModel } from "../sim/protocol";
 import { GEOM_STRIDE, type Take } from "./take";
 import type { Shot, ShotPath } from "./shot";
+import { prepareLosslessTextures } from "./lossless-textures";
+import { losslessImageWriter } from "./lossless-images";
+import { SceneCamera, infiniteCameraWriter } from '../render/scene-camera';
 
 export interface GlbJob {
   fps: number;              // key rate; keys are in seconds, so motion plays at true speed at any scene rate
@@ -30,6 +34,7 @@ function pushQuat(out: number[], q: THREE.Quaternion) {
 }
 
 export async function exportGlb(take: Take, view: SceneView, model: RenderModel, job: GlbJob): Promise<Blob> {
+  await Promise.all([view.waitForRobotVisuals(),view.waitForTerrainVisuals()]);
   const N = Math.max(2, Math.round((job.t1 - job.t0) * job.fps) + 1);
   const times = Float32Array.from({ length: N }, (_, i) => Math.min(i / job.fps, job.t1 - job.t0));
   const ng = take.meta.ngeom;
@@ -46,6 +51,7 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
     generator: "unitree-mujoco-web", robot: take.meta.robot, model: take.meta.model,
     terrain: take.meta.terrain, policy: take.meta.policy, recorded: take.meta.created,
     range_s: [job.t0, job.t1], key_fps: job.fps,
+    robotAppearance: take.meta.appearance, robotFade: take.meta.robotFade, noclipTransitions: take.events.filter(event => event.kind === 'noclip'),
   };
   const robot = new THREE.Group(), world = new THREE.Group();
   robot.name = take.meta.robot;
@@ -69,7 +75,8 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
     const node = new THREE.Mesh(mesh.geometry, mesh.material);
     node.name = unique(body > 0 ? (meshName && meshName !== model.bodyNames[body] ? `${model.bodyNames[body]}__${meshName}` : model.bodyNames[body])
                                 : meshName ?? `terrain_${geom}`);
-    node.userData = { geom, body: model.bodyNames[body] ?? "", mesh: meshName ?? "" };
+    node.userData = { geom, body: model.bodyNames[body] ?? "", mesh: meshName ?? "",
+      ...(mesh.userData.sourceRobotPart ? { sourceModel: mesh.userData.sourceRobotPart } : {}) };
     const pos: number[] = [], rot: number[] = [];
     let moves = false;
     for (let i = 0; i < N; i++) {
@@ -91,12 +98,24 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
     }
   }
 
+  const sourceBody=view.exportSourceBody(poses,ng,times);
+  if(sourceBody){
+    const wrap=new THREE.Group();wrap.name=unique('source_robot');wrap.quaternion.copy(TO_YUP);
+    wrap.add(sourceBody.root);robot.add(wrap);tracks.push(...sourceBody.tracks);
+  }
+
   // a converted game map's textured visual (already in the MuJoCo frame): wrapped into Y-up
   if (view.terrainObject) {
     const wrap = new THREE.Group();
     wrap.name = unique("map");
     wrap.quaternion.copy(TO_YUP);
-    wrap.add(view.terrainObject.clone());
+    // Object3D.clone() leaves SkinnedMesh skeletons pointing into the live scene.
+    const terrain = cloneSkeleton(view.terrainObject);
+    terrain.traverse(object => {
+      // Background sky and additive camera-facing glows are render effects, not solid DCC geometry.
+      if (object.userData.sourceSky || object.userData.sourceSprite) object.visible = false;
+    });
+    wrap.add(terrain);
     world.add(wrap);
   }
 
@@ -112,9 +131,11 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
 
   if (job.camera) {
     const { path, shot, aspect } = job.camera;
-    const cam = new THREE.PerspectiveCamera(45, aspect, 0.05, 200);
+    const cam = new SceneCamera(45, aspect, 0.05, 200);
+    view.configureCamera(cam);
     path.apply(cam, job.t0, aspect);
-    const shotCam = new THREE.PerspectiveCamera(cam.fov, aspect, 0.05, 200);
+    const shotCam = new SceneCamera(cam.fov, aspect, 0.05, 200);
+    view.configureCamera(shotCam);
     shotCam.name = unique("shot_camera");
     shotCam.userData = { focal_mm: shot.focal, sensor_mm: shot.sensor, sensor_fit: "auto", mode: shot.mode };
     const pos: number[] = [], rot: number[] = [];
@@ -134,8 +155,11 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
 
   const clip = new THREE.AnimationClip("take", job.t1 - job.t0, tracks);
   const { GLTFExporter } = await import("three/examples/jsm/exporters/GLTFExporter.js");
-  const glb = await new GLTFExporter().parseAsync(scene, {
-    binary: true, trs: true, onlyVisible: true, animations: tracks.length ? [clip] : [],
-  });
-  return new Blob([glb as ArrayBuffer], { type: "model/gltf-binary" });
+  const cleanup = prepareLosslessTextures(scene),images=losslessImageWriter(view.renderer);
+  try {
+    const glb = await new GLTFExporter().register(images.plugin).register(infiniteCameraWriter).parseAsync(scene, {
+      binary: true, trs: true, onlyVisible: true, animations: tracks.length ? [clip] : [],
+    });
+    return new Blob([glb as ArrayBuffer], { type: "model/gltf-binary" });
+  } finally { images.dispose();cleanup(); }
 }

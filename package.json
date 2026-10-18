@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Browser-based Unitree RL policy player — MuJoCo WASM physics + onnxruntime-web inference, FSM, live policy switching, gamepad teleop.",
+  "description": "Browser-based Unitree RL policy player \u2014 MuJoCo WASM physics + onnxruntime-web inference, FSM, live policy switching, gamepad teleop.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "postinstall": "node scripts/copy-ort-wasm.mjs"
+    "postinstall": "node scripts/copy-ort-wasm.mjs",
+    "build:optimized": "SOURCE_TEXTURE_OPTIMIZE=1 npm run build --"
   },
   "dependencies": {
     "fflate": "^0.8.3",

@@ -3,8 +3,9 @@
 import { makeDriver, type BaseDriver } from "../core/drivers";
 import { sampleTraj, wxyz } from "../core/math";
 import type { PolicyEntry, Command, EvalConfig, RobotSpec } from "../core/types";
-import { allPacks, deletePack, deleteAllPacks, importAny, packEntries, resolvePackConfig,
+import { allPacks, deletePack, deleteAllPacks, downloadPack, importAny, packEntries, resolvePackConfig,
          revokePack, type StoredPack } from "../packs";
+import { installDefaultPacks } from '../packs/defaults';
 import { Engine, MissingBundleError } from "../sim/engine";
 import { SimFSM, type FsmState } from "../sim/fsm";
 import { isTerrain, mapId, MAPS_DIR, terrainTransform, type TerrainName } from "../sim/terrain";
@@ -81,6 +82,8 @@ class SimWorker {
   inspectOn = false;
   /** take review: the control loop idles so the robot is where the recording left it on resume */
   paused = false;
+  private noclip = false;
+  private noclipVelocity: [number, number, number] = [0, 0, 0];
   /** frame clock (s): advanced by every posted frame's step — the time base of recorded takes */
   private clock = 0;
   private prevCmd: { target: Float64Array | null; kp: Float64Array; kd: Float64Array } | null = null;
@@ -231,6 +234,14 @@ class SimWorker {
   async init(m: { robot?: string; terrain?: TerrainName; policy?: string }) {
     post({ t: "busy", msg: "loading imported policy packs…" });
     this.packs = await allPacks().catch(() => []);
+    try {
+      this.packs = await installDefaultPacks(this.packs, msg => post({ t: 'busy', msg }));
+    } catch (error) {
+      // A failed download must not prevent browsing maps or using manual packs.
+      // Leave the marker unset so the next visit retries, keeping partial imports.
+      console.warn('Default policies could not be installed; reload to retry.', error);
+      this.packs = await allPacks().catch(() => this.packs);
+    }
     if (isTerrain(m.terrain)) this.terrain = m.terrain;
     const robots = [...new Set(this.allEntries().map((e) => e.robot))]
       .filter((r) => r in SPECS);
@@ -238,7 +249,8 @@ class SimWorker {
       : robots.includes("r1") ? "r1" : (robots[0] ?? "r1");
     this.rebuildPolicies();
     const saved = m.policy ? this.policies.findIndex((e) => e.name === m.policy) : -1;
-    const first = saved >= 0 ? saved : 0;
+    const walking = this.policies.findIndex(e => e.name === 'amp_locomotion/amp_locomotion');
+    const first = saved >= 0 ? saved : walking >= 0 ? walking : 0;
     // compile the model the first policy runs on (Air-only packs → the Air model), not one to be replaced
     if (this.policies.length) this.robot = this.specFor(this.policies[first]);
 
@@ -339,7 +351,7 @@ class SimWorker {
       }
     }
     return {
-      robot: this.robot,
+      robot: this.robot, terrain: this.terrain,
       ngeom,
       type: Int32Array.from(m.geom_type as Int32Array),
       size: Float64Array.from(m.geom_size as Float64Array),
@@ -348,6 +360,8 @@ class SimWorker {
       contype: Int32Array.from(m.geom_contype as Int32Array),
       bodyid: Int32Array.from(m.geom_bodyid as Int32Array),
       dataid, meshes,
+      bodyFrames: { parent: Int32Array.from(m.body_parentid), pos: Float64Array.from(m.body_pos), quat: Float64Array.from(m.body_quat) },
+      geomFrames: { pos: Float64Array.from(m.geom_pos), quat: Float64Array.from(m.geom_quat) },
       nq: this.eng.model.nq,
       bodyNames: Array.from({ length: this.eng.model.nbody }, (_, i) => {
         const acc = m.body(i);
@@ -360,11 +374,15 @@ class SimWorker {
     };
   }
 
-  private cfgFor(entry: PolicyEntry): EvalConfig {
+  private async cfgFor(entry: PolicyEntry): Promise<EvalConfig> {
     let c = this.configs.get(entry.name);
     if (!c) {
-      const pack = this.packs.find((p) => p.id === entry.packId);
+      let pack = this.packs.find((p) => p.id === entry.packId);
       if (!pack) throw new Error(`imported pack ${entry.packId} not found`);
+      if (pack.downloadUrl) {
+        pack = await downloadPack(pack);
+        this.packs = this.packs.map(p => p.id === pack!.id ? pack! : p);
+      }
       c = resolvePackConfig(pack, entry);
       this.configs.set(entry.name, c);
     }
@@ -472,7 +490,57 @@ class SimWorker {
       case "deletePack": return this.doDeletePack(m.id);
       case "deleteAllPacks": return this.doDeleteAllPacks();
       case "inspect": this.inspectOn = m.on; return;
-      case "pause": this.paused = m.on; return;
+      case 'viewReady': post({t:'viewReady',request:m.request,robot:this.robot,terrain:this.terrain});return;
+      case "pause":
+        this.paused = m.on;
+        this.noclipVelocity = [0, 0, 0];
+        return;
+      case "noclip":
+        this.noclip = m.on;
+        this.noclipVelocity = [0, 0, 0];
+        this.playback = null;
+        this.command = this.cmdNow = [0, 0, 0];
+        if (!this.busy) {
+          this.eng.qvel.fill(0);
+          this.eng.forward();
+          this.prevCmd = null;
+          this.fsm.enter(this.fsm.state);
+          this.hoistZ = this.eng.qpos[(this.driver?.bqp ?? this.baseAddr) + 2];
+          if (this.driver) this.driver.homeXY = [this.eng.qpos[this.driver.bqp], this.eng.qpos[this.driver.bqp + 1]];
+        }
+        return;
+      case "noclipStep": {
+        if (!this.noclip || this.busy || this.paused || !m.delta.every(Number.isFinite)) return;
+        const b = this.driver?.bqp ?? this.baseAddr;
+        if (b >= 0) for (let i = 0; i < 3; i++) this.eng.qpos[b + i] += m.delta[i];
+        return;
+      }
+      case "noclipMove":
+        if (m.velocity.every(Number.isFinite)) this.noclipVelocity = m.velocity;
+        return;
+      case 'placeRobot': {
+        if (this.busy || this.paused || !this.noclip || !m.position.every(Number.isFinite) || !Number.isFinite(m.yaw)) {
+          post({ t: 'robotPlacementFailed', msg: 'The simulation is not ready to place the robot. Try again when loading finishes.' }); return;
+        }
+        const b = this.driver?.bqp ?? this.baseAddr;
+        if (b < 0) return;
+        this.playback = null;
+        this.command = this.cmdNow = [0, 0, 0]; this.noclipVelocity = [0, 0, 0];
+        if (this.driver) { this.driver.homeXY = [m.position[0], m.position[1]]; this.driver.reset(); }
+        else this.eng.resetData();
+        this.eng.qpos[b] = m.position[0]; this.eng.qpos[b + 1] = m.position[1];
+        this.eng.qpos[b + 3] = Math.cos(m.yaw / 2); this.eng.qpos[b + 4] = this.eng.qpos[b + 5] = 0;
+        this.eng.qpos[b + 6] = Math.sin(m.yaw / 2);
+        this.eng.forward();
+        const feet = getSpec(this.robot).foot_bodies.map(name => this.eng.bodyId(name)).filter(id => id >= 0);
+        const floor = this.eng.minGeomZ(feet);
+        if (Number.isFinite(floor)) this.eng.qpos[b + 2] += m.position[2] + .02 - floor;
+        this.eng.qvel.fill(0); this.eng.qfrcApplied.fill(0); this.eng.forward();
+        this.hoistZ = this.eng.qpos[b + 2]; this.hoistOn = false;
+        this.prevCmd = null; this.fsm.enter(this.fsm.state);
+        this.postFrame(0); post({ t: 'robotPlaced' }); this.sendStatus();
+        return;
+      }
       case "leash":
         this.leash = { on: m.on, x: m.x ?? this.leash.x, y: m.y ?? this.leash.y };
         return;
@@ -533,9 +601,11 @@ class SimWorker {
         return;
       case "reset":
         this.playback = null;
+        this.noclipVelocity = [0, 0, 0];
         this.command = [0, 0, 0];
         this.cmdNow = [0, 0, 0];
-        this.driver?.reset();
+        if (this.driver) this.driver.reset();
+        else this.eng.resetData();
         if (this.driver) {
           this.hoistZ = (this.driver.groundStart || this.driver.maneuver)
             ? (fam(this.robot) === "g1" ? 0.78 : getSpec(this.robot).fall_height + 0.3)
@@ -656,6 +726,7 @@ class SimWorker {
   }
 
   private async doDeletePack(id: string) {
+    const currentName = this.policies[this.polIdx]?.name;
     const gone = new Set(this.packs.filter((p) => p.id === id).flatMap(packEntries).map((e) => e.name));
     for (const n of gone) this.configs.delete(n);
     await deletePack(id).catch(() => {});
@@ -664,8 +735,9 @@ class SimWorker {
     this.rebuildPolicies();
     // if the active policy vanished, fall back to the first available
     if (this.policies.length) {
-      const curName = this.policies[this.polIdx]?.name;
-      if (!curName || gone.has(curName)) {
+      const surviving = this.policies.findIndex(policy => policy.name === currentName);
+      if (surviving >= 0) this.polIdx = surviving;
+      else {
         this.playback = null;
         await this.loadDriver(Math.min(this.polIdx, this.policies.length - 1));
         this.reenter();
@@ -847,6 +919,20 @@ class SimWorker {
     let lastStatus = 0;
     for (;;) {
       if (this.busy || this.paused) { await sleep(50); continue; }
+      if (this.noclip) {
+        const t0 = performance.now(), dt = 0.02;
+        const b = this.driver?.bqp ?? this.baseAddr;
+        if (b >= 0) {
+          for (let i = 0; i < 3; i++) this.eng.qpos[b + i] += this.noclipVelocity[i] * dt;
+          this.eng.qvel.fill(0);
+          this.eng.forward(); // kinematic movement: no gravity, contacts, or policy steps
+        }
+        this.postFrame(dt);
+        this.maybeInspect(t0);
+        if (t0 - lastStatus > 400) { this.sendStatus(); lastStatus = t0; }
+        await sleep(Math.max(20 - (performance.now() - t0), 0));
+        continue;
+      }
       if (this.playback) {
         const t0 = performance.now();
         this.playbackStep();

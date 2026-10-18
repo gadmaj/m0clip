@@ -25,9 +25,11 @@ export interface TimelineHost {
 
 export const KIND_COLOR: Record<TakeEventKind, string> = {
   state: "#e0a23c", policy: "#a98bf0", move: "#5fbf6b", reset: "#e0685c", hoist: "#5b92f0", clip: "#4fb3bf",
+  noclip: "#4fb3bf",
 };
 export const KIND_LABEL: Record<TakeEventKind, string> = {
   state: "State", policy: "Policy", move: "Move", reset: "Reset", hoist: "Hoist", clip: "Clip",
+  noclip: "Noclip",
 };
 const CURVE_COLORS = ["#e0a23c", "#5b92f0", "#5fbf6b", "#e0685c", "#a98bf0", "#4fb3bf", "#d19a66", "#9aa3ad"];
 const CMD_COLORS = ["#e0a23c", "#5b92f0", "#5fbf6b"];

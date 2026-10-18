@@ -6,6 +6,14 @@ actual `.zip` files are gitignored, because the weights are yours (extracted
 from your own robot); this project is a neutral evaluator, not a policy
 distributor.
 
+This deployment also serves the user's R1 catalog at
+`public/assets/packs/r1-default-v1.json`, generated with
+`node scripts/host-default-packs.mjs /path/to/r1-all.zip`. It is imported automatically once per
+browser, without replacing existing packs with the same identifier. Weights are
+downloaded and saved only when a policy is selected. Deleting a
+pack does not cause it to be imported again on reload. Additional bundles still
+use the manual import below; the G1 bundle is not downloaded automatically.
+
 ## Pack format
 
 A pack is a `.zip` containing:

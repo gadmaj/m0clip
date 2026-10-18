@@ -1,0 +1,14 @@
+import assert from'node:assert/strict';import{build}from'esbuild';import{mkdir,rm}from'node:fs/promises';import{resolve}from'node:path';import * as THREE from'three';
+const file=resolve('node_modules/.cache/source-resource-test.mjs');await mkdir(resolve('node_modules/.cache'),{recursive:true});
+try{
+ await build({stdin:{contents:"export {SourceMaterials,patchSourceMaterial} from './src/render/source-materials';export {SourceLightStyles} from './src/render/source-lightstyles';",resolveDir:process.cwd()},bundle:true,packages:'external',platform:'node',format:'esm',outfile:file});const{SourceMaterials,patchSourceMaterial,SourceLightStyles}=await import(file);
+ const a=new SourceMaterials(),b=new SourceMaterials(),ta=new THREE.Texture(),tb=new THREE.Texture(),late=new THREE.Texture();let da=0,db=0,dl=0;ta.addEventListener('dispose',()=>da++);tb.addEventListener('dispose',()=>db++);late.addEventListener('dispose',()=>dl++);
+ a.own(ta);a.own(ta);b.own(tb);assert.throws(()=>b.own(null),/failed to load/);a.dispose();a.dispose();a.own(ta);a.own(late);a.own(late);assert.equal(da,1);assert.equal(dl,1);assert.equal(db,0);
+ const original=new THREE.MeshStandardMaterial(),material=new THREE.MeshBasicMaterial({map:tb}),frame=new THREE.Texture();original.userData.sourceMaterial={shader:'unlitgeneric',unlit:true,animationfps:2};patchSourceMaterial(material,original,{frames:[tb,frame]},undefined,undefined,undefined,0,false,b);b.update(.5);assert.equal(material.map,frame);const shader={uniforms:{},vertexShader:'',fragmentShader:''};material.onBeforeCompile(shader,null);assert.equal(shader.uniforms.sourceEffectTime,b.time);assert.equal(b.time.value,.5);a.update(99);assert.equal(b.time.value,.5);assert.equal(db,0);b.dispose();assert.equal(db,1);
+ const fetch=globalThis.fetch,dispose=THREE.Texture.prototype.dispose;let partial=0;THREE.Texture.prototype.dispose=function(){partial++;return dispose.call(this)};
+ try{
+  globalThis.fetch=async value=>{const path=new URL(value).pathname;if(path.endsWith('styles.json'))return Response.json({size:1,pages:{0:'good.bin',1:'bad.bin'},patches:[],patterns:{}});if(path.endsWith('bad.bin'))return new Response(null,{status:404});await new Promise(r=>setTimeout(r,10));return new Response(new Uint8Array([255,0,0,255]));};
+  await assert.rejects(SourceLightStyles.load(new URL('https://fixture.test/styles.json')),/failed/);assert.equal(partial,1,'A page that completes after another fails must still be disposed');
+ }finally{globalThis.fetch=fetch;THREE.Texture.prototype.dispose=dispose}
+ console.log('PASS: per-map material clocks and animation, deduplicated disposal, late allocation cleanup, partial lightstyle failure cleanup');
+}finally{await rm(file,{force:true})}

@@ -52,6 +52,7 @@ export async function encodableCodecs(width: number, height: number, fps: number
 }
 
 export interface Stage {
+  prepare?(): Promise<void>; // wait for recorded robot and map visuals before rendering frames
   view: SceneView;
   /** pose the scene at take time t */
   pose(t: number): void;
@@ -67,6 +68,8 @@ const yieldToUi = () => new Promise<void>((r) => setTimeout(r, 0));
 /** Render + encode. Resolves to the finished file; rejects with an AbortError when `signal` aborts. */
 export async function renderVideo(job: VideoJob, stage: Stage, onProgress: (p: Progress) => void,
                                   signal: AbortSignal): Promise<Blob> {
+  await stage.prepare?.();
+  if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
   const { view, camera } = stage;
   const N = frameCount(job), aspect = job.width / job.height;
   const transparent = job.transparent && canAlpha(job);

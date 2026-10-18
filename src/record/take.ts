@@ -3,17 +3,24 @@
  * camera and the hoist — on the worker's frame clock (simulated seconds), together with the user's
  * discrete inputs as timeline events (FSM state, policy, remote moves, reset, hoist, clip).
  * The timeline plays a take back; the exporters resample it at any frame rate. */
+import type { Appearance } from "../render/scene";
 import { unzip, zip } from "fflate";
+import {Matrix4,Quaternion,Vector3} from 'three';
 import type { Command, RobotSpec } from "../core/types";
 import { SPECS } from "../robots";
+import { type RobotFade, recordedRobotOpacity } from '../render/robot-fade';
 
-export type TakeEventKind = "state" | "policy" | "move" | "reset" | "hoist" | "clip";
+export type TakeEventKind = "state" | "policy" | "move" | "reset" | "hoist" | "clip" | "noclip";
 export interface TakeEvent { t: number; kind: TakeEventKind; label: string }
 
 export interface TakeMeta {
   robot: string;            // exact robot variant the model was compiled for (r1, r1_air, g1, ...)
   model?: string;           // display name of the variant ("R1 EDU · 24-DOF")
   terrain: string;
+  sourceTime?: number;      // map animation / lighting clock at the start of the take
+  appearance?: Appearance;   // fixed paint and robot illumination for this take
+  sourceHead?: 'stock' | 'ghost'; // optional cosmetic geometry; older takes use the stock head
+  robotFade?: RobotFade;    // initial visual transition; noclip events drive subsequent fades
   policy: string;           // policy active when recording started
   created: string;          // ISO timestamp
   ngeom: number;
@@ -27,7 +34,10 @@ export const GEOM_STRIDE = 7;
 /** Per-frame layout of the camera track: position, look-at target, vertical fov (deg). */
 export const CAM_STRIDE = 7;
 
-export interface CamPose { pos: [number, number, number]; target: [number, number, number]; fov: number }
+export interface CamPose { pos: [number, number, number]; target: [number, number, number]; fov: number; orientation?:[number,number,number,number] }
+export function cameraOrientationAt(track:ArrayLike<number>,i:number,j:number,f:number):[number,number,number,number] {
+  return new Quaternion().fromArray(track,i*4).normalize().slerp(new Quaternion().fromArray(track,j*4).normalize(),f).toArray();
+}
 
 /** Row-major 3x3 → unit wxyz quaternion (Shepperd), written to out[o..o+3]. */
 function matToQuat(m: ArrayLike<number>, mo: number, out: Float32Array, o: number) {
@@ -79,6 +89,7 @@ export class Take {
     readonly cam: Float32Array,     // n · CAM_STRIDE — the viewport camera
     readonly hoist: Float32Array,   // n · 3 — hoist anchor, NaN while the hoist is off
     readonly events: TakeEvent[],
+    readonly camOrientation?:Float32Array, // optional n·4 xyzw; legacy tracks keep lookAt behavior
   ) {}
 
   get n(): number { return this.t.length; }
@@ -148,7 +159,8 @@ export class Take {
     const [i, f] = this.locate(time);
     const a = i * CAM_STRIDE, b = Math.min(i + 1, this.n - 1) * CAM_STRIDE, C = this.cam;
     const l = (k: number) => C[a + k] + (C[b + k] - C[a + k]) * f;
-    return { pos: [l(0), l(1), l(2)], target: [l(3), l(4), l(5)], fov: l(6) };
+    return { pos: [l(0), l(1), l(2)], target: [l(3), l(4), l(5)], fov: l(6),
+      ...(this.camOrientation?{orientation:cameraOrientationAt(this.camOrientation,i,Math.min(i+1,this.n-1),f)}:{}) };
   }
 
   /** Hoist anchor at the nearest frame, or null while it was off. */
@@ -158,6 +170,8 @@ export class Take {
   }
 
   /** Commanded velocity at the nearest frame. */
+  robotOpacityAt(time: number) { return recordedRobotOpacity(this.meta.robotFade, this.events, time); }
+
   cmdAt(time: number): Command {
     const o = this.frameAt(time) * 3;
     return [this.cmd[o], this.cmd[o + 1], this.cmd[o + 2]];
@@ -197,6 +211,7 @@ export class TakeRecorder {
   private qpos = new Grow(1 << 14);
   private cmd = new Grow();
   private cam = new Grow();
+  private camOrientation=new Grow();
   private hoist = new Grow();
   private events: TakeEvent[] = [];
 
@@ -223,6 +238,9 @@ export class TakeRecorder {
     this.qpos.buf.set(f.qpos, qo);
     this.cmd.push(cmd[0], cmd[1], cmd[2]);
     this.cam.push(...cam.pos, ...cam.target, cam.fov);
+    const orientation=cam.orientation??new Quaternion().setFromRotationMatrix(new Matrix4().lookAt(
+      new Vector3(...cam.pos),new Vector3(...cam.target),new Vector3(0,0,1))).toArray();
+    this.camOrientation.push(...orientation);
     const h = f.hoistAnchor;
     this.hoist.push(h ? h[0] : NaN, h ? h[1] : NaN, h ? h[2] : NaN);
   }
@@ -236,7 +254,7 @@ export class TakeRecorder {
   finish(): Take | null {
     if (this.times.length < 2) return null;
     return new Take(this.meta, Float64Array.from(this.times), this.geom.done(), this.qpos.done(),
-                    this.cmd.done(), this.cam.done(), this.hoist.done(), this.events);
+                    this.cmd.done(), this.cam.done(), this.hoist.done(), this.events,this.camOrientation.done());
   }
 }
 
@@ -290,6 +308,7 @@ export async function saveTake(take: Take): Promise<Blob> {
   const files: Record<string, Uint8Array> = { "take.json": new TextEncoder().encode(JSON.stringify(head, null, 1)) };
   files["t.f64"] = bytes(take.t);
   for (const k of TRACKS.slice(1)) files[`${k}.f32`] = bytes(take[k]);
+  if(take.camOrientation)files['camOrientation.f32']=bytes(take.camOrientation);
   return new Blob([(await zipAsync(files)) as Uint8Array<ArrayBuffer>], { type: "application/zip" });
 }
 
@@ -308,8 +327,13 @@ export async function loadTake(data: ArrayBuffer): Promise<Take> {
     if (a.length !== n * per) throw new Error(`take file: ${name} has ${a.length} values, expected ${n * per}`);
     return a;
   };
+  const orientation=files['camOrientation.f32']?arr('camOrientation.f32',4) as Float32Array:undefined;
+  if(orientation)for(let i=0;i<n;i++) {
+    const q=Array.from(orientation.subarray(i*4,i*4+4));
+    if(!q.every(Number.isFinite)||Math.hypot(...q)<1e-8)throw new Error('take file: invalid camera orientation');
+  }
   return new Take(meta, arr("t.f64", 1, true) as Float64Array, arr("geom.f32", meta.ngeom * GEOM_STRIDE) as Float32Array,
                   arr("qpos.f32", meta.nq) as Float32Array, arr("cmd.f32", 3) as Float32Array,
                   arr("cam.f32", CAM_STRIDE) as Float32Array, arr("hoist.f32", 3) as Float32Array,
-                  (head.events ?? []) as TakeEvent[]);
+                  (head.events ?? []) as TakeEvent[],orientation);
 }
