@@ -5,15 +5,15 @@
     python3 scripts/import_source_bsp.py --game neotokyo --maps nt_rise_ctg nt_dusk_ctg
     python3 scripts/import_source_bsp.py --bsp path/or/url/to/map.bsp --name "My map"
 
-Each map becomes public/assets/maps/<id>/ (map.xml + vis_*.stl + manifest.json) and is listed in
+Each map becomes public/assets/maps/<id>/ (map.xml + visual.glb + lighting.json + manifest.json) and is listed in
 public/assets/maps/index.json, which the app reads to offer it as a terrain.
 
   collision  the world model's player-solid brushes (found through the BSP tree, so triggers and
              brush entities never turn into invisible walls): axis-aligned brushes become box
              geoms, the rest convex vertex meshes; displacement terrain is cut into per-quad convex
              prisms. All in geom group 3 (not rendered).
-  visuals    the world model's drawn faces and displacements, one mesh per texture colour bucket
-             (the texture's average colour from the BSP), contype/conaffinity 0.
+  visuals    the world model's drawn faces and displacements, with Source textures, face lightmap
+             UVs, embedded RGBM6 lightmap atlases, and BSP ambient cubes / world lights for robots.
   placement  1 Source unit = 1 inch = 0.0254 m; the map is moved so the first player spawn sits at
              the origin facing +x (where every robot spawns), and the default ground plane is
              dropped by the app when a map terrain is selected.
@@ -85,7 +85,9 @@ def parse(bsp: BSP) -> dict:
     texdata = bsp.arr(2, np.dtype([("refl", "<f4", 3), ("name", "<i4"), ("w", "<i4", 4)]))
     verts = bsp.arr(3, "<f4").reshape(-1, 3).astype(np.float64)
     texinfo = bsp.arr(6, np.dtype([("vecs", "<f4", 16), ("flags", "<i4"), ("texdata", "<i4")]))
-    faces = bsp.arr(7, np.dtype([("plane", "<u2"), ("side", "u1"), ("onnode", "u1"), ("firstedge", "<i4"),
+    using_hdr = bool(bsp.lump(53))
+    lighting = bsp.lump(53) if using_hdr else bsp.lump(8)
+    faces = bsp.arr(58 if using_hdr and bsp.lump(58) else 7, np.dtype([("plane", "<u2"), ("side", "u1"), ("onnode", "u1"), ("firstedge", "<i4"),
                                  ("numedges", "<i2"), ("texinfo", "<i2"), ("disp", "<i2"), ("fog", "<i2"),
                                  ("styles", "u1", 4), ("lightofs", "<i4"), ("area", "<f4"), ("lm", "<i4", 4),
                                  ("orig", "<i4"), ("nprims", "<u2"), ("fprim", "<u2"), ("smooth", "<u4")]))
@@ -111,7 +113,8 @@ def parse(bsp: BSP) -> dict:
             for block in re.findall(r"\{([^{}]*)\}", bsp.lump(0).decode("latin-1", "replace"))]
     return dict(planes=planes, texdata=texdata, verts=verts, texinfo=texinfo, faces=faces, edges=edges,
                 surfedges=surfedges, models=models, nodes=nodes, leafs=leafs, leafbrushes=leafbrushes,
-                brushes=brushes, sides=sides, dispinfo=dispinfo, dispverts=dispverts, texname=texname, ents=ents)
+                brushes=brushes, sides=sides, dispinfo=dispinfo, dispverts=dispverts, texname=texname, ents=ents,
+                lighting=lighting, using_hdr=using_hdr)
 
 
 def world_brushes(m: dict) -> list[int]:
@@ -320,7 +323,9 @@ def load_textures(fs, names: list[str], max_px: int = 512) -> dict:
             mat = A.material(fs, name)
             if not mat:
                 return name, None
-            raw = fs.read("materials/" + mat["basetexture"].replace("\\", "/").lower().removesuffix(".vtf") + ".vtf")
+            # Some shipped Ghost VMTs accidentally use a .vmt extension for a VTF reference.
+            texture_path = mat["basetexture"].replace("\\", "/").lower().removesuffix(".vtf").removesuffix('.vmt')
+            raw = fs.read("materials/" + texture_path + ".vtf")
             img = A.decode_vtf(raw) if raw else None
             if img is None:
                 return name, None
@@ -330,9 +335,10 @@ def load_textures(fs, names: list[str], max_px: int = 512) -> dict:
                 im = im.resize((max(1, round(im.width * sc)), max(1, round(im.height * sc))), Image.LANCZOS)
             alpha = (mat["alphatest"] or mat["translucent"]) and np.asarray(im)[..., 3].min() < 250
             buf = io.BytesIO()
-            if alpha:
+            if alpha or mat.get('selfillum'):
                 im.save(buf, "PNG", optimize=True)
-                return name, (buf.getvalue(), "image/png", "MASK" if mat["alphatest"] else "BLEND")
+                mode = ("MASK" if mat["alphatest"] else "BLEND") if alpha else 'OPAQUE'
+                return name, (buf.getvalue(), "image/png", mode)
             im.convert("RGB").save(buf, "JPEG", quality=85)
             return name, (buf.getvalue(), "image/jpeg", "OPAQUE")
         except Exception as e:                          # a bad texture keeps its average colour
@@ -342,7 +348,7 @@ def load_textures(fs, names: list[str], max_px: int = 512) -> dict:
         return {n: r for n, r in ex.map(one, names) if r}
 
 
-def write_glb(path: str, prims: dict, textures: dict, title: str):
+def write_glb(path: str, prims: dict, textures: dict, title: str, lightmaps=None):
     """Binary glTF: one node, one mesh, a primitive per material. Positions are the MuJoCo frame
     (metres, Z up): the app's renderer is Z-up, so they are not converted to glTF's Y-up."""
     binbuf = bytearray()
@@ -368,8 +374,15 @@ def write_glb(path: str, prims: dict, textures: dict, title: str):
         js["accessors"].append(a)
         return len(js["accessors"]) - 1
 
-    for name in sorted(prims):
-        pr = prims[name]
+    atlas_textures = []
+    for png in lightmaps.images() if lightmaps else []:
+        js.setdefault("images", []).append({"bufferView": view(png), "mimeType": "image/png"})
+        js.setdefault("textures", []).append({"sampler": 0, "source": len(js["images"]) - 1})
+        atlas_textures.append(len(js["textures"]) - 1)
+    texture_indices = {}
+    for key in sorted(prims):
+        pr = prims[key]
+        name = pr['material']
         P = np.concatenate(pr["p"]).astype(np.float32)
         N = np.concatenate(pr["n"]).astype(np.float32)
         UV = np.concatenate(pr["uv"]).astype(np.float32)
@@ -378,19 +391,24 @@ def write_glb(path: str, prims: dict, textures: dict, title: str):
         tex = textures.get(name)
         if tex:
             data, mime, mode = tex
-            js.setdefault("images", []).append({"bufferView": view(data), "mimeType": mime})
-            js.setdefault("textures", []).append({"sampler": 0, "source": len(js["images"]) - 1})
-            mat["pbrMetallicRoughness"]["baseColorTexture"] = {"index": len(js["textures"]) - 1}
+            if name not in texture_indices:
+                js.setdefault("images", []).append({"bufferView": view(data), "mimeType": mime})
+                js.setdefault("textures", []).append({"sampler": 0, "source": len(js["images"]) - 1})
+                texture_indices[name] = len(js["textures"]) - 1
+            mat["pbrMetallicRoughness"]["baseColorTexture"] = {"index": texture_indices[name]}
             if mode != "OPAQUE":
                 mat["alphaMode"], mat["doubleSided"] = mode, True
                 if mode == "MASK":
                     mat["alphaCutoff"] = 0.5
         else:
             mat["pbrMetallicRoughness"]["baseColorFactor"] = [*map(float, pr["refl"]), 1.0]
+        if atlas_textures:
+            mat['extras'] = {'sourceLightmap': atlas_textures[pr['page']]}
         js["materials"].append(mat)
         js["meshes"][0]["primitives"].append({
             "attributes": {"POSITION": acc(P, "VEC3", 5126, 34962, True), "NORMAL": acc(N, "VEC3", 5126, 34962),
-                           "TEXCOORD_0": acc(UV, "VEC2", 5126, 34962)},
+                           "TEXCOORD_0": acc(UV, "VEC2", 5126, 34962),
+                           "TEXCOORD_1": acc(np.concatenate(pr['lmuv']).astype(np.float32), "VEC2", 5126, 34962)},
             "indices": acc(I, "SCALAR", 5125, 34963), "material": len(js["materials"]) - 1})
     while len(binbuf) % 4:
         binbuf.append(0)
@@ -444,9 +462,22 @@ def convert(data: bytes, mid: str, name: str, game: str, out_root: str, mounts=N
     # ---- visuals (per material: positions, normals, UVs) + displacement collision
     prims: dict[str, dict] = {}
 
-    def add(tex: str, refl, P, N, UV, I):
-        pr = prims.setdefault(tex, {"p": [], "n": [], "uv": [], "i": [], "nv": 0, "refl": refl})
+    from source_lightmaps import LightmapAtlas, write_ambient
+    w = m["models"][0]
+    visible = [fi for fi in range(w['firstface'], w['firstface'] + w['numfaces'])
+               if m['faces'][fi]['texinfo'] >= 0
+               and not (m['texinfo'][m['faces'][fi]['texinfo']]['flags'] & SURF_HIDE)
+               and m['texinfo'][m['faces'][fi]['texinfo']]['texdata'] >= 0
+               and not m['texname'](m['texinfo'][m['faces'][fi]['texinfo']]['texdata']).lower().startswith('tools/')]
+    lightmaps = LightmapAtlas(m, visible)
+    write_ambient(os.path.join(out, 'lighting.json'), bsp, m, origin, yaw)
+    lightmaps.write_styles(out, m)
+
+    def add(tex: str, refl, P, N, UV, I, LMUV, page):
+        pr = prims.setdefault((tex, page), {"material": tex, "page": page, "p": [], "n": [], "uv": [],
+                                          "lmuv": [], "i": [], "nv": 0, "refl": refl})
         pr["p"].append(P); pr["n"].append(N); pr["uv"].append(UV); pr["i"].append(I + pr["nv"])
+        pr['lmuv'].append(LMUV)
         pr["nv"] += len(P)
 
     ndisp = nhf = 0
@@ -482,7 +513,8 @@ def convert(data: bytes, mid: str, name: str, game: str, out_root: str, mounts=N
             for k in range(3):
                 np.add.at(vn, idx[:, k], fn)
             vn /= np.maximum(np.linalg.norm(vn, axis=1, keepdims=True), 1e-9)
-            add(tex, refl, P, vn, uv_of(bs.reshape(-1, 3)), idx)
+            add(tex, refl, P, vn, uv_of(bs.reshape(-1, 3)), idx,
+                lightmaps.uv(m, fi, bs.reshape(-1, 3), n), lightmaps.faces[fi][0])
             hf = disp_hfield(g, base, front)
             if hf:
                 name = f"{mid}_h{nhf}"
@@ -504,15 +536,17 @@ def convert(data: bytes, mid: str, name: str, game: str, out_root: str, mounts=N
             if len(pts) >= 3:
                 k = len(pts)
                 idx = np.stack([np.zeros(k - 2, int), np.arange(1, k - 1), np.arange(2, k)], 1)
-                add(tex, refl, to_m(pts), np.repeat(front[None], k, 0), uv_of(pts), idx)
+                add(tex, refl, to_m(pts), np.repeat(front[None], k, 0), uv_of(pts), idx,
+                    lightmaps.uv(m, fi, pts), lightmaps.faces[fi][0])
 
     for old in os.listdir(out):
         if old.startswith("vis_") and old.endswith(".stl"):
             os.remove(os.path.join(out, old))
     nvis = sum(int(sum(len(i) for i in pr["i"])) for pr in prims.values())
     files = ["map.xml"]
-    textures = load_textures(fs, sorted(prims)) if fs else {}
-    write_glb(os.path.join(out, "visual.glb"), prims, textures, f"{name} ({game})")
+    material_names = sorted({pr['material'] for pr in prims.values()})
+    textures = load_textures(fs, material_names) if fs else {}
+    write_glb(os.path.join(out, "visual.glb"), prims, textures, f"{name} ({game})", lightmaps)
 
     xml = (f'<mujoco model="{mid}">\n  <!-- {name} ({game}), generated by scripts/import_source_bsp.py -->\n'
            f'  <asset>\n    ' + "\n    ".join(assets) + "\n  </asset>\n"
@@ -520,7 +554,10 @@ def convert(data: bytes, mid: str, name: str, game: str, out_root: str, mounts=N
     with open(os.path.join(out, "map.xml"), "w") as fh:
         fh.write(xml)
     info = dict(id=mid, name=name, game=game, files=files, visual="visual.glb", boxes=nbox, hulls=nmesh,
-                hfields=nhf, disp_prisms=ndisp, vis_triangles=nvis, textured=len(textures), materials=len(prims), light=map_light(m, yaw), spawn=spawn_cls, spawn_source=[float(x) for x in origin], spawn_yaw=yaw)
+                hfields=nhf, disp_prisms=ndisp, vis_triangles=nvis, textured=len(textures), materials=len(material_names),
+                source_lightmaps={'version': 1, 'pages': len(lightmaps.pages), 'faces': lightmaps.lit_faces,
+                                  'hdr': m['using_hdr'], 'encoding': 'RGBM6'},
+                light=map_light(m, yaw), spawn=spawn_cls, spawn_source=[float(x) for x in origin], spawn_yaw=yaw)
     with open(os.path.join(out, "manifest.json"), "w") as fh:
         json.dump(info, fh, indent=1)
     return info
@@ -568,8 +605,18 @@ def main():
         for v in archives:
             if v not in vpks:
                 vpks[v] = A.VPK(f"{a.storage}/{v}", a.cache)
-        return A.FileSystem(bsp.lump(40), f"{a.storage}/{loose}" if loose else None,
-                            [vpks[v] for v in archives], a.cache)
+        fs = A.FileSystem(bsp.lump(40), f"{a.storage}/{loose}" if loose else None,
+                          [vpks[v] for v in archives], a.cache)
+        flashlight = os.path.join(a.out, '..', 'source', 'flashlight.png')
+        if not os.path.exists(flashlight):
+            raw = fs.read('materials/effects/flashlight001.vtf')
+            if raw:
+                from PIL import Image
+                image = A.decode_vtf(raw)
+                if image is not None:
+                    os.makedirs(os.path.dirname(flashlight), exist_ok=True)
+                    Image.fromarray(image, 'RGBA').save(flashlight)
+        return fs
 
     jobs = []
     if a.bsp:

@@ -41,6 +41,75 @@
       #viewport { flex: 1; position: relative; min-width: 0; min-height: 0; }
       #viewport canvas { display: block; }
 
+      .navigation-help { color: var(--text-2); }
+      .screenshot-status { margin-top: 8px; color: var(--text-2); font-size: 12px; overflow-wrap: anywhere; }
+      .screenshot-status:empty { display: none; }
+      #capture-screenshot[aria-busy="true"] { opacity: .65; cursor: progress; }
+      .saved-view-filter, .saved-view-rename { width: 100%; min-width: 0; min-height: 36px;
+        padding: 7px 8px; border: 1px solid var(--line-hi); border-radius: var(--r);
+        background: var(--bg); color: var(--text); font: 12px var(--sans); }
+      .saved-view-filter { margin-top: 12px; }
+      .saved-view-filter::placeholder { color: var(--text-2); opacity: 1; }
+      .saved-view-state { margin-top: 8px; color: var(--text-2); font-size: 12px; overflow-wrap: anywhere; }
+      .saved-view-state:empty { display: none; }
+      #saved-view-list { max-height: 360px; overflow-y: auto; overscroll-behavior: contain; }
+      .saved-view-item { padding-block: 8px; border-bottom: 1px solid var(--line); }
+      .saved-view-item:last-child { border-bottom: 0; }
+      .saved-view-restore.btn { width: 100%; flex-direction: column; align-items: stretch; gap: 3px;
+        position: relative; padding: 7px 8px; padding-inline-end: 28px; text-align: start;
+        background: transparent; border-color: transparent; }
+      .saved-view-restore.btn:hover { background: var(--raised); }
+      .saved-view-open { position: absolute; inset-inline-end: 8px; top: 9px; color: var(--text-2); }
+      .saved-view-restore:hover .saved-view-open { color: var(--accent); }
+      .saved-view-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+      .saved-view-location { color: var(--text-2); font: 12px/1.4 var(--mono); overflow-wrap: anywhere; }
+      .saved-view-actions { margin-top: 6px; }
+      .saved-view-actions.row > .btn { justify-content: center; }
+      .saved-view-undo { margin-top: 8px; }
+      .saved-view-undo[hidden] { display: none; }
+      .terrain-picker { position: relative; min-width: 0; }
+      .terrain-picker input[type=text] { width: 100%; padding-left: 28px; font: 12px var(--mono); }
+      .policy-picker input[type=text] { font-family: var(--sans); }
+      .policy-popup .picker-primary { display: block; font: 600 12px/1.45 var(--sans); }
+      .policy-popup .picker-secondary { display: block; color: var(--text-2); font: 12px/1.45 var(--mono); }
+      .terrain-search-icon { position: absolute; top: 50%; left: 8px; transform: translateY(-50%); color: var(--text-2); pointer-events: none; }
+      .terrain-popup { position: fixed; z-index: 1200; display: flex; flex-direction: column; overflow: hidden;
+        border: 1px solid var(--line-hi); border-radius: var(--r); background: var(--panel); color: var(--text);
+        box-shadow: 0 10px 28px rgba(0,0,0,.35); }
+      .terrain-popup[hidden] { display: none; }
+      .terrain-options { overflow-y: auto; min-height: 0; padding: 4px; }
+      .terrain-group { padding: 8px 8px 4px; color: var(--text-2); font: 12px var(--sans); }
+      .terrain-option { display: block; width: 100%; min-height: 34px; padding: 7px 8px; border: 0;
+        border-radius: 3px; background: transparent; color: var(--text); text-align: left;
+        font: 12px var(--mono); cursor: pointer; overflow-wrap: anywhere; }
+      .terrain-option.is-active { background: var(--raised-hi); }
+      .terrain-option[aria-selected="true"] { color: var(--accent); }
+      .terrain-empty { padding: 16px 8px; font-size: 12px; }
+      .terrain-search-status { flex: none; padding: 8px 10px; border-top: 1px solid var(--line);
+        color: var(--text-2); font-size: 12px; }
+      #viewport-tools { position: absolute; top: 12px; right: 12px; left: 12px; z-index: 6;
+        display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; pointer-events: none; }
+      #viewport-tools > button { pointer-events: auto; }
+      #toggle-inspector[aria-pressed="true"], #toggle-menu[aria-pressed="true"] { color: var(--accent); border-color: var(--line-hi); }
+      #map-loading { position: absolute; top: calc(var(--viewport-tools-height, 28px) + 24px); left: 12px; right: 12px; max-width: 480px; z-index: 6;
+        padding: 8px 10px; background: var(--panel); border: 1px solid var(--line-hi); border-radius: var(--r);
+        color: var(--text); font-size: 12px; }
+      #map-loading[hidden] { display: none; }
+      #map-loading button { margin-left: 8px; }
+      #flight-hud { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 6;
+                    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+                    padding: 8px 10px; border: 1px solid var(--line-hi); border-radius: var(--r);
+                    background: var(--panel); color: var(--text-2); }
+      #flight-hud[hidden] { display: none; }
+      #flight-hud label { display: flex; align-items: center; gap: 8px; }
+      #flight-speed { width: 100px; accent-color: var(--accent); }
+      #flight-readout { min-width: 9ch; color: var(--text); font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+      #flight-hint { flex: 1 1 210px; font-size: 12px; }
+      body.map-focus #inspector, body.map-focus #panel, body.map-focus #policy-manager { display: none; }
+      body.inspector-hidden #inspector { display: none; }
+      body.menu-hidden #panel, body.menu-hidden #policy-manager { display: none; }
+      body.map-focus #viewport { height: 100dvh; }
+      body.map-focus #app { height: 100dvh; }
       /* ---- recording badge + shot frame guide (over the viewport) -------- */
       #rec-badge { position: absolute; top: 12px; left: 12px; z-index: 5; display: flex; align-items: center; gap: 8px;
                    padding: 4px 10px 4px 8px; border-radius: var(--r); background: rgba(14, 16, 18, .78);
@@ -166,12 +235,12 @@
       .btn.danger { color: var(--danger); }
       .btn.ghost.danger:hover { background: rgba(224, 104, 92, .12); color: var(--danger); }
       .btn.icon { min-height: 24px; padding: 4px; }
-      select, input[type=number] {
+      select, input[type=number], input[type=text] {
         width: 100%; min-height: 28px; margin: 0; padding: 4px 8px; border: 1px solid var(--line-hi);
         border-radius: var(--r); background: var(--raised); color: var(--text); font: 12px var(--sans); }
       select { appearance: none; padding-right: 24px; cursor: pointer; text-overflow: ellipsis;
         background: var(--raised) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%239aa3ad' stroke-width='1.4'/%3E%3C/svg%3E") no-repeat right 8px center; }
-      select:hover, input[type=number]:hover { border-color: #414952; }
+      select:hover, input[type=number]:hover, input[type=text]:hover { border-color: #414952; }
       optgroup { color: var(--text-3); font-style: normal; }
       option { color: var(--text); background: var(--panel); }
 
@@ -357,7 +426,8 @@
         #panel { order: 1; width: 100%; border-left: 0; overflow: visible; }
         #inspector { order: 2; width: 100%; border-right: 0; border-top: 1px solid var(--line); overflow: visible; }
         #policy-manager { position: fixed; inset: 0; width: auto; z-index: 50; border: 0; }
-        .btn, select, input[type=number] { min-height: 36px; }
+        .btn, select, input[type=number], input[type=text] { min-height: 36px; }
+        .saved-view-actions .btn { min-height: 44px; }
         .seg button { height: 38px; }
       }
     </style>
@@ -371,6 +441,21 @@
       <div id="stage">
         <div id="viewport">
           <div id="overlay"><div id="overlay-msg" data-kind="busy">Loading…</div></div>
+          <div id="viewport-tools">
+            <button id="toggle-inspector" class="btn" type="button" aria-pressed="true" aria-expanded="true" aria-controls="inspector" aria-label="Hide inspector">Inspector</button>
+            <button id="toggle-menu" class="btn" type="button" aria-pressed="true" aria-expanded="true" aria-controls="panel policy-manager" aria-label="Hide menu">Menu</button>
+            <button id="toggle-panels" class="btn" type="button" aria-pressed="false" title="Hide panels (Tab while the map is focused)">Hide panels</button>
+            <button id="fullscreen" class="btn" type="button" aria-pressed="false">Full screen</button>
+          </div>
+          <div id="map-loading" role="status" hidden><span></span><button class="btn" type="button" hidden>Retry</button></div>
+          <div id="flight-hud" hidden>
+            <button id="flight-place" class="btn" type="button" aria-pressed="false"><span class="lbl">Place robot</span> <kbd>P</kbd></button>
+            <label for="flight-speed">Flight speed <input id="flight-speed" type="range" min="1" max="200" step="1" value="60" /></label>
+            <output id="flight-readout" for="flight-speed">4.6 m/s</output>
+            <button id="flight-hover" class="btn" type="button" aria-pressed="false">Level flight <kbd>X</kbd></button>
+            <span id="flight-hint">Drag to look · WASD / arrows fly · Numpad 8/2/4/6 move, 9/3 up/down, 5 stop · Shift faster</span>
+            <button id="flight-exit" class="btn" type="button">Exit noclip <kbd>N</kbd></button>
+          </div>
           <div id="rec-badge" hidden><span class="dot"></span><span id="rec-time">REC 0.0 s</span></div>
           <div id="shot-frame" hidden><span></span></div>
         </div>

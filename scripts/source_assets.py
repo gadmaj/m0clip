@@ -16,6 +16,8 @@ import re
 import struct
 import urllib.request
 import zipfile
+import threading
+from pathlib import Path
 
 import numpy as np
 
@@ -39,8 +41,8 @@ class VPK:
         path = os.path.join(cache, re.sub(r"[^A-Za-z0-9._-]", "_", base_url) + "_dir.vpk")
         if not os.path.exists(path):
             os.makedirs(cache, exist_ok=True)
-            open(path, "wb").write(http(base_url + "_dir.vpk"))
-        d = open(path, "rb").read()
+            Path(path).write_bytes(http(base_url + "_dir.vpk"))
+        d = Path(path).read_bytes()
         sig, ver, tree = struct.unpack_from("<III", d, 0)
         if sig != 0x55AA1234:
             raise ValueError(f"not a VPK: {base_url}")
@@ -97,25 +99,43 @@ class FileSystem:
             listing = os.path.join(cache, re.sub(r"[^A-Za-z0-9._-]", "_", loose_base) + "dir.txt")
             if not os.path.exists(listing):
                 os.makedirs(cache, exist_ok=True)
-                open(listing, "wb").write(http(loose_base + "dir.txt"))
-            for line in open(listing, encoding="latin-1").read().splitlines():
+                Path(listing).write_bytes(http(loose_base + "dir.txt"))
+            for line in Path(listing).read_text(encoding="latin-1").splitlines():
                 if line.strip():
                     self.loose[line.strip().lower()] = line.strip()
         self.vpks = vpks
+        self._locks = {}
 
     def read(self, path: str) -> bytes | None:
-        key = path.replace("\\", "/").lower().lstrip("/")
+        key = re.sub('/+', '/', path.replace("\\", "/").lower()).lstrip("/")
+        if '..' in key.split('/'):
+            raise ValueError(f'invalid Source asset path: {path}')
+        # Different model materials often share textures. Do not expose a half-written cache
+        # file to another conversion thread while its download is still in progress.
+        lock = self._locks.setdefault(key, threading.Lock())
+        with lock:
+            return self._read(key)
+
+    def _read(self, key: str) -> bytes | None:
         if key in self.pak_names:
             return self.pak.read(self.pak_names[key])
         if key in self.loose:
             fn = os.path.join(self.cache, "files", re.sub(r"[^A-Za-z0-9._/-]", "_", key))
             if not os.path.exists(fn):
                 os.makedirs(os.path.dirname(fn), exist_ok=True)
-                open(fn, "wb").write(http(self.loose_base + self.loose[key]))
-            return open(fn, "rb").read()
+                Path(fn).write_bytes(http(self.loose_base + self.loose[key]))
+            return Path(fn).read_bytes()
         for v in self.vpks:
+            if key not in v.entries:
+                continue
+            fn = os.path.join(self.cache, 'vpk-files', re.sub(r'[^A-Za-z0-9._-]', '_', v.base), key)
+            if os.path.exists(fn):
+                return Path(fn).read_bytes()
             b = v.read(key)
             if b is not None:
+                os.makedirs(os.path.dirname(fn), exist_ok=True)
+                with open(fn, 'wb') as fh:
+                    fh.write(b)
                 return b
         return None
 
@@ -123,40 +143,93 @@ class FileSystem:
 # ---- VMT ---------------------------------------------------------------------------------------
 
 def parse_vmt(text: str) -> tuple[str, dict]:
-    """(shader, flat lower-cased key -> value) of a KeyValues material (nested blocks flattened)."""
-    toks = re.findall(r'"([^"]*)"|([{}])|([^\s{}"]+)', re.sub(r"//[^\n]*", "", text))
-    words = [a or b or c for a, b, c in toks]
-    shader = words[0].lower() if words else ""
-    kv, i = {}, 1
-    while i < len(words):
-        w = words[i]
-        if w in "{}":
-            i += 1
-            continue
-        if i + 1 < len(words) and words[i + 1] not in "{}":
-            kv.setdefault(w.lower(), words[i + 1])
-            i += 2
-        else:
-            i += 1
-    return shader, kv
+    """Parse KeyValues without treating proxy / fallback keys as top-level parameters."""
+    tokens = re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"|([{}])|([^\s{}"]+)',
+                        re.sub(r'//[^\n]*|/\*.*?\*/', '', text, flags=re.S))
+    words = [a or b or c for a, b, c in tokens]
+    def block(i):
+        result = {}
+        while i < len(words) and words[i] != '}':
+            key = words[i].lower(); i += 1
+            if i >= len(words): break
+            if words[i] == '{': value, i = block(i + 1)
+            else: value = words[i]; i += 1
+            # noclip selects the first duplicate material key.
+            result.setdefault(key, value)
+        return result, i + 1
+    return (words[0].lower(), block(2)[0]) if len(words) >= 2 else ('', {})
+
+
+def material_kv(fs, name, depth=0):
+    if depth > 8: raise ValueError('cyclic material patch: ' + name)
+    name = re.sub(r'^materials/|\.vmt$', '', name.replace('\\', '/').lower()).lstrip('/')
+    raw = fs.read(f'materials/{name}.vmt')
+    if raw is None: return '', {}
+    shader, kv = parse_vmt(raw.decode('latin-1', 'replace'))
+    if shader != 'patch': return shader, kv
+    shader, base = material_kv(fs, kv.get('include', ''), depth + 1)
+    base = dict(base)
+    for mode in ('insert', 'replace'):
+        for key, value in kv.get(mode, {}).items():
+            if mode == 'insert' or key in base: base[key] = value
+    return shader, base
+
+
+def texture_transform(text: str) -> np.ndarray:
+    """Source ParameterMatrix semantics (noclip MaterialParameters.ts), as a UV affine matrix."""
+    values = dict(center=[0., 0.], scale=[1., 1.], rotate=[0.], translate=[0., 0.])
+    sections = re.findall(r'(center|scale|rotate|translate)\s+(.+?)(?=\s+(?:center|scale|rotate|translate)\b|$)', text, re.I)
+    for mode, items in sections:
+        numbers = [float(v) for v in re.findall(r'[-+]?(?:\d*\.)?\d+(?:[eE][-+]?\d+)?', items)]
+        if not numbers: raise ValueError(f'Invalid Source texture transform: {text}')
+        values[mode.lower()] = numbers if len(numbers) > 1 else numbers * 2
+    cx, cy = values['center'][:2]; sx, sy = values['scale'][:2]
+    tx, ty = values['translate'][:2]
+    angle = np.radians(values['rotate'][0]); c, s = np.cos(angle), np.sin(angle)
+    # Source sets the scale and negative centre in one matrix, then left-multiplies
+    # rotation and the centre/translation. Keep that exact order.
+    return np.array([[c*sx, -s*sy, cx+tx-c*cx+s*cy],
+                     [s*sx, c*sy, cy+ty-s*cx-c*cy], [0., 0., 1.]])
 
 
 def material(fs: FileSystem, name: str, depth: int = 0) -> dict | None:
-    """{basetexture, alphatest, translucent} for a material name ('concrete/wall01')."""
-    raw = fs.read(f"materials/{name.lower()}.vmt")
-    if raw is None:
-        return None
-    shader, kv = parse_vmt(raw.decode("latin-1", "replace"))
-    if shader == "patch" and "include" in kv and depth < 4:
-        inc = re.sub(r"^materials/|\.vmt$", "", kv["include"].replace("\\", "/").lower())
-        base = material(fs, inc, depth + 1) or {}
-        if "$basetexture" in kv:
-            base["basetexture"] = kv["$basetexture"]
-        return base or None
-    if "$basetexture" not in kv:
-        return None
-    flag = lambda k: kv.get(k, "0").strip() not in ("0", "")
-    return {"basetexture": kv["$basetexture"], "alphatest": flag("$alphatest"), "translucent": flag("$translucent")}
+    shader, kv = material_kv(fs, name, depth)
+    if '$basetexture' not in kv: return None
+    flag = lambda k: str(kv.get(k, '0')).strip().lower() not in ('0', '', 'false')
+    number = lambda k, default: float(kv.get(k, default))
+    vector = lambda k, default: [float(v) for v in re.findall(r'[-+]?[0-9]*\.?[0-9]+', kv.get(k, default))][:3]
+    result = dict(shader=shader, basetexture=kv['$basetexture'], alphatest=flag('$alphatest'),
+        alphatestreference=number('$alphatestreference', .7), translucent=flag('$translucent'),
+        selfillum=flag('$selfillum'), unlit=shader in ('unlitgeneric', 'sdk_unlitgeneric'),
+        halflambert=flag('$halflambert') or flag('$phong'), nocull=flag('$nocull'), additive=flag('$additive'),
+        selfillumtint=vector('$selfillumtint', '[1 1 1]'), color=vector('$color', '[1 1 1]'), ssbump=flag('$ssbump'),
+        nodiffusebumplighting=flag('$nodiffusebumplighting'),
+        envmap=kv.get('$envmap', ''), envmaptint=vector('$envmaptint', '[1 1 1]'),
+        envmapcontrast=number('$envmapcontrast', 0), envmapsaturation=number('$envmapsaturation', 1),
+        envmapfresnel=number('$envmapfresnel', 1), envmaplightscale=number('$envmaplightscale', 0),
+        normalmapalphaenvmapmask=flag('$normalmapalphaenvmapmask'), basealphaenvmapmask=flag('$basealphaenvmapmask'),
+        phong=flag('$phong'), phongboost=number('$phongboost', 1), phongexponent=number('$phongexponent', 5),
+        phongexponentfactor=number('$phongexponentfactor', 149), phongfresnelranges=vector('$phongfresnelranges', '[0 0.5 1]'),
+        phongtint=vector('$phongtint', '[1 1 1]'), basealphaphongmask=flag('$basemapalphaphongmask'),
+        phongalbedotint=flag('$phongalbedotint'), phongalbedoboost=number('$phongalbedoboost', 1),
+        phongmaskinvert=flag('$phongmaskinvert'))
+    for key in ('bumpmap', 'envmapmask', 'phongexponenttexture', 'selfillummask', 'basetexture2', 'detail'):
+        if '$' + key in kv: result[key] = kv['$' + key]
+    if '$basetexturetransform' in kv:
+        result['basetexturetransform'] = texture_transform(kv['$basetexturetransform']).reshape(-1).tolist()
+    if '$detail' in kv:
+        result.update(detailscale=number('$detailscale', 4), detailblendfactor=number('$detailblendfactor', 1),
+                      detailblendmode=int(number('$detailblendmode', 0)))
+    proxies = kv.get('proxies', {})
+    for key, proxy in proxies.items():
+        if not isinstance(proxy, dict): continue
+        if key == 'animatedtexture' and proxy.get('animatedtexturevar', '').lower() == '$basetexture':
+            result['animationfps'] = float(proxy.get('animatedtextureframerate', 15))
+        if key == 'texturescroll' and proxy.get('texturescrollvar', '').lower() == '$basetexturetransform':
+            angle = np.radians(float(proxy.get('texturescrollangle', 0)))
+            rate = float(proxy.get('texturescrollrate', 1))
+            result['scroll'] = [float(np.cos(angle) * rate), float(np.sin(angle) * rate)]
+    return result
 
 
 # ---- VTF ---------------------------------------------------------------------------------------
@@ -171,7 +244,7 @@ def _dxt_color(blk: np.ndarray, dxt1: bool) -> np.ndarray:
     c0 = blk[:, 0].astype(np.uint16) | (blk[:, 1].astype(np.uint16) << 8)
     c1 = blk[:, 2].astype(np.uint16) | (blk[:, 3].astype(np.uint16) << 8)
     p0, p1 = _rgb565(c0), _rgb565(c1)
-    four = (c0 > c1) | ~dxt1
+    four = (c0 > c1) | (not dxt1)
     pal = np.zeros((len(blk), 4, 4), np.int32)
     pal[:, 0, :3], pal[:, 1, :3] = p0, p1
     pal[:, 2, :3] = np.where(four[:, None], (2 * p0 + p1) // 3, (p0 + p1) // 2)
@@ -228,7 +301,7 @@ def _mip_size(fmt: int, w: int, h: int) -> int:
     return w * h * _RAW[fmt][0]
 
 
-def decode_vtf(data: bytes) -> np.ndarray | None:
+def decode_vtf(data: bytes, frame: int = 0, face: int = 0) -> np.ndarray | None:
     """Largest mip, first frame / face, as an (h, w, 4) uint8 RGBA array; None if unsupported."""
     if data[:4] != b"VTF\0":
         return None
@@ -236,8 +309,8 @@ def decode_vtf(data: bytes) -> np.ndarray | None:
     fmt, mips, lfmt, lw, lh = struct.unpack_from("<iBiBB", data, 52)
     if fmt not in _DXT and fmt not in _RAW:
         return None
-    faces = 6 if flags & 0x4000 else 1                  # TEXTUREFLAGS_ENVMAP
-    depth = struct.unpack_from("<H", data, 63)[0] if (v0, v1) >= (7, 2) else 1
+    faces = (7 if v1 < 5 else 6) if flags & 0x4000 else 1                  # TEXTUREFLAGS_ENVMAP
+    depth = struct.unpack_from("<H", data, 65)[0] if (v0, v1) >= (7, 2) else 1
     start = None
     if (v0, v1) >= (7, 3):
         nres = struct.unpack_from("<I", data, 68)[0]
@@ -251,6 +324,9 @@ def decode_vtf(data: bytes) -> np.ndarray | None:
     off = start
     for m in range(mips - 1, 0, -1):
         off += _mip_size(fmt, max(1, w >> m), max(1, h >> m)) * frames * faces * max(1, depth >> m)
+    if frame < 0 or frame >= frames or face < 0 or face >= faces:
+        raise ValueError('VTF frame or face out of range')
+    off += _mip_size(fmt, w, h) * (frame * faces * max(1, depth) + face)
     raw = data[off:off + _mip_size(fmt, w, h)]
     if fmt in _DXT:
         return _dxt(raw, w, h, _DXT[fmt])

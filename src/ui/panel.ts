@@ -6,6 +6,9 @@ import type { FsmState } from "../sim/fsm";
 import { STATES } from "../sim/fsm";
 import type { PackInfo, PolicyInfo } from "../sim/protocol";
 import { TERRAINS, type MapEntry, type TerrainName } from "../sim/terrain";
+import { policyPresentation } from './policy-names';
+import { TerrainPicker } from './terrain-picker';
+import { SearchPicker } from './search-picker';
 
 export interface PanelCallbacks {
   onRobot(robot: string): void;
@@ -25,6 +28,8 @@ export interface PanelCallbacks {
   onDeletePack(id: string): void;
   onDeleteAllPacks(): void;
   onHoist(on: boolean): void;
+  onNoclip(on: boolean): void;
+  onFlashlight(on: boolean): void;
   onRemote(combo: string): void;
 }
 
@@ -94,15 +99,23 @@ function block(root: HTMLElement, title: string, meta?: Node | string): HTMLElem
 export class Panel {
   private robotSel!: HTMLSelectElement;
   private terrainSel!: HTMLSelectElement;
+  private terrainPicker!: TerrainPicker;
   private policySel!: HTMLSelectElement;
+  private policyPicker!:SearchPicker;
   private stateBtns = new Map<FsmState, HTMLButtonElement>();
   private stateDesc!: HTMLElement;
   private statusEl!: HTMLElement;
   private padDebugEl!: HTMLElement;
   private recBtn!: HTMLButtonElement;
+  private screenshotBtn!:HTMLButtonElement;
+  private screenshotInfo!:HTMLElement;
   private recInfo!: HTMLElement;
   private timelineBtn!: HTMLButtonElement;
   private hoistBtn!: HTMLButtonElement;
+  private noclipBtn!: HTMLButtonElement;
+  private noclipOn = false;
+  private flashlightBtn!: HTMLButtonElement;
+  private flashlightOn = false;
   private remoteEl!: HTMLElement;
   private remoteKey = "";
   private hoistOn = false;
@@ -141,9 +154,19 @@ export class Panel {
       return sel;
     };
     this.robotSel = field("robot", "Robot", robots, (v) => cb.onRobot(v));
-    this.terrainSel = field("terrain", "Terrain", TERRAINS, (v) => cb.onTerrain(v as TerrainName));
+    this.terrainSel = field("terrain", "Map", TERRAINS, (v) => cb.onTerrain(v as TerrainName));
+    this.terrainPicker = new TerrainPicker(this.terrainSel);
+    form.append(this.terrainPicker.root);
+    form.querySelector('label[for="sel-terrain"]')!.setAttribute('for', 'terrain-search');
     this.policySel = field("policy", "Policy", [], (v) => cb.onPolicy(v));
+    this.policySel.setAttribute('aria-describedby', 'policy-description');
+    this.policyPicker=new SearchPicker(this.policySel,{id:'policy',label:'Policy',listLabel:'Policies',
+      placeholder:'Search policies…',category:'Policies',empty:'No matching policies.',descriptions:true,policyLabels:true});
+    this.policyPicker.input.setAttribute('aria-describedby','policy-description');
+    form.append(this.policyPicker.root);
+    form.querySelector('label[for="sel-policy"]')!.setAttribute('for','policy-search');
     setup.append(form);
+    setup.append(el('div.sub', { id: 'policy-description', style: 'font-size:12px;color:var(--text-2);overflow-wrap:anywhere' }));
     root.append(setup);
 
     // FSM state: segmented control
@@ -164,6 +187,15 @@ export class Panel {
     this.hoistBtn = button("Hoist", { key: "H", title: "Overhead gantry: hang the robot from a support (H)",
                                       onclick: () => this.cb.onHoist(!this.hoistOn) });
     this.hoistBtn.setAttribute("aria-pressed", "false");
+    this.noclipBtn = button("Noclip", { key: "N", title: "Fly the robot through walls; toggle physics (N)",
+                                        onclick: () => this.cb.onNoclip(!this.noclipOn) });
+    this.noclipBtn.setAttribute("aria-pressed", "false");
+    this.flashlightBtn = button("Flashlight", { key: "F", title: "Toggle the camera flashlight (F)",
+      onclick: () => this.cb.onFlashlight(!this.flashlightOn) });
+    this.flashlightBtn.setAttribute("aria-pressed", "false");
+    this.screenshotBtn=button('Screenshot',{title:'Save a PNG after the scene finishes loading',onclick:cb.onScreenshot});
+    this.screenshotBtn.id='capture-screenshot';this.screenshotBtn.setAttribute('aria-busy','false');this.screenshotBtn.setAttribute('aria-describedby','screenshot-status');
+    this.screenshotInfo=el('div.screenshot-status',{id:'screenshot-status',role:'status'});
     sim.append(
       el("div.row", null,
         button("Reset", { key: "R", title: "Reset the robot pose (R)", onclick: cb.onReset }),
@@ -171,7 +203,11 @@ export class Panel {
         button("Stop", { key: "Space", title: "Zero the command and re-arm the gamepad (Space)", onclick: cb.onZeroCmd })),
       el("div.row", null,
         this.hoistBtn,
-        button("Screenshot", { title: "Save a PNG of the viewport", onclick: cb.onScreenshot })));
+        this.noclipBtn),
+      el("div.row", null,
+        this.flashlightBtn,
+        this.screenshotBtn),this.screenshotInfo,
+      el("div.sub.navigation-help", null, "Arrows or numpad start camera flight. Numpad 8/2/4/6 move, 9/3 up/down, 5 stops; +/− change speed. Drag to look; Shift faster, Backslash for precision, X for level flight. N exits."));
 
     // recording: motion + inputs into a take → timeline → video / Blender export
     const rec = block(root, "Recording", el("kbd", null, "V"));
@@ -247,6 +283,10 @@ export class Panel {
         k("R"), el("dd", null, "Reset"),
         k("C"), el("dd", null, "Recenter camera"),
         k("H"), el("dd", null, "Toggle hoist"),
+        k("N"), el("dd", null, "Toggle noclip: drag look, WASD fly, E / Q up / down"),
+        k("Arrows"), el("dd", null, "Start camera flight and move"),
+        k("Numpad"), el("dd", null, "8/2 forward/back, 4/6 left/right, 9/3 up/down, 5 stop"),
+        k("F"), el("dd", null, "Toggle camera flashlight"),
         k("V"), el("dd", null, "Start / stop recording a take"),
         k("Space"), el("dd", null, "Stop and re-arm the pad")),
       el("p.keys-note", null,
@@ -357,11 +397,14 @@ export class Panel {
 
   setPolicies(entries: PolicyInfo[], active: string, robot = "") {
     this.policySel.innerHTML = "";
+    const description = document.getElementById('policy-description')!;
     if (!entries.length) {
+      description.textContent = 'Import a policy pack to add motions for this robot.';
       const o = new Option("No policies — import a pack", "");
       o.disabled = true;
       o.selected = true;
       this.policySel.add(o);
+      this.policyPicker.sync();
       return;
     }
     // group by obs-scheme label; G1 / R1 packs with variants (R1: declared, else from the pack robot)
@@ -377,7 +420,7 @@ export class Panel {
       variant(a)[0] - variant(b)[0] || (a.fsmId ?? 1e9) - (b.fsmId ?? 1e9) || a.name.localeCompare(b.name));
     const byGroup = new Map<string, PolicyInfo[]>();
     for (const e of ordered) {
-      const g = variant(e)[1] + e.group;
+      const g = variant(e)[1] + policyPresentation(e.name).category;
       if (!byGroup.has(g)) byGroup.set(g, []);
       byGroup.get(g)!.push(e);
     }
@@ -385,12 +428,20 @@ export class Panel {
       const grp = document.createElement("optgroup");
       grp.label = g;
       // prefix the FSM id the policy runs as on the robot, e.g. "[802] cpy_walk_run_29dofs/actor"
-      for (const e of list)
-        grp.appendChild(new Option(e.fsmId !== undefined ? `[${e.fsmId}] ${e.name}` : e.name, e.name));
+      for (const e of list) {
+        const presentation = policyPresentation(e.name);
+        const option = new Option(presentation.label, e.name);
+        option.dataset.label=presentation.title;
+        option.title = `${presentation.description}${e.fsmId !== undefined ? ` Robot state: ${e.fsmId}.` : ''}`;
+        grp.appendChild(option);
+      }
       this.policySel.appendChild(grp);
     }
     this.policySel.value = active;
-    this.policySel.title = active;
+    const presentation = policyPresentation(active);
+    this.policySel.title = presentation.label;
+    description.textContent = `${presentation.description} (${active})`;
+    this.policyPicker.sync(true);
   }
 
   setPacks(packs: PackInfo[]) {
@@ -419,7 +470,7 @@ export class Panel {
 
   private packCard(p: PackInfo): HTMLElement {
     const meta = el("div.pack-meta", { title: p.checkpoints.join(", ") },
-      p.group + (p.checkpoints.length > 1 ? ` · ${p.checkpoints.length} checkpoints` : ""));
+      policyPresentation(p.id).description + (p.checkpoints.length > 1 ? ` · ${p.checkpoints.length} checkpoints` : ""));
     const del = button("", { cls: "ghost icon pack-del", icon: "trash", title: `Remove ${p.id}`,
       onclick: () => {
         const many = p.checkpoints.length > 1
@@ -428,26 +479,27 @@ export class Panel {
       } });
     del.setAttribute("aria-label", `Remove ${p.id}`);
     return el("div.pack-card", null,
-      el("div.pack-info", null, el("div.pack-name", { title: p.id }, p.id), meta), del);
+      el("div.pack-info", null, el("div.pack-name", { title: p.id }, policyPresentation(p.id).label), meta), del);
   }
 
   get terrain(): TerrainName { return this.terrainSel.value as TerrainName; }
 
-  setTerrain(t: TerrainName) { this.terrainSel.value = t; }
+  setTerrain(t: TerrainName) { this.terrainSel.value = t; this.terrainPicker.sync(); }
 
   /** Converted game maps as extra terrains, one group per game (value `map:<id>`). */
   setMaps(maps: MapEntry[]) {
     const cur = this.terrainSel.value;
     this.terrainSel.querySelectorAll("optgroup").forEach((g) => g.remove());
     const byGame = new Map<string, MapEntry[]>();
-    for (const m of maps) byGame.set(m.game, [...(byGame.get(m.game) ?? []), m]);
+    for (const m of [...maps].sort((a, b) => a.id.localeCompare(b.id))) byGame.set(m.game, [...(byGame.get(m.game) ?? []), m]);
     for (const [game, list] of byGame) {
       const g = document.createElement("optgroup");
       g.label = game;
-      for (const m of list) g.appendChild(new Option(m.name, `map:${m.id}`));
+      for (const m of list) g.appendChild(new Option(m.id.endsWith('.bsp') ? m.id : `${m.id}.bsp`, `map:${m.id}`));
       this.terrainSel.appendChild(g);
     }
     this.terrainSel.value = cur;
+    this.terrainPicker.sync();
   }
 
   setState(s: FsmState) {
@@ -478,6 +530,13 @@ export class Panel {
   /** Line under the record buttons: live length while recording, else the last take. */
   setRecordInfo(text: string) { this.recInfo.textContent = text; }
 
+  setScreenshotState(pending:boolean,message:string){
+    this.screenshotBtn.disabled=pending;this.screenshotBtn.setAttribute('aria-busy',String(pending));
+    this.screenshotBtn.querySelector('.lbl')!.textContent=pending?'Preparing…':'Screenshot';
+    this.screenshotBtn.setAttribute('aria-label',pending?'Preparing screenshot':'Screenshot');
+    this.screenshotInfo.textContent=message;
+  }
+
   setTakeAvailable(on: boolean) { this.timelineBtn.disabled = !on; }
 
   setPlayback(name: string | null) {
@@ -489,5 +548,17 @@ export class Panel {
     this.hoistOn = on;
     this.hoistBtn.classList.toggle("on", on);
     this.hoistBtn.setAttribute("aria-pressed", String(on));
+  }
+
+  setNoclip(on: boolean) {
+    this.noclipOn = on;
+    this.noclipBtn.classList.toggle("on", on);
+    this.noclipBtn.setAttribute("aria-pressed", String(on));
+  }
+
+  setFlashlight(on: boolean) {
+    this.flashlightOn = on;
+    this.flashlightBtn.classList.toggle("on", on);
+    this.flashlightBtn.setAttribute("aria-pressed", String(on));
   }
 }

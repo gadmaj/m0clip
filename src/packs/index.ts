@@ -36,6 +36,7 @@ export interface StoredPack {
   manifest: PackManifest;
   config: EvalConfig;            // parsed config.yaml
   files: Record<string, Uint8Array>;   // in-zip path -> bytes (onnx, csv, tables)
+  downloadUrl?: string;           // hosted default: fetch weights only when selected
 }
 
 /** Metadata sent to the UI (no bytes). */
@@ -98,8 +99,23 @@ export function parsePack(zip: Uint8Array): StoredPack {
 
 export async function importPack(zip: Uint8Array): Promise<StoredPack> {
   const pack = parsePack(zip);
-  await tx("readwrite", (s) => s.put(pack));
+  await storePack(pack);
   return pack;
+}
+
+export async function storePack(pack: StoredPack): Promise<void> {
+  await tx('readwrite', store => store.put(pack));
+}
+
+/** Materialize a hosted default once. Ordinary user imports already have bytes. */
+export async function downloadPack(pack: StoredPack): Promise<StoredPack> {
+  if (!pack.downloadUrl) return pack;
+  const response = await fetch(pack.downloadUrl);
+  if (!response.ok) throw new Error(`Policy download: HTTP ${response.status}`);
+  const downloaded = parsePack(new Uint8Array(await response.arrayBuffer()));
+  if (downloaded.id !== pack.id) throw new Error('Downloaded policy has a different identifier');
+  await storePack(downloaded);
+  return downloaded;
 }
 
 /** Import a .zip that is EITHER a single pack (has pack.json) OR a per-model

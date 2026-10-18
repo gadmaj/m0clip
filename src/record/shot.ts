@@ -10,7 +10,7 @@
  * length on a sensor whose width spans the frame's longer side — Blender's "Auto" sensor fit and
  * three.js's filmGauge — so a 35 mm / 36 mm shot here frames like 35 mm in Blender. */
 import * as THREE from "three";
-import type { Take } from "./take";
+import {cameraOrientationAt,type Take} from "./take";
 
 export type ShotMode = "viewport" | "follow" | "orbit" | "fixed";
 
@@ -81,6 +81,7 @@ export interface CamAt { pos: THREE.Vector3; target: THREE.Vector3 }
 export class ShotPath {
   private target: Float64Array;          // n·3 look-at point per frame
   private pos: Float64Array | null;      // n·3 camera position per frame (viewport mode)
+  private orientation:Float64Array|null=null;
   private readonly z0: number;
 
   constructor(readonly take: Take, readonly shot: Shot, readonly t0 = 0) {
@@ -96,6 +97,15 @@ export class ShotPath {
           this.target[3 * i + k] = take.cam[7 * i + 3 + k];
         }
       smooth3(this.pos, n, take.dt, shot.smooth);
+      if(take.camOrientation){
+        this.orientation=Float64Array.from(take.camOrientation);
+        for(let i=0;i<n;i++)new THREE.Quaternion().fromArray(this.orientation,4*i).normalize().toArray(this.orientation,4*i);
+        if(shot.smooth>0&&n>1){
+          const weight=1-Math.exp(-take.dt/shot.smooth),q=new THREE.Quaternion(),next=new THREE.Quaternion();
+          for(let i=1;i<n;i++)q.fromArray(this.orientation,4*(i-1)).slerp(next.fromArray(this.orientation,4*i),weight).normalize().toArray(this.orientation,4*i);
+          for(let i=n-2;i>=0;i--)q.fromArray(this.orientation,4*(i+1)).slerp(next.fromArray(this.orientation,4*i),weight).normalize().toArray(this.orientation,4*i);
+        }
+      }
     } else if (shot.mode === "fixed") {
       const b = take.basePosAt(t0);
       for (let i = 0; i < n; i++) this.target.set([b[0], b[1], shot.height + b[2] - this.z0], 3 * i);
@@ -135,6 +145,7 @@ export class ShotPath {
     cam.up.set(0, 0, 1);
     cam.position.copy(p.pos);
     cam.lookAt(p.target);
+    if(this.orientation){const[i,f]=this.take.locate(time);cam.quaternion.fromArray(cameraOrientationAt(this.orientation,i,Math.min(i+1,this.take.n-1),f));}
     cam.aspect = aspect;
     cam.fov = vfov(this.shot.focal, this.shot.sensor, aspect);
     cam.updateProjectionMatrix();

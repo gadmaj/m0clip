@@ -1,0 +1,19 @@
+services:
+  web:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      APP_HOST: ${APP_HOST:?Set APP_HOST to the public hostname for this server}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ../../dist:/srv:ro,z
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro,z
+      - certificates:/data
+      - server_config:/config
+
+volumes:
+  certificates:
+  server_config:

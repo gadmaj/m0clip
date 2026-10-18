@@ -22,3 +22,8 @@ export function download(blob: Blob, filename: string) {
 export function screenshot(canvas: HTMLCanvasElement, prefix = "r1-sim") {
   canvas.toBlob((b) => { if (b) download(b, `${prefix}_${stamp()}.png`); }, "image/png");
 }
+
+/** Encode first so callers can discard a capture if its scene changes during encoding. */
+export function capturePng(canvas:HTMLCanvasElement):Promise<Blob>{
+  return new Promise((resolve,reject)=>canvas.toBlob(blob=>blob?resolve(blob):reject(new Error('PNG encoding failed.')),'image/png'));
+}

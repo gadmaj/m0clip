@@ -20,6 +20,10 @@ export type ToWorker =
   | { t: "terrain"; terrain: TerrainName }
   | { t: "command"; cmd: Command }
   | { t: "reset" }
+  | { t: "noclip"; on: boolean }
+  | { t: "noclipStep"; delta: [number, number, number] } // render-frame displacement in metres
+  | { t: "noclipMove"; velocity: [number, number, number] } // world-space m/s
+  | { t: 'placeRobot'; position: [number, number, number]; yaw: number } // feet at the selected surface
   | { t: "recenter" }
   | { t: "playback"; csv: string; fps: number; name: string }  // kinematic mocap preview
   | { t: "stopPlayback" }
@@ -30,6 +34,7 @@ export type ToWorker =
   | { t: "leash"; on: boolean; x?: number; y?: number }  // drag: pull anchor (world xy)
   | { t: "hoist"; on: boolean }      // overhead suspension gantry support
   | { t: "remote"; combo: string }  // remote-controller combo for the active policy (e.g. 505 "R1+Up")
+  | { t: 'viewReady'; request: number } // scene-navigation barrier
   | { t: "pause"; on: boolean }     // freeze the control loop (take review: the timeline owns the scene)
   /** scripted stimulus on SIM time (tests / bench replays): at `at` s after receipt set the sticks
    * (ly, lx, rx in [-1, 1], scaled by the active policy's velRange every tick) and / or press a combo */
@@ -39,6 +44,7 @@ export type ToWorker =
 /** Everything the renderer needs to build the scene, copied out of the model
  * (typed arrays are structured-clone copies, not wasm views). */
 export interface RenderModel {
+  terrain?: TerrainName;
   robot: string;           // active robot (r1* / go2 → paint palette, else model rgba)
   ngeom: number;
   type: Int32Array;        // ngeom
@@ -57,6 +63,9 @@ export interface RenderModel {
   }>;
   nq: number;
   bodyNames: string[];     // nbody (names the parts of a Blender export)
+  /** Compiled local frames let cosmetics reconstruct body poses from recorded geom poses. */
+  bodyFrames?: { parent: Int32Array; pos: Float64Array; quat: Float64Array };
+  geomFrames?: { pos: Float64Array; quat: Float64Array };
   baseQadr: number;        // floating-base qpos address, -1 when the model has none
   hinges: { name: string; qadr: number }[];   // every hinge joint, model order
 }
@@ -110,6 +119,9 @@ export interface InspectMsg {
 }
 
 export type FromWorker =
+  | {t:'viewReady';request:number;robot:string;terrain:TerrainName}
+  | { t: 'robotPlaced' }
+  | { t: 'robotPlacementFailed'; msg: string }
   | { t: "model"; desc: RenderModel }
   /** `clock` is the frame clock: simulated seconds, advanced by each posted frame's step (so a take
    * recorded under load still plays back at true speed); `qpos` is a copy of the full state. */
