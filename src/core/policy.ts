@@ -3,25 +3,73 @@
  * policies go through OnnxPolicy; the split-input families (locomotion 3-input,
  * mimic p_obs+cmd) use OnnxSession directly with named feeds.
  */
-import * as ort from "onnxruntime-web";
+import * as ort from "onnxruntime-web/wasm";
 
 let ortConfigured = false;
 function configureOrt() {
   if (ortConfigured) return;
-  // onnxruntime-web resolves to its self-contained bundle build (embedded
+  // The WASM-only entry resolves to its self-contained bundle build (embedded
   // loader; the .wasm is located via import.meta.url) — do NOT set wasmPaths,
   // it would reroute through a dynamic import vite refuses to serve.
   ort.env.wasm.numThreads = 1;      // no nested ort workers; deterministic
   ortConfigured = true;
 }
 
-async function createSession(url: string): Promise<ort.InferenceSession> {
+async function loadSession(url: string): Promise<ort.InferenceSession> {
   configureOrt();
   const buf = await fetch(url).then((r) => {
     if (!r.ok) throw new Error(`failed to fetch policy ${url}: ${r.status}`);
     return r.arrayBuffer();
   });
   return ort.InferenceSession.create(buf, { executionProviders: ["wasm"] });
+}
+
+const sessions = new Map<string, Promise<ort.InferenceSession>>();
+let loadingSessions: Set<string> | null = null;
+
+function createSession(url: string): Promise<ort.InferenceSession> {
+  loadingSessions?.add(url);
+  let session = sessions.get(url);
+  if (!session) {
+    session = loadSession(url);
+    sessions.set(url, session);
+    const pending = session;
+    void session.catch(() => { if (sessions.get(url) === pending) sessions.delete(url); });
+  }
+  return session;
+}
+
+async function retainSessions(keep: Set<string>) {
+  const discarded = [...sessions].filter(([url]) => !keep.has(url));
+  for (const [url] of discarded) sessions.delete(url);
+  await Promise.all(discarded.map(async ([, pending]) => {
+    let session: ort.InferenceSession;
+    try { session = await pending; } catch { return; }
+    try { await session.release(); }
+    catch (error) { console.warn('Could not release an inactive policy session', error); }
+  }));
+}
+
+/** Driver factories load their networks sequentially on the worker's shared
+ * queue. Keep just the current driver's networks, reusing them on map rebuilds.
+ * A failed replacement keeps the previous driver's sessions usable. */
+export async function withPolicySessions<T>(load: () => Promise<T>): Promise<T> {
+  if (loadingSessions) throw new Error('Policy session loads must be serialized');
+  const previous = new Set(sessions.keys()), used = new Set<string>();
+  loadingSessions = used;
+  try {
+    const driver = await load();
+    await retainSessions(used);
+    return driver;
+  } catch (error) {
+    await retainSessions(previous);
+    throw error;
+  } finally { loadingSessions = null; }
+}
+
+export async function releasePolicySessions() {
+  if (loadingSessions) throw new Error('Cannot release policy sessions during a load');
+  await retainSessions(new Set());
 }
 
 /** The model's own static shape for input `name` when it holds exactly `len` elements, else `dims`.

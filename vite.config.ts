@@ -12,22 +12,28 @@ const crossOriginIsolation = {
 let outputDirectory = "";
 
 export default defineConfig({
-  plugins: process.env.SOURCE_TEXTURE_OPTIMIZE === '1' ? [{
-    name: 'ghost-lossless-textures',
+  plugins: [{
+    name: 'lossless-native-assets',
     apply: 'build',
     configResolved(config) { outputDirectory = resolve(config.root,config.build.outDir); },
     async closeBundle() {
-      const directory = resolve(outputDirectory,'assets/maps/nt_ghost_ctg');
+      await new Promise<void>((done,fail) => {
+        const child = spawn(process.execPath,
+          ['scripts/compress_model_assets.mjs',outputDirectory],{stdio:'inherit'});
+        child.on('error',fail);
+        child.on('exit',code => code === 0 ? done() : fail(new Error('Native mesh compression failed')));
+      });
       await new Promise<void>((done,fail) => {
         const child = spawn(process.env.PYTHON || 'python3',
-          ['scripts/optimize_map_textures.py','--directory',directory],{stdio:'inherit'});
+          ['scripts/build_native_map_visuals.py',outputDirectory],{stdio:'inherit'});
         child.on('error',fail);
-        child.on('exit',code => code === 0 ? done() : fail(new Error('Lossless Ghost texture optimization failed')));
+        child.on('exit',code => code === 0 ? done() : fail(new Error('Native Ghost visual build failed')));
       });
     },
-  }] : [],
+  }],
   // mujoco's emscripten glue does dynamic wasm fetches; don't prebundle it
-  optimizeDeps: { exclude: ["mujoco", "onnxruntime-web"] },
+  // Worker-only YAML must be optimized before Load, not trigger a mid-load dev reload.
+  optimizeDeps: { include: ["js-yaml"], exclude: ["mujoco", "onnxruntime-web"] },
   server: {
     headers: crossOriginIsolation,
     watch: {

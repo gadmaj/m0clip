@@ -2,6 +2,7 @@
  * MaterialBase.ts and WorldLight.ts. Copyright (c) 2018 Jasper St. Pierre, MIT (LICENSE.noclip). */
 import * as THREE from 'three';
 import { sourceTextureControl,sourceTextureShader,SOURCE_TEXTURE_FALLBACK } from './source-textures';
+import { MAX_SHOT_LIGHTS } from '../record/post';
 
 type V = number[];
 interface Light { pos: V; color: V; attenuation: V; kind: number; normal: V; exponent: number; inner: number; outer: number }
@@ -36,6 +37,7 @@ export class SourceMaterials {
     if(this.disposed)this.release(resource);else this.resources.add(resource);
     return resource;
   }
+  discard(resource:{dispose():void}){if(this.resources.delete(resource))this.release(resource);}
   animate(material:THREE.MeshBasicMaterial,frames:THREE.Texture[],fps:number){if(!this.disposed)this.animated.push({material,frames,fps});}
   update(time:number){
     if(this.disposed)return;
@@ -55,6 +57,15 @@ export function patchSourceMaterial(material: THREE.MeshBasicMaterial, original:
   resources: MaterialResources, cache?: PropLightCache, cube?: THREE.CubeTexture, origin?: number[], yaw = 0, hasTangent = false,context=defaultMaterials) {
   const meta = original.userData.sourceMaterial as Metadata | undefined;
   if (!meta) return;
+  // Legacy cutout imports marked all masked surfaces double-sided. Source's
+  // $nocull flag controls this independently of alpha testing, in both looks.
+  if (typeof meta.nocull === 'boolean') {
+    const side = meta.nocull ? THREE.DoubleSide : THREE.FrontSide;
+    for (const entry of [material, original]) if (entry.side !== side) {
+      entry.side = side;
+      entry.needsUpdate = true;
+    }
+  }
   sourceTextureControl(material);
   const props = !!cache;
   for (const texture of [resources.detail, resources.base2, resources.normal, resources.mask, resources.exponent, resources.selfIllum, cube,
@@ -301,6 +312,24 @@ export function patchSourceMaterial(material: THREE.MeshBasicMaterial, original:
             }
           }
         #endif
+        // Shot lights are physical world-space sources, independent of the
+        // authored four-light cache. Use the decoded bump normal and keep their
+        // Phong term inside the same authored mask/tint and exposure pipeline.
+        #ifdef SOURCE_SHOT_LIGHTS
+          if (${flag(!meta.unlit)} && shotLightCount > 0) {
+            for (int i = 0; i < ${MAX_SHOT_LIGHTS}; i++) {
+              if (i >= shotLightCount) break;
+              vec3 shotDirection, shotRadiance;
+              sourceShotLight(i, vSourceEffectPosition, shotDirection, shotRadiance);
+              float shotLambert = max(dot(n, shotDirection), 0.0);
+              result += albedo * shotRadiance * shotLambert * 0.3183098861837907 * sourceExposure;
+              if (${flag(meta.phong)}) {
+                specular += shotRadiance * shotLambert
+                  * pow(clamp(dot(reflected, shotDirection), 0.0, 1.0), exponent) * fresnel;
+              }
+            }
+          }
+        #endif
         if (${flag(meta.phong)}) {
           float specMask = ${flag(meta.basealphaphongmask)} ? baseAlpha : bump.a;
           if (${flag(meta.phongmaskinvert)}) specMask = 1.0 - specMask;
@@ -340,6 +369,6 @@ export function patchSourceMaterial(material: THREE.MeshBasicMaterial, original:
     !!resources.exponent, !!resources.selfIllum, resources.lightmaps?.length === 3,
     meta.unlit, meta.phong, meta.selfillum, meta.halflambert, meta.ssbump, meta.nodiffusebumplighting,
     meta.basealphaphongmask, meta.phongmaskinvert, meta.phongalbedotint, meta.normalmapalphaenvmapmask, meta.basealphaenvmapmask].map(Boolean);
-  material.customProgramCacheKey = () => `${key}-source-effects-v9-${features.map(Number).join('')}`;
+  material.customProgramCacheKey = () => `${key}-source-effects-v10-${features.map(Number).join('')}`;
   material.needsUpdate = true;
 }

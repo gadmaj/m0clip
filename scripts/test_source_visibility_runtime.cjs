@@ -2,9 +2,9 @@
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const assert=require('node:assert/strict'),fs=require('node:fs');
 (async()=>{const b=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});try{const p=await b.newPage(),errors=[];p.on('pageerror',e=>errors.push(e.message));p.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
-await p.route('**/src/main.ts*',async r=>{const response=await r.fetch();await r.fulfill({response,body:(await response.text()).replace('new App();','window.__app=new App();')})});
-await p.route('**/assets/main-*.js',async r=>{const response=await r.fetch();const original=await response.text(),body=original.replace(/new ([A-Za-z_$][\w$]*);export\{/,'window.__app=new $1;export{');assert.notEqual(body,original);await r.fulfill({response,body})});
-await p.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&map=nt_ghost_ctg');await p.waitForFunction(()=>window.__app?.view.terrainObject&&window.__app.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:180000});
+await p.route('**/{src/main.ts*,assets/main-*.js}',async r=>{const response=await r.fetch();await r.fulfill({response,body:require('./expose-app.cjs')(await response.text())})});
+await p.route('**/assets/main-*.js',async r=>{const response=await r.fetch();const original=await response.text(),body=require('./expose-app.cjs')(original);await r.fulfill({response,body})});
+await p.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&map=nt_ghost_ctg').then(() => require('./launch-scene.cjs').launchScene(p));await p.waitForFunction(()=>window.__app?.view.terrainObject&&window.__app.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:180000});
 const proof=await p.evaluate(()=>{const v=window.__app.view,visibility=v.sourceVisibility,world=v.terrainObject;
 const camera=v.camera.clone();camera.position.set(0,0,0);camera.lookAt(0,10,1);camera.updateMatrixWorld();
 const statics=[],surfaces=[];world.traverse(o=>{if(typeof o.userData.sourceStaticIndex==='number')statics.push(o);if(o.isMesh&&o.geometry.userData.sourceFaceRanges)surfaces.push([o,o.geometry,o.geometry.index.count])});

@@ -4,9 +4,9 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=req
   const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});
   try{
     const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
-    await page.route('**/src/main.ts*',async r=>{const response=await r.fetch();await r.fulfill({response,body:(await response.text()).replace('new App();','window.__app=new App();')});});
-    await page.route('**/assets/main-*.js',async r=>{const response=await r.fetch(),original=await response.text(),body=original.replace(/new ([A-Za-z_$][\w$]*);export\{/,'window.__app=new $1;export{');assert.notEqual(body,original);await r.fulfill({response,body});});
-    await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain');await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});
+    await page.route('**/{src/main.ts*,assets/main-*.js}',async r=>{const response=await r.fetch();await r.fulfill({response,body:require('./expose-app.cjs')(await response.text())});});
+    await page.route('**/assets/main-*.js',async r=>{const response=await r.fetch(),original=await response.text(),body=require('./expose-app.cjs')(original);await r.fulfill({response,body});});
+    await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain').then(() => require('./launch-scene.cjs').launchScene(page));await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});
     let release;const gate=new Promise(resolve=>release=resolve);
     await page.route('**/assets/maps/nt_ghost_ctg/visual.glb',async r=>{await gate;await r.continue();});
     await page.evaluate(()=>{

@@ -1,7 +1,6 @@
 /** Policy-pack import + store (runs in the sim worker).
  *
- * A "policy pack" is a .zip a user imports; the repo ships none (weights are the
- * user's own — see README). Layout inside the zip:
+ * A policy pack is an imported or hosted .zip. Layout inside the zip:
  *
  *     pack.json                     manifest (below)
  *     config.yaml                   the policy config (obs scheme, gains, family)
@@ -31,12 +30,15 @@ export interface PackManifest {
   checkpoints: { id: string; file: string }[];
 }
 
-export interface StoredPack {
+export interface PackMetadata {
   id: string;                    // unique pack id (baseName)
   manifest: PackManifest;
   config: EvalConfig;            // parsed config.yaml
+  downloadUrl?: string;          // hosted default: fetch weights only when selected
+}
+
+export interface StoredPack extends PackMetadata {
   files: Record<string, Uint8Array>;   // in-zip path -> bytes (onnx, csv, tables)
-  downloadUrl?: string;           // hosted default: fetch weights only when selected
 }
 
 /** Metadata sent to the UI (no bytes). */
@@ -49,23 +51,63 @@ export interface PackInfo {
 
 const DB = "r1-policy-packs";
 const STORE = "packs";
+const PAYLOADS = "payloads";
+const PACK_STORES = [STORE, PAYLOADS];
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(STORE, { keyPath: "id" });
-    req.onsuccess = () => resolve(req.result);
+    const req = indexedDB.open(DB, 2);
+    let blocked = false;
+    req.onblocked = () => {
+      blocked = true;
+      reject(new Error('Close other m0clip tabs, then reload to open your policy library.'));
+    };
+    req.onupgradeneeded = event => {
+      const upgrade = req.transaction;
+      if (!upgrade) return;
+      if (blocked) { upgrade.abort(); return; }
+      const payloads = req.result.createObjectStore(PAYLOADS);
+      if (event.oldVersion === 0) {
+        req.result.createObjectStore(STORE, { keyPath: "id" });
+        return;
+      }
+      const cursor = upgrade.objectStore(STORE).openCursor();
+      cursor.onsuccess = () => {
+        const row = cursor.result;
+        if (!row) return;
+        // Version 1 stored the parsed pack and its bytes together. Both moves
+        // belong to this upgrade transaction; abort leaves the original intact.
+        const pack: StoredPack = row.value;
+        const { files, ...metadata } = pack;
+        payloads.put(files, pack.id);
+        row.update(metadata);
+        row.continue();
+      };
+    };
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onversionchange = () => db.close();
+      if (blocked) db.close();
+      else resolve(db);
+    };
     req.onerror = () => reject(req.error);
   });
 }
 
-function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>):
-    Promise<T> {
-  return openDb().then((db) => new Promise<T>((resolve, reject) => {
-    const req = fn(db.transaction(STORE, mode).objectStore(STORE));
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  }));
+async function tx<T>(mode: IDBTransactionMode, fn: (transaction: IDBTransaction) => IDBRequest<T>,
+    stores: string | string[] = STORE): Promise<T> {
+  const db = await openDb();
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      const transaction = db.transaction(stores, mode);
+      let request: IDBRequest<T>;
+      let failure: unknown;
+      transaction.oncomplete = () => resolve(request.result);
+      transaction.onabort = () => reject(failure ?? transaction.error ?? new Error('Policy library transaction aborted.'));
+      try { request = fn(transaction); }
+      catch (error) { failure = error; transaction.abort(); }
+    });
+  } finally { db.close(); }
 }
 
 /** Parse + validate a .zip into a StoredPack (does not persist). */
@@ -103,17 +145,32 @@ export async function importPack(zip: Uint8Array): Promise<StoredPack> {
   return pack;
 }
 
-export async function storePack(pack: StoredPack): Promise<void> {
-  await tx('readwrite', store => store.put(pack));
+export async function storePack(pack: StoredPack): Promise<PackMetadata> {
+  const { files, ...metadata } = pack;
+  await tx('readwrite', transaction => {
+    transaction.objectStore(STORE).put(metadata);
+    return transaction.objectStore(PAYLOADS).put(files, pack.id);
+  }, PACK_STORES);
+  return metadata;
 }
 
-/** Materialize a hosted default once. Ordinary user imports already have bytes. */
-export async function downloadPack(pack: StoredPack): Promise<StoredPack> {
-  if (!pack.downloadUrl) return pack;
-  const response = await fetch(pack.downloadUrl);
+/** Load only the selected pack. Cached bytes never enter the startup catalog. */
+export async function loadPack(id: string): Promise<StoredPack> {
+  let metadata: PackMetadata | undefined;
+  const files = await tx<StoredPack['files'] | undefined>('readonly', transaction => {
+    const request: IDBRequest<PackMetadata | undefined> = transaction.objectStore(STORE).get(id);
+    request.onsuccess = () => { metadata = request.result; };
+    return transaction.objectStore(PAYLOADS).get(id);
+  }, PACK_STORES);
+  if (!metadata) throw new Error(`Policy pack ${id} not found.`);
+  if (!metadata.downloadUrl) {
+    if (!files) throw new Error(`Policy files for ${id} are missing. Reimport the pack.`);
+    return { ...metadata, files };
+  }
+  const response = await fetch(metadata.downloadUrl);
   if (!response.ok) throw new Error(`Policy download: HTTP ${response.status}`);
   const downloaded = parsePack(new Uint8Array(await response.arrayBuffer()));
-  if (downloaded.id !== pack.id) throw new Error('Downloaded policy has a different identifier');
+  if (downloaded.id !== id) throw new Error('Downloaded policy has a different identifier');
   await storePack(downloaded);
   return downloaded;
 }
@@ -139,22 +196,28 @@ export async function importAny(zip: Uint8Array): Promise<StoredPack[]> {
   return out;
 }
 
-export async function allPacks(): Promise<StoredPack[]> {
-  return (await tx<StoredPack[]>("readonly", (s) => s.getAll())) ?? [];
+export async function listPacks(): Promise<PackMetadata[]> {
+  return tx<PackMetadata[]>('readonly', transaction => transaction.objectStore(STORE).getAll());
 }
 
 export async function deletePack(id: string): Promise<void> {
-  await tx("readwrite", (s) => s.delete(id));
+  await tx('readwrite', transaction => {
+    transaction.objectStore(STORE).delete(id);
+    return transaction.objectStore(PAYLOADS).delete(id);
+  }, PACK_STORES);
 }
 
 export async function deleteAllPacks(): Promise<void> {
-  await tx("readwrite", (s) => s.clear());
+  await tx('readwrite', transaction => {
+    transaction.objectStore(STORE).clear();
+    return transaction.objectStore(PAYLOADS).clear();
+  }, PACK_STORES);
 }
 
 // ---- resolution to catalog entries + configs -------------------------
 
 /** One policy entry per checkpoint (name = baseName or baseName@id). */
-export function packEntries(pack: StoredPack): PolicyEntry[] {
+export function packEntries(pack: PackMetadata): PolicyEntry[] {
   const multi = pack.manifest.checkpoints.length > 1;
   const dof = pack.config.policy?.num_act ?? 0;
   return pack.manifest.checkpoints.map((c) => ({

@@ -1,16 +1,15 @@
 {
-  "name": "unitree-mujoco-web",
+  "name": "m0clip",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Browser-based Unitree RL policy player \u2014 MuJoCo WASM physics + onnxruntime-web inference, FSM, live policy switching, gamepad teleop.",
+  "description": "Robots, characters and machinima in Source maps. Runs in your browser.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "postinstall": "node scripts/copy-ort-wasm.mjs",
-    "build:optimized": "SOURCE_TEXTURE_OPTIMIZE=1 npm run build --"
+    "postinstall": "node scripts/copy-ort-wasm.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.3",

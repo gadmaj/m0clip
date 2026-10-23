@@ -4,6 +4,7 @@ import struct
 import numpy as np
 from import_source_bsp import SURF_HIDE, face_points, displacement
 from source_models import static_props
+from source_triangulation import native_face_triangles
 
 
 def visible_faces(model):
@@ -60,6 +61,7 @@ def annotate_world(glb, model, atlas, bsp):
         else:
             vertices = len(face_points(model, face)); count = 3*(vertices-2)
             if vertices < 3: continue
+            if native_face_triangles(bsp, face) is None: continue
         groups.setdefault((name, page), []).append((i, vertices, count))
     for primitive in glb.json['meshes'][0]['primitives']:
         mat = glb.json['materials'][primitive['material']]

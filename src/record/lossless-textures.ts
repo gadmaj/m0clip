@@ -21,8 +21,8 @@ export function prepareLosslessTextures(root: THREE.Object3D): () => void {
       if(!variants){variants=new Map();textures.set(texture,variants)}
       let copy=variants.get(neutral);
       if (!copy) {
-        // Native BC/mip textures retain their original decoded image. Export
-        // that image through a plain PNG texture without GPU decompression.
+        // Native BC/mip textures retain a lossless export source, including lazy
+        // RGBA images. Export that source as PNG without GPU decompression.
         copy = new THREE.Texture().copy(texture);copy.format=THREE.RGBAFormat;copy.mipmaps=[];copy.userData={...copy.userData,mimeType:'image/png'};
         delete copy.userData.sourceNativeTexture;delete copy.userData.sourceVtf;
         if(neutral)copy.source=new THREE.Source(diffuseOnlyImage(texture.image));

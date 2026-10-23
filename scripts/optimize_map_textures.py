@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Losslessly optimize Ghost build artifacts; original PNG masters stay untouched.
+"""Losslessly optimize Source map build artifacts; original PNG masters stay untouched.
 
 Requires Pillow with WebP support. Only accept an encoding after every decoded RGBA
 byte matches the source. Geometry, animation, texture indices and material settings
@@ -102,7 +102,8 @@ def main():
     parser.add_argument('--cache', type=Path, default=Path('node_modules/.cache/ghost-lossless-textures'))
     parser.add_argument('--workers', type=int, default=4)
     args = parser.parse_args()
-    if args.directory.name != 'nt_ghost_ctg': parser.error('Only Ghost is enabled during the fidelity pilot')
+    from import_source_bsp import GAMES
+    if args.directory.name not in GAMES['neotokyo'][2]: parser.error('Choose a converted NeoTokyo map directory')
     public = Path(__file__).resolve().parent.parent/'public'
     if args.directory.resolve().is_relative_to(public): parser.error('Use a build output directory; public contains the original PNG masters')
     if not features.check('webp'): raise RuntimeError('Pillow must include WebP support')

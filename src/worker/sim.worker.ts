@@ -3,23 +3,18 @@
 import { makeDriver, type BaseDriver } from "../core/drivers";
 import { sampleTraj, wxyz } from "../core/math";
 import type { PolicyEntry, Command, EvalConfig, RobotSpec } from "../core/types";
-import { allPacks, deletePack, deleteAllPacks, downloadPack, importAny, packEntries, resolvePackConfig,
-         revokePack, type StoredPack } from "../packs";
+import { listPacks, deletePack, deleteAllPacks, loadPack, importAny, packEntries, resolvePackConfig,
+         revokePack, type PackMetadata } from "../packs";
 import { installDefaultPacks } from '../packs/defaults';
-import { Engine, MissingBundleError } from "../sim/engine";
+import { releasePolicySessions } from '../core/policy';
+import { Engine, MissingBundleError, GEOM_MESH } from "../sim/engine";
 import { SimFSM, type FsmState } from "../sim/fsm";
 import { isTerrain, mapId, MAPS_DIR, terrainTransform, type TerrainName } from "../sim/terrain";
 import { getSpec, SPECS } from "../robots";
-
-/** Robot family: r1 + r1_air (+ r1_air_edu) share one UI slot (EDU 24-DOF / Air 20-DOF, two scenes of one
- * bundle), as do g1 + g1_air; go2 is its own. */
-const fam = (r: string) => (r.startsWith("r1") ? "r1" : r.startsWith("g1") ? "g1" : r);
-/** R1 variants a pack entry runs on: its declared `models`, else from the pack robot (r1_air = Air). */
-const r1Models = (e: PolicyEntry): string[] =>
-  e.models?.length ? e.models : [e.robot === "r1_air" ? "air" : "edu"];
-/** Identity of the compiled model: specs with equal keys can swap without recompiling. */
-const modelKey = (s: RobotSpec) => `${s.model_dir}/${s.scene ?? "scene.xml"}`;
+import { observeTransfers } from "../loading/transfers";
+import { robotFamily as fam, r1Models, modelKey, specFor, selectRobotPolicy } from './robot-policy';
 import type { FromWorker, RenderModel, ToWorker } from "../sim/protocol";
+import { createFrameGeometryLayout, copyMovingGeometry } from '../sim/geometry-frames';
 
 /** Kinematic-playback state: a user-supplied reference clip is set into qpos
  * frame-by-frame (no physics), to preview retargeted mocap on the robot. */
@@ -54,6 +49,16 @@ function parseTrajCsv(text: string):
 const post = (m: FromWorker, transfer: Transferable[] = []) =>
   (self as unknown as Worker).postMessage(m, transfer);
 
+let loadingGeneration: number | undefined;
+let stopLoading: (() => void) | undefined;
+
+function finishLoading(generation: number) {
+  if (generation !== loadingGeneration) return;
+  stopLoading?.();
+  stopLoading = undefined;
+  loadingGeneration = undefined;
+}
+
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 class SimWorker {
@@ -63,7 +68,7 @@ class SimWorker {
 
   robot = "r1";
   terrain: TerrainName = "flat";
-  packs: StoredPack[] = [];            // imported policy packs — the ONLY policy source
+  packs: PackMetadata[] = [];          // catalog only; selected weights load in cfgFor
   configs = new Map<string, EvalConfig>();
   policies: PolicyEntry[] = [];       // pack entries for the active robot
   polIdx = 0;
@@ -86,6 +91,7 @@ class SimWorker {
   private noclipVelocity: [number, number, number] = [0, 0, 0];
   /** frame clock (s): advanced by every posted frame's step — the time base of recorded takes */
   private clock = 0;
+  private movingGeomIds!: Uint32Array;
   private prevCmd: { target: Float64Array | null; kp: Float64Array; kd: Float64Array } | null = null;
   baseAddr = 0;                        // floating-base qpos addr (for driver-less frames)
   private baseVaddr = 0;               // floating-base qvel addr
@@ -231,34 +237,48 @@ class SimWorker {
             xp[3 * b + 2] + R[m + 6] * o[0] + R[m + 7] * o[1] + R[m + 8] * o[2]];
   }
 
-  async init(m: { robot?: string; terrain?: TerrainName; policy?: string }) {
+  async init(m: Extract<ToWorker, { t: "init" }>) {
+    stopLoading?.();
+    loadingGeneration = m.loadingId;
+    const generation = m.loadingId;
+    stopLoading = generation === undefined ? undefined : observeTransfers(`worker:${generation}`, updates => {
+      post({ t: 'loading', generation, updates });
+    });
     post({ t: "busy", msg: "loading imported policy packs…" });
-    this.packs = await allPacks().catch(() => []);
+    this.packs = await listPacks();
     try {
       this.packs = await installDefaultPacks(this.packs, msg => post({ t: 'busy', msg }));
     } catch (error) {
       // A failed download must not prevent browsing maps or using manual packs.
       // Leave the marker unset so the next visit retries, keeping partial imports.
       console.warn('Default policies could not be installed; reload to retry.', error);
-      this.packs = await allPacks().catch(() => this.packs);
+      this.packs = await listPacks();
     }
     if (isTerrain(m.terrain)) this.terrain = m.terrain;
-    const robots = [...new Set(this.allEntries().map((e) => e.robot))]
-      .filter((r) => r in SPECS);
-    this.robot = m.robot && m.robot in SPECS ? m.robot
+    const entries = this.allEntries();
+    const robots = [...new Set(entries.map((e) => e.robot))].filter((r) => r in SPECS);
+    const robot = m.robot && m.robot in SPECS ? m.robot
       : robots.includes("r1") ? "r1" : (robots[0] ?? "r1");
-    this.rebuildPolicies();
-    const saved = m.policy ? this.policies.findIndex((e) => e.name === m.policy) : -1;
-    const walking = this.policies.findIndex(e => e.name === 'amp_locomotion/amp_locomotion');
-    const first = saved >= 0 ? saved : walking >= 0 ? walking : 0;
-    // compile the model the first policy runs on (Air-only packs → the Air model), not one to be replaced
-    if (this.policies.length) this.robot = this.specFor(this.policies[first]);
+    const selection = selectRobotPolicy(robot, entries, m.policy, m.robotExplicit);
+    this.robot = selection.robot;
+    this.policies = selection.policies;
+    this.polIdx = -1;
+    const first = selection.index;
 
     post({ t: "busy", msg: "compiling MuJoCo model (wasm)…" });
-    await this.buildEngine();
-
-    if (this.policies.length) await this.loadDriver(first);
-    else this.driver = null;
+    if (this.policies.length) {
+      // Only config/download work is engine-independent. Drain both before releasing
+      // the worker queue, retaining model errors even if the selected policy fails too.
+      const [engine, prepared] = await Promise.allSettled([
+        this.buildEngine(), this.cfgFor(this.policies[first]),
+      ]);
+      if (engine.status === "rejected") throw engine.reason;
+      await this.loadDriver(first, true, prepared);
+    } else {
+      await this.buildEngine();
+      this.driver = null;
+      await releasePolicySessions();
+    }
     this.fsm.enter("policy");
     this.busy = false;
     post({ t: "ready" });
@@ -276,29 +296,6 @@ class SimWorker {
     this.policies = this.allEntries().filter((e) => fam(e.robot) === fam(this.robot));
   }
 
-  /** The spec a pack entry runs on: its own robot, except that G1 / R1 packs pick the model by their
-   * variants (`models`) — Air-only (["air"]) → the Air model (G1 23-DOF, R1 20-DOF), anything with "edu"
-   * → the EDU one (G1 29-DOF, R1 24-DOF). R1 packs without `models` go by their robot (r1_air = Air).
-   * A 20-DOF R1 pack on the EDU model runs as `r1_air_edu` (waist / wrist roll held rigid).
-   * `keep` (auto-handover): an Air-capable next policy stays on the Air model already loaded (G1; R1 always
-   * keeps the loaded Air body for Air + EDU packs). */
-  private specFor(entry: PolicyEntry, keep = false): string {
-    if (!(entry.robot in SPECS)) return this.robot;
-    if (fam(entry.robot) === "r1") {
-      if (entry.robot !== "r1_air") return entry.robot;       // 24-DOF (or EDU partial-control) packs
-      const m = r1Models(entry);
-      // Air + EDU packs (832 / 833 …) run on the body currently loaded: Air after an Air pack (as on an Air
-      // robot, where Stance R2+X / R2+Y enter them), else EDU. `keep` is implied for R1.
-      void keep;
-      const air = (m.length === 1 && m[0] === "air") || (m.includes("air") && this.robot === "r1_air");
-      return air ? "r1_air" : "r1_air_edu";
-    }
-    if (entry.robot !== "g1") return entry.robot;
-    const m = entry.models ?? [];
-    if (m.length === 1 && m[0] === "air") return "g1_air";
-    if (keep && m.includes("air") && fam(this.robot) === "g1") return this.robot;
-    return "g1";
-  }
 
   private async buildEngine() {
     const prev = this.eng as Engine | undefined;
@@ -321,13 +318,18 @@ class SimWorker {
     this.hoistOff = spec.hoist_offset ?? [0, 0, 0];
     this.hoistZ = this.eng.qpos[this.baseAddr + 2];
     this.fsm = new SimFSM(this.eng);
-    post({ t: "model", desc: this.renderModel() });
+    const bodyIds: unknown = Reflect.get(this.eng.model, 'geom_bodyid');
+    if (!(bodyIds instanceof Int32Array)) throw new Error('The compiled model has no geometry body IDs.');
+    const geometry = createFrameGeometryLayout(bodyIds, this.eng.geomXpos, this.eng.geomXmat);
+    this.movingGeomIds = geometry.movingIds;
+    post({ t: "model", desc: this.renderModel(), geometry: geometry.layout });
   }
 
   /** Copy the geom/mesh tables out of wasm memory for the renderer. */
   private renderModel(): RenderModel {
     const m = this.eng.model as any;
     const ngeom = this.eng.model.ngeom;
+    const geomType: Int32Array = m.geom_type;
     const dataid = Int32Array.from(m.geom_dataid as Int32Array);
     const meshes: RenderModel["meshes"] = {};
     const vertadr: Int32Array = m.mesh_vertadr, vertnum: Int32Array = m.mesh_vertnum;
@@ -336,10 +338,8 @@ class SimWorker {
     const mpos: Float64Array = m.mesh_pos, mquat: Float64Array = m.mesh_quat;
     for (let g = 0; g < ngeom; g++) {
       const mid = dataid[g];
-      if (mid >= 0 && !(mid in meshes)) {
-        const acc = m.mesh(mid);
-        const name = acc.name as string;
-        acc.delete?.();
+      if (geomType[g] === GEOM_MESH && mid >= 0 && !(mid in meshes)) {
+        const name = this.eng.mj.mj_id2name(this.eng.model, this.eng.mj.mjtObj.mjOBJ_MESH.value, mid) ?? '';
         meshes[mid] = {
           name,
           vert: vert.slice(3 * vertadr[mid], 3 * (vertadr[mid] + vertnum[mid])),
@@ -353,7 +353,7 @@ class SimWorker {
     return {
       robot: this.robot, terrain: this.terrain,
       ngeom,
-      type: Int32Array.from(m.geom_type as Int32Array),
+      type: Int32Array.from(geomType),
       size: Float64Array.from(m.geom_size as Float64Array),
       rgba: Float32Array.from(m.geom_rgba as Float32Array),
       group: Int32Array.from(m.geom_group as Int32Array),
@@ -363,12 +363,8 @@ class SimWorker {
       bodyFrames: { parent: Int32Array.from(m.body_parentid), pos: Float64Array.from(m.body_pos), quat: Float64Array.from(m.body_quat) },
       geomFrames: { pos: Float64Array.from(m.geom_pos), quat: Float64Array.from(m.geom_quat) },
       nq: this.eng.model.nq,
-      bodyNames: Array.from({ length: this.eng.model.nbody }, (_, i) => {
-        const acc = m.body(i);
-        const name = acc.name as string;
-        acc.delete?.();
-        return name;
-      }),
+      bodyNames: Array.from({ length: this.eng.model.nbody }, (_, i) =>
+        this.eng.mj.mj_id2name(this.eng.model, this.eng.mj.mjtObj.mjOBJ_BODY.value, i) ?? ''),
       baseQadr: this.baseAddr,
       hinges: (() => { const h = this.eng.hinges(); return h.names.map((name, i) => ({ name, qadr: h.qadr[i] })); })(),
     };
@@ -377,26 +373,25 @@ class SimWorker {
   private async cfgFor(entry: PolicyEntry): Promise<EvalConfig> {
     let c = this.configs.get(entry.name);
     if (!c) {
-      let pack = this.packs.find((p) => p.id === entry.packId);
-      if (!pack) throw new Error(`imported pack ${entry.packId} not found`);
-      if (pack.downloadUrl) {
-        pack = await downloadPack(pack);
-        this.packs = this.packs.map(p => p.id === pack!.id ? pack! : p);
-      }
+      const index = this.packs.findIndex(pack => pack.id === entry.packId);
+      if (index < 0) throw new Error(`imported pack ${entry.packId} not found`);
+      const pack = await loadPack(entry.packId);
+      const { files: _files, ...metadata } = pack;
+      this.packs[index] = metadata;
       c = resolvePackConfig(pack, entry);
       this.configs.set(entry.name, c);
     }
     return c;
   }
 
-  async loadDriver(idx: number, keepModel = false) {
+  async loadDriver(idx: number, keepModel = false, prepared?: PromiseSettledResult<EvalConfig>) {
     this.busy = true;
     const entry = this.policies[idx];
     post({ t: "busy", msg: `loading ${entry.name}…` });
     try {
       // a family spans specs: adopt the policy's own spec so joint subset / gains / fall height match
       // (r1 ↔ r1_air_edu share the compiled model; r1 ↔ r1_air and g1 ↔ g1_air recompile — EDU vs Air)
-      const want = this.specFor(entry, keepModel);
+      const want = specFor(entry, this.robot, keepModel);
       if (want !== this.robot) {
         const rebuild = modelKey(getSpec(want)) !== modelKey(getSpec(this.robot));
         this.robot = want;
@@ -407,7 +402,8 @@ class SimWorker {
           post({ t: "busy", msg: `loading ${entry.name}…` });
         }
       }
-      const cfg = await this.cfgFor(entry);
+      if (prepared?.status === "rejected") throw prepared.reason;
+      const cfg = prepared?.status === "fulfilled" ? prepared.value : await this.cfgFor(entry);
       // launch the new policy where the robot currently stands, not at the
       // origin — Recenter (C) is the explicit way back to the middle
       const b = this.eng.jointQposAdr(getSpec(this.robot).floating_base_joint);
@@ -456,22 +452,23 @@ class SimWorker {
     }
   }
 
-  /** Switch robot (family), recompiling the scene when the model differs, and
-   * load its first policy (or idle-preview if it has none). Callers reenter(). */
+  /** Preflight an explicit robot selection before touching the active engine or driver.
+   * An empty family keeps the existing idle-preview/manual-pack flow. Callers reenter(). */
   private async setRobot(robot: string) {
+    const selection = selectRobotPolicy(robot, this.allEntries(), undefined, true);
     const prevKey = modelKey(getSpec(this.robot));
-    this.robot = robot;
-    this.rebuildPolicies();
-    // compile the model policy 0 runs on (Air-only packs → the Air model)
-    if (this.policies.length) this.robot = this.specFor(this.policies[0]);
+    this.playback = null;
+    this.robot = selection.robot;
+    this.policies = selection.policies;
+    this.polIdx = -1;
     if (modelKey(getSpec(this.robot)) !== prevKey) {
       this.busy = true;
       post({ t: "busy", msg: "compiling MuJoCo model (wasm)…" });
       await this.buildEngine();
       this.busy = false;
     }
-    if (this.policies.length) await this.loadDriver(0);  // posts "ready"
-    else { this.driver = null; this.polIdx = 0; post({ t: "ready" }); }  // idle preview
+    if (this.policies.length) await this.loadDriver(selection.index, true);  // posts "ready"
+    else { this.driver = null; await releasePolicySessions(); post({ t: "ready" }); }  // idle preview
   }
 
   private reenter() {
@@ -568,7 +565,6 @@ class SimWorker {
         this.fsm.enter(m.state);
         return this.sendStatus();
       case "robot":
-        this.playback = null;
         await this.setRobot(m.robot);
         return this.reenter();
       case "terrain":
@@ -690,7 +686,8 @@ class SimWorker {
         revokePack(pack.id);
         for (const e of packEntries(pack)) this.configs.delete(e.name);
         this.packs = this.packs.filter((p) => p.id !== pack.id);   // replace by id
-        this.packs.push(pack);
+        const { files: _files, ...metadata } = pack;
+        this.packs.push(metadata);
       }
       // if the current family has nothing to run, follow the import to its robot
       // (setRobot recompiles the scene if the model differs and loads policy 0)
@@ -728,8 +725,8 @@ class SimWorker {
   private async doDeletePack(id: string) {
     const currentName = this.policies[this.polIdx]?.name;
     const gone = new Set(this.packs.filter((p) => p.id === id).flatMap(packEntries).map((e) => e.name));
+    await deletePack(id);
     for (const n of gone) this.configs.delete(n);
-    await deletePack(id).catch(() => {});
     revokePack(id);
     this.packs = this.packs.filter((p) => p.id !== id);
     this.rebuildPolicies();
@@ -746,6 +743,7 @@ class SimWorker {
     } else {
       this.playback = null;
       this.driver = null;
+      await releasePolicySessions();
       this.reenter();
       return;
     }
@@ -753,7 +751,7 @@ class SimWorker {
   }
 
   private async doDeleteAllPacks() {
-    await deleteAllPacks().catch(() => {});
+    await deleteAllPacks();
     for (const p of this.packs) revokePack(p.id);
     this.configs.clear();
     this.packs = [];
@@ -761,6 +759,7 @@ class SimWorker {
     this.playback = null;
     this.polIdx = 0;
     this.driver = null;
+    await releasePolicySessions();
     this.reenter();
   }
 
@@ -902,8 +901,9 @@ class SimWorker {
   /** Post the scene state after a step of `dt` simulated seconds. */
   private postFrame(dt: number) {
     this.clock += dt;
-    const xpos = Float32Array.from(this.eng.geomXpos);
-    const xmat = Float32Array.from(this.eng.geomXmat);
+    const xpos = new Float32Array(this.movingGeomIds.length*3);
+    const xmat = new Float32Array(this.movingGeomIds.length*9);
+    copyMovingGeometry(this.movingGeomIds, this.eng.geomXpos, this.eng.geomXmat, xpos, xmat);
     const qpos = Float64Array.from(this.eng.qpos);
     const b = this.playback?.bqp ?? this.driver?.bqp ?? this.baseAddr;
     const hoistAnchor: [number, number, number] | null = this.hoistOn
@@ -915,10 +915,12 @@ class SimWorker {
          [xpos.buffer, xmat.buffer, qpos.buffer]);
   }
 
-  private async controlLoop() {
-    let lastStatus = 0;
-    for (;;) {
-      if (this.busy || this.paused) { await sleep(50); continue; }
+  private lastControlStatus = 0;
+
+  private async controlStep(): Promise<number> {
+    let lastStatus = this.lastControlStatus;
+    try {
+      if (this.busy || this.paused) return 50;
       if (this.noclip) {
         const t0 = performance.now(), dt = 0.02;
         const b = this.driver?.bqp ?? this.baseAddr;
@@ -930,8 +932,7 @@ class SimWorker {
         this.postFrame(dt);
         this.maybeInspect(t0);
         if (t0 - lastStatus > 400) { this.sendStatus(); lastStatus = t0; }
-        await sleep(Math.max(20 - (performance.now() - t0), 0));
-        continue;
+        return Math.max(20 - (performance.now() - t0), 0);
       }
       if (this.playback) {
         const t0 = performance.now();
@@ -939,20 +940,9 @@ class SimWorker {
         this.postFrame(0.02);
         this.maybeInspect(t0);
         if (t0 - lastStatus > 400) { this.sendStatus(); lastStatus = t0; }
-        await sleep(Math.max(20 - (performance.now() - t0), 0));
-        continue;
+        return Math.max(20 - (performance.now() - t0), 0);
       }
-      if (!this.driver) {
-        // robot selected but no policy loaded (e.g. go2 before importing a
-        // pack): show it standing in its default pose, no physics stepping.
-        const t0 = performance.now();
-        this.postFrame(0.1);
-        this.maybeInspect(t0);
-        if (t0 - lastStatus > 400) { this.sendStatus(); lastStatus = t0; }
-        await sleep(100);
-        continue;
-      }
-      const cfg = this.configs.get(this.policies[this.polIdx]?.name);
+      const cfg = this.driver ? this.configs.get(this.policies[this.polIdx]?.name) : undefined;
       const stepDt = cfg?.control.step_dt ?? 0.02;
       const simDt = cfg?.control.sim_dt ?? getSpec(this.robot).sim_dt;
       if (this.eng.timestep !== simDt) this.eng.timestep = simDt;
@@ -962,23 +952,24 @@ class SimWorker {
 
       // every driver shapes the command itself the way its firmware does (ramps / low-passes), so the worker
       // hands the requested command straight through
-      const cmd: Command = this.driver.needsCommand
+      const cmd: Command = this.driver?.needsCommand
         ? (this.cmdNow = [...this.command] as Command) : (this.cmdNow = [0, 0, 0]);
       try {
-        if (this.driver.done) await this.handover(cfg);
-        const target = await this.fsm.infer(this.driver!, cmd);
+        if (this.driver?.done) await this.handover(cfg);
+        const target = this.driver ? await this.fsm.infer(this.driver, cmd) : null;
         this.applyLeash();
         // command latency (config control.cmd_delay, s): the previous target / gains stay on the motors for the
         // first substeps of the period, like the robot's lowcmd → motor path (Go2 bench: ~5 ms)
-        const dly = Math.round((cfg?.control.cmd_delay ?? 0) / simDt), drv = this.driver!, prev = this.prevCmd;
-        const cur = { target, kp: drv.kp, kd: drv.kd };
+        const drv = this.driver, prev = this.prevCmd;
+        const dly = drv ? Math.round((cfg?.control.cmd_delay ?? 0) / simDt) : 0;
+        const cur = drv ? { target, kp: drv.kp, kd: drv.kd } : null;
         for (let s = 0; s < nSub; s++) {
           this.applyHoist();
-          if (s < dly && prev) { drv.kp = prev.kp; drv.kd = prev.kd; this.fsm.substepTorque(drv, prev.target); drv.kp = cur.kp; drv.kd = cur.kd; }
+          if (drv && cur && s < dly && prev) { drv.kp = prev.kp; drv.kd = prev.kd; this.fsm.substepTorque(drv, prev.target); drv.kp = cur.kp; drv.kd = cur.kd; }
           else this.fsm.substepTorque(drv, target);
           this.eng.step();
         }
-        this.prevCmd = dly ? { target: target && Float64Array.from(target), kp: Float64Array.from(cur.kp), kd: Float64Array.from(cur.kd) } : null;
+        this.prevCmd = dly && cur ? { target: target && Float64Array.from(target), kp: Float64Array.from(cur.kp), kd: Float64Array.from(cur.kd) } : null;
       } catch (e) {
         console.error(e);
         post({ t: "error", msg: `sim step failed: ${e}` });
@@ -991,30 +982,48 @@ class SimWorker {
       const elapsed = performance.now() - t0;
       this.rtf = 0.9 * this.rtf + 0.1 * (stepDt * 1000 / Math.max(elapsed, 1e-3));
       if (t0 - lastStatus > 400) { this.sendStatus(); lastStatus = t0; }
-      await sleep(Math.max(stepDt * 1000 - elapsed, 0));
+      return Math.max(stepDt * 1000 - elapsed, 0);
+    } finally { this.lastControlStatus = lastStatus; }
+  }
+
+  private async controlLoop() {
+    for (;;) {
+      let delay = 50;
+      // The same queue also owns model/driver changes. Inference may await, so
+      // a busy flag alone cannot keep a rebuild from freeing its live model.
+      await serializeWork(async () => { delay = await this.controlStep(); });
+      await sleep(delay);
     }
   }
 }
 
 const sim = new SimWorker();
-// serialize message handling: handlers await (engine rebuilds, pack imports),
-// and interleaving two of them corrupts robot/engine state — e.g. importing a
-// bundle for another robot while a driver load is mid-flight
+// Keep messages and asynchronous control periods in one order. A model, driver
+// or playback change cannot overtake an outstanding inference using its state.
 let chain: Promise<void> = Promise.resolve();
-self.onmessage = (ev: MessageEvent<ToWorker>) => {
-  chain = chain.then(() => sim.onMessage(ev.data)).catch((e) => {
+function serializeWork(task: () => void | Promise<void>) {
+  chain = chain.then(task).catch((e) => {
     // no model bundle on disk is the expected state of a fresh checkout, not a
     // failure — surface it as a friendly notice, don't spam the console red.
     if (e instanceof MissingBundleError) {
       sim.busy = false;
       post({ t: "notice", msg:
         "No robot models loaded yet.\n\n" +
-        "Add a model bundle under public/assets/models/<robot>/ " +
-        "(scene.xml + meshes + manifest.json), then import policy packs " +
-        "via the Policy manager. See the README “Robot models” section." });
+        "Add MJCF and meshes under public/assets/models/<robot>/, " +
+        "then run scripts/index_model_assets.mjs for its scene. " +
+        "See the README “Robot models” section." });
       return;
     }
     console.error(e);
     post({ t: "error", msg: String(e) });
   });
+  return chain;
+}
+self.onmessage = (ev: MessageEvent<ToWorker>) => {
+  // Observation lifecycle must not queue behind a still-running asset load.
+  if (ev.data.t === 'loadingFinished') {
+    finishLoading(ev.data.generation);
+    return;
+  }
+  void serializeWork(() => sim.onMessage(ev.data));
 };

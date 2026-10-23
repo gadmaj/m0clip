@@ -1,6 +1,7 @@
 /** Retarget native Source bone rotations to R1, preserving native bone lengths and weights. */
 import * as THREE from 'three';
 import type { RenderModel } from '../../sim/protocol';
+import type { GeometryTrack } from '../../core/geometry';
 
 export interface NativeRig {
   bones: {name:string;parent:number;position:number[];quaternion:number[];inverseBind:number[]}[];
@@ -46,6 +47,16 @@ export class DogRetarget {
   private footBindings:typeof this.bindings=[];
   private rootBinding:typeof this.bindings[number];
   readonly reference:THREE.Matrix4[]=[];
+  private recorded:GeometryTrack|null=null;
+  private recordedFrame=0;
+  private recordedPosition=new THREE.Vector3();
+  private recordedRotation=new THREE.Quaternion();
+  private recordedWorld=(g:number,m:THREE.Matrix4)=>{
+    const geometry=this.recorded!,p=geometry.offset(this.recordedFrame,g),values=geometry.values;
+    this.recordedPosition.set(values[p],values[p+1],values[p+2]);
+    this.recordedRotation.set(values[p+4],values[p+5],values[p+6],values[p+3]);
+    m.compose(this.recordedPosition,this.recordedRotation,one);
+  };
 
   static available(model:RenderModel) {
     return model.robot.startsWith('r1')&&!!model.bodyFrames&&!!model.geomFrames
@@ -162,7 +173,9 @@ export class DogRetarget {
   fromFrame(xpos:Float32Array,xmat:Float32Array,out:RigPose) {
     this.evaluate((g,m)=>{const r=9*g,p=3*g;m.set(xmat[r],xmat[r+1],xmat[r+2],xpos[p],xmat[r+3],xmat[r+4],xmat[r+5],xpos[p+1],xmat[r+6],xmat[r+7],xmat[r+8],xpos[p+2],0,0,0,1)},out);
   }
-  fromRecorded(poses:ArrayLike<number>,offset:number,out:RigPose) {
-    this.evaluate((g,m)=>{const p=offset+7*g;m.compose(new THREE.Vector3(poses[p],poses[p+1],poses[p+2]),new THREE.Quaternion(poses[p+4],poses[p+5],poses[p+6],poses[p+3]),one)},out);
+  fromRecorded(geometry:GeometryTrack,frame:number,out:RigPose) {
+    if(geometry.ngeom!==this.model.ngeom||!Number.isSafeInteger(frame)||frame<0||frame>=geometry.frames)
+      throw new Error('Incomplete recorded Dog frame.');
+    this.recorded=geometry;this.recordedFrame=frame;this.evaluate(this.recordedWorld,out);
   }
 }

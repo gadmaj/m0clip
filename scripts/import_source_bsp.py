@@ -34,6 +34,7 @@ import sys
 import urllib.request
 
 import numpy as np
+from source_triangulation import gltf_face_triangles
 
 STORAGE = "https://z.noclip.website"
 SCALE = 0.0254                                  # metres per Source unit
@@ -109,12 +110,13 @@ def parse(bsp: BSP) -> dict:
     dispverts = bsp.arr(33, "<f4").reshape(-1, 5)
     strdata, strtab = bsp.lump(43), bsp.arr(44, "<i4")
     texname = lambda td: strdata[strtab[texdata[td]["name"]]:].split(b"\0", 1)[0].decode("latin-1")
-    ents = [dict(re.findall(r'"([^"]*)"\s+"([^"]*)"', block))
-            for block in re.findall(r"\{([^{}]*)\}", bsp.lump(0).decode("latin-1", "replace"))]
+    entity_pairs = [re.findall(r'"([^"]*)"\s+"([^"]*)"', block)
+                    for block in re.findall(r"\{([^{}]*)\}", bsp.lump(0).decode("latin-1", "replace"))]
+    ents = [dict(pairs) for pairs in entity_pairs]
     return dict(planes=planes, texdata=texdata, verts=verts, texinfo=texinfo, faces=faces, edges=edges,
                 surfedges=surfedges, models=models, nodes=nodes, leafs=leafs, leafbrushes=leafbrushes,
                 brushes=brushes, sides=sides, dispinfo=dispinfo, dispverts=dispverts, texname=texname, ents=ents,
-                lighting=lighting, using_hdr=using_hdr)
+                lighting=lighting, using_hdr=using_hdr, entity_pairs=entity_pairs)
 
 
 def world_brushes(m: dict) -> list[int]:
@@ -535,7 +537,8 @@ def convert(data: bytes, mid: str, name: str, game: str, out_root: str, mounts=N
             pts = face_points(m, f)[::-1]        # Source winds front faces clockwise
             if len(pts) >= 3:
                 k = len(pts)
-                idx = np.stack([np.zeros(k - 2, int), np.arange(1, k - 1), np.arange(2, k)], 1)
+                idx = gltf_face_triangles(bsp, f)
+                if idx is None: continue
                 add(tex, refl, to_m(pts), np.repeat(front[None], k, 0), uv_of(pts), idx,
                     lightmaps.uv(m, fi, pts), lightmaps.faces[fi][0])
 

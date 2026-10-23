@@ -7,6 +7,11 @@ function fixture(format){
  const blocks=[];for(let mip=2;mip>=0;mip--)for(let face=0;face<6;face++){const block=Buffer.alloc(format===13?8:16);block.writeUInt16LE(palette[(mip+face)%palette.length],format===13?0:8);if(format===14)block.fill([255,119,0][mip],0,8);if(format===15)block[0]=[255,64,0][mip];blocks.push(block)}
  return [...deflateSync(Buffer.concat([header,...blocks]))];
 }
+function rgbaFixture(){
+ const rgba=[19,37,73,0,51,91,127,64,151,181,211,128,231,241,251,255],header=Buffer.alloc(80);
+ header.write('VTF\0');header.writeUInt32LE(7,4);header.writeUInt32LE(2,8);header.writeUInt32LE(80,12);header.writeUInt16LE(2,16);header.writeUInt16LE(2,18);header.writeUInt32LE(4|8,20);header.writeUInt16LE(1,24);header.writeUInt32LE(0,52);header[56]=1;header.writeUInt32LE(0xffffffff,57);header.writeUInt16LE(1,65);
+ return{data:[...deflateSync(Buffer.concat([header,Buffer.from(rgba)]))],rgba};
+}
 function pngPixels(png){
  const image=Buffer.from(png),chunks=[];let width,height;
  for(let at=8;at+12<=image.length;){const size=image.readUInt32BE(at),type=image.toString('ascii',at+4,at+8);if(type==='IHDR'){width=image.readUInt32BE(at+8);height=image.readUInt32BE(at+12)}if(type==='IDAT')chunks.push(image.subarray(at+8,at+8+size));if(type==='IEND')break;at+=size+12}
@@ -15,12 +20,12 @@ function pngPixels(png){
  return pixels;
 }
 (async()=>{
- const bundle=await build({stdin:{contents:"export * as THREE from 'three';export * from './src/render/source-vtf';export {GLTFExporter} from 'three/examples/jsm/exporters/GLTFExporter.js';export {prepareLosslessTextures} from './src/record/lossless-textures';export {losslessImageWriter} from './src/record/lossless-images';export {encodeRgbaPNG} from './src/record/png';export {sourceTextureControl,setSourceTexturesEnabled} from './src/render/source-textures';",resolveDir:process.cwd()},bundle:true,format:'iife',globalName:'nativeVtfTest',write:false});
- const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+ const bundle=await build({stdin:{contents:"export * as THREE from 'three';export * from './src/render/source-vtf';export {GLTFLoader} from 'three/examples/jsm/loaders/GLTFLoader.js';export {GLTFExporter} from 'three/examples/jsm/exporters/GLTFExporter.js';export {prepareLosslessTextures} from './src/record/lossless-textures';export {losslessImageWriter} from './src/record/lossless-images';export {encodeRgbaPNG} from './src/record/png';export {sourceTextureControl,setSourceTexturesEnabled} from './src/render/source-textures';",resolveDir:process.cwd()},bundle:true,format:'iife',globalName:'nativeVtfTest',write:false});
+ const browser=await chromium.launch({executablePath:process.env.CHROME_PATH||'/usr/bin/google-chrome',headless:true,args:['--no-sandbox']});
  try{
   const page=await browser.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));page.on('console',message=>{if(message.type()==='error')errors.push(message.text())});await page.addScriptTag({content:bundle.outputFiles[0].text});
-  const proof=await page.evaluate(async bytes=>{
-   const {THREE,SourceNativeTextures,sourceNativeCube,GLTFExporter,prepareLosslessTextures,losslessImageWriter,encodeRgbaPNG,sourceTextureControl,setSourceTexturesEnabled}=nativeVtfTest;
+  const proof=await page.evaluate(async({bytes,nativeRGBA})=>{
+   const {THREE,SourceNativeTextures,sourceNativeCube,GLTFLoader,GLTFExporter,prepareLosslessTextures,losslessImageWriter,encodeRgbaPNG,sourceTextureControl,setSourceTexturesEnabled}=nativeVtfTest;
    const renderer=new THREE.WebGLRenderer({alpha:true}),target=new THREE.WebGLRenderTarget(1,1,{depthBuffer:false}),scene=new THREE.Scene(),camera=new THREE.Camera(),geometry=new THREE.PlaneGeometry(2,2);
    const rgba=new Uint8Array(64);for(let i=0;i<16;i++){rgba[i*4]=22+i;rgba[i*4+1]=45+i;rgba[i*4+2]=67+i;rgba[i*4+3]=[0,64,128,255][i%4]}
    const image=await createImageBitmap(new Blob([encodeRgbaPNG(4,4,rgba)],{type:'image/png'}),{premultiplyAlpha:'none',colorSpaceConversion:'none'}),originals=Array.from({length:6},()=>{const texture=new THREE.Texture(image);texture.flipY=false;return texture});
@@ -39,18 +44,42 @@ function pngPixels(png){
     // including RGB under alpha=0. Gray diffuse keeps original normal/mask pixels.
     for(const gray of [false,true]){
      const live=new THREE.MeshStandardMaterial({map:textures[0],normalMap:textures[0]}),geo=new THREE.PlaneGeometry();geo.setAttribute('tangent',new THREE.Float32BufferAttribute([1,0,0,1,1,0,0,1,1,0,0,1,1,0,0,1],4));const a=new THREE.Mesh(geo,live),b=a.clone(),root=new THREE.Group();root.add(a,b);sourceTextureControl(live);setSourceTexturesEnabled(live,!gray);
-     const cleanup=prepareLosslessTextures(root),copy=a.material,prepared=copy!==live&&b.material===copy&&!copy.map.isCompressedTexture&&copy.map.format===THREE.RGBAFormat&&copy.map.mipmaps.length===0&&!copy.map.userData.sourceNativeTexture&&(!gray||copy.map.image!==copy.normalMap.image);
+     const cleanup=prepareLosslessTextures(root);
      renderer.setRenderTarget(null);const writer=losslessImageWriter(renderer);let glb;try{glb=await new GLTFExporter().register(writer.plugin).parseAsync(root,{binary:true})}finally{writer.dispose();cleanup()}
      const header=new DataView(glb),length=header.getUint32(12,true),json=JSON.parse(new TextDecoder().decode(new Uint8Array(glb,20,length))),entry=json.materials[0],read=index=>{const image=json.images[json.textures[index].source],view=json.bufferViews[image.bufferView];return{mime:image.mimeType,png:[...new Uint8Array(glb,28+length+(view.byteOffset||0),view.byteLength)]}};
-     exports.push({format,fallback,gray,prepared,restored:a.material===live&&b.material===live&&live.map===textures[0]&&textures[0].image===image&&textures[0].mipmaps.length===3,map:read(entry.pbrMetallicRoughness.baseColorTexture.index),normal:read(entry.normalTexture.index)});geo.dispose();live.dispose();
+     exports.push({format,fallback,gray,restored:a.material===live&&b.material===live&&live.map===textures[0],livePixels:sample(textures[0],false,0),map:read(entry.pbrMetallicRoughness.baseColorTexture.index),normal:read(entry.normalTexture.index)});geo.dispose();live.dispose();
     }
     cube.dispose();for(const value of owned)value.dispose();
    }
-   renderer.setRenderTarget(null);target.dispose();flat.dispose();cubeMaterial.dispose();geometry.dispose();for(const texture of originals)texture.dispose();image.close();renderer.dispose();return{results,exports,expected:[...rgba]};
-  },[13,14,15].map(format=>({format,data:fixture(format)})));
+   const nativeOwned=new Set(),nativeContext={own:value=>{nativeOwned.add(value);return value}},nativeLoader=new GLTFLoader();
+   let nativeTextures;
+   nativeLoader.register(parser=>nativeTextures=new SourceNativeTextures(parser,nativeContext,renderer));
+   await nativeLoader.parseAsync(JSON.stringify({
+    asset:{version:'2.0'},extensionsUsed:['M0CLIP_texture_vtf'],extensionsRequired:['M0CLIP_texture_vtf'],
+    buffers:[{byteLength:nativeRGBA.data.length,uri:'data:application/octet-stream;base64,'+btoa(String.fromCharCode(...nativeRGBA.data))}],
+    bufferViews:[{buffer:0,byteOffset:0,byteLength:nativeRGBA.data.length}],
+    textures:[{extensions:{M0CLIP_texture_vtf:{bufferView:0,frame:0,face:0,path:'fixture/native-only',compression:'zlib'}}}],
+    scenes:[{nodes:[]}],scene:0
+   }),'');
+   const nativeTexture=await nativeTextures.get(0,THREE.NoColorSpace),nativeExports=[];
+   for(const gray of [false,true]){
+    const live=new THREE.MeshStandardMaterial({map:nativeTexture,normalMap:nativeTexture}),geo=new THREE.PlaneGeometry();
+    geo.setAttribute('tangent',new THREE.Float32BufferAttribute([1,0,0,1,1,0,0,1,1,0,0,1,1,0,0,1],4));
+    const root=new THREE.Group();root.add(new THREE.Mesh(geo,live));sourceTextureControl(live);setSourceTexturesEnabled(live,!gray);
+    const cleanup=prepareLosslessTextures(root),writer=losslessImageWriter(renderer);renderer.setRenderTarget(null);
+    let glb;try{glb=await new GLTFExporter().register(writer.plugin).parseAsync(root,{binary:true})}finally{writer.dispose();cleanup()}
+    const header=new DataView(glb),length=header.getUint32(12,true),json=JSON.parse(new TextDecoder().decode(new Uint8Array(glb,20,length))),entry=json.materials[0];
+    const read=index=>{const image=json.images[json.textures[index].source],view=json.bufferViews[image.bufferView];return{mime:image.mimeType,png:[...new Uint8Array(glb,28+length+(view.byteOffset||0),view.byteLength)]}};
+    nativeExports.push({gray,map:read(entry.pbrMetallicRoughness.baseColorTexture.index),normal:read(entry.normalTexture.index)});
+    geo.dispose();live.dispose();
+   }
+   for(const value of nativeOwned)value.dispose();
+   renderer.setRenderTarget(null);target.dispose();flat.dispose();cubeMaterial.dispose();geometry.dispose();for(const texture of originals)texture.dispose();image.close();renderer.dispose();return{results,exports,nativeExports,expected:[...rgba],expectedNative:nativeRGBA.rgba};
+  },{bytes:[13,14,15].map(format=>({format,data:fixture(format)})),nativeRGBA:rgbaFixture()});
   const colors=[[255,0,0,255],[0,255,0,255],[0,0,255,255],[255,255,255,255],[255,255,0,255],[0,255,255,255]];
   let samples=0;for(const result of proof.results){const expected=(face,mip)=>[...colors[(face+mip)%6].slice(0,3),result.format===14?[255,119,0][mip]:result.format===15?[255,64,0][mip]:255];assert.equal(result.bufferReads,1);if(result.fallback)assert.equal(result.compressed,false);else assert.equal(result.compressed,true,'Chromium must exercise native S3TC upload too');for(let mip=0;mip<3;mip++){assert.deepEqual(result.flatSamples[mip],expected(0,mip));samples++}for(const value of result.samples){assert.deepEqual(value.pixels,expected(value.face,value.mip),JSON.stringify({format:result.format,fallback:result.fallback,face:value.face,mip:value.mip}));samples++}}
-  for(const result of proof.exports){assert.ok(result.prepared&&result.restored);assert.equal(result.map.mime,'image/png');assert.equal(result.normal.mime,'image/png');assert.deepEqual(pngPixels(result.normal.png),proof.expected);assert.deepEqual(pngPixels(result.map.png),result.gray?proof.expected.map((v,i)=>i%4===3?v:188):proof.expected)}
-  assert.deepEqual(errors,[]);console.log(JSON.stringify({gpuSamples:samples,nativeS3TC:true,rgbaFallback:true,sharedVtfInflation:true,losslessExports:proof.exports.length,rgbUnderZeroAlpha:true,grayDiffuseOnly:true,liveRestored:true,errors}));
+  for(const result of proof.exports){assert.ok(result.restored);assert.deepEqual(result.livePixels,[255,0,0,255]);assert.equal(result.map.mime,'image/png');assert.equal(result.normal.mime,'image/png');assert.deepEqual(pngPixels(result.normal.png),proof.expected);assert.deepEqual(pngPixels(result.map.png),result.gray?proof.expected.map((v,i)=>i%4===3?v:188):proof.expected)}
+  for(const result of proof.nativeExports){assert.equal(result.map.mime,'image/png');assert.equal(result.normal.mime,'image/png');assert.deepEqual(pngPixels(result.normal.png),proof.expectedNative);assert.deepEqual(pngPixels(result.map.png),result.gray?proof.expectedNative.map((v,i)=>i%4===3?v:188):proof.expectedNative)}
+  assert.deepEqual(errors,[]);console.log(JSON.stringify({gpuSamples:samples,nativeS3TC:true,rgbaFallback:true,sharedVtfInflation:true,losslessExports:proof.exports.length,nativeOnlyExports:proof.nativeExports.length,rgbUnderZeroAlpha:true,grayDiffuseOnly:true,liveRestored:true,errors}));
  }finally{await browser.close()}
 })().catch(error=>{console.error(error);process.exitCode=1});

@@ -1,6 +1,8 @@
 /** Camera flashlight adapted from noclip.website SourceEngine/Main.ts and
  * Materials/Material_Generic.ts. Copyright (c) 2018 Jasper St. Pierre, MIT; see LICENSE.noclip. */
 import * as THREE from 'three';
+import { copyDetailBillboard } from './source-details';
+import { patchExtraSkinMaterial } from './extra-skin';
 
 export class SourceFlashlight {
   readonly exposure = { value: 1 };
@@ -65,12 +67,14 @@ export class SourceFlashlight {
         let depth = this.depthMaterials.get(m);
         if (!depth) {
           depth = new THREE.MeshDepthMaterial({ side: m.side, alphaTest: m.alphaTest });
+          copyDetailBillboard(m,depth);
           this.depthMaterials.set(m, depth);
           const owned = depth; m.addEventListener('dispose', () => owned.dispose());
         }
         const map = (m as THREE.MeshBasicMaterial).map ?? null;
         if (!!depth.map !== !!map) depth.needsUpdate = true;
         depth.map = map;
+        if (object.geometry.hasAttribute('weights_1')) patchExtraSkinMaterial(depth);
         return depth;
       });
       swapped.push({ mesh: object, material: object.material });

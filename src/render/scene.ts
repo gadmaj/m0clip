@@ -16,20 +16,38 @@ import { patchSourceMaterial, SourceMaterials, type MaterialResources, type Prop
 import { SourceNativeTextures, sourceNativeCube } from './source-vtf';
 import type { GLTFParser } from 'three/addons/loaders/GLTFLoader.js';
 import { RobotIllumination, robotLightSettings, type RobotLight } from "./robot-light";
+import { ShotLights } from './shot-lights';
+import type { ShotLight } from '../record/post';
 import { SourceFlashlight } from "./source-flashlight";
 import { SourceSky3D, type SourceVisibilityData } from './source-sky3d';
 import { SourceVisibility } from './source-visibility';
-import { SourceColor } from './source-color';
+import { SourceColor, type SourceAntialiasing } from './source-color';
+import { loadSourceColorLayers } from './source-grading';
+import { batchSourceDetails, prepareDetailBatch, patchDetailBatchMaterial } from './source-details';
 import { sourceSpriteState } from './source-sprites';
 import { SceneCamera } from './scene-camera';
+import { RobotKit } from './robot-kit';
+import { kitRegion, type RobotModules } from './robot-kit-data';
 import { setSourceTexturesEnabled } from './source-textures';
-import { DogBody, loadDog, type DogAsset, type BodyVisualState } from './source-robot/body';
+import { loadDog, type BodyVisualState } from './source-robot/body';
 import { DogRetarget } from './source-robot/retarget';
 import { fadeOpacity } from './robot-fade';
 import { loadGhostHead, R1_HEAD_PART, type SourceHeadAsset, type SourceHeadOverride } from "./source-robot/head";
+import { authoredCharacter, type BodyVisual } from '../characters/catalog';
+import { decodePmodelId, loadPmodel } from '../characters/pmodels';
+import { characterCompatible, loadCharacter } from './characters/body';
+import { loadGoldSrcCharacter } from './characters/goldsrc';
+import type { CharacterAsset, CharacterBody } from './characters/types';
+import type { GeometryTrack } from '../core/geometry';
+import { applyPartPaint, readPartPaint } from './paint-material';
 
+import { renderPreview, antialiasingPreview, type PreviewRequest } from './previews';
 export type HeadVisual = "stock" | "ghost";
 export interface HeadVisualState { choice: HeadVisual; available: boolean; loading: boolean; error: string | null }
+interface SourceMapVisuals {
+  props?:{visual?:string};
+  native_textures?:{visual?:string;props?:string};
+}
 
 /** How the robot is painted: one plain grey (default), the product colourway from paint.ts, or the
  * model file's own rgba — then per-part overrides on top, keyed by mesh (STL) name. */
@@ -37,7 +55,9 @@ export type Colorway = "grey" | "product" | "model";
 /** A part's paint: colour + finish preset, optionally fine-tuned (roughness 0 = mirror-shiny … 1 =
  * dull matte; metalness; clearcoat = a glossy lacquer layer on top). */
 export interface PartPaint { color: number; finish: Finish; roughness?: number; metalness?: number; clearcoat?: number }
-export interface Appearance { colorway: Colorway; parts: Record<string, PartPaint>; robotLight?: RobotLight; sourceBody?: 'stock' | 'dog'; sourceBodyColorway?: Colorway }
+/** Only deliberately edited axes are stored; omitted axes keep each surface's base material. */
+export type PartOverride = Partial<PartPaint>;
+export interface Appearance { colorway: Colorway; parts: Record<string, PartOverride>; robotLight?: RobotLight; sourceBody?: BodyVisual; sourceBodyColorway?: Colorway; modules?: RobotModules }
 export const GREY: PartPaint = { color: 0x9a9da2, finish: "satin" };
 
 /** Scene lighting. Angles in degrees (azimuth CCW from +x, elevation above the horizon), colours
@@ -113,6 +133,8 @@ function buildFloor(size: number): THREE.Object3D {
     new THREE.MeshStandardMaterial({
       map: tex, transparent: !plain, opacity: plain ? 1 : 1 - FLOOR_REFLECTANCE,
       roughness: 0.9, metalness: 0.0,
+      // Keep the overlaid grid in front of its reflector at grazing angles.
+      polygonOffset: !plain, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
     }));
   checker.position.z = 0.001;
   group.add(checker);
@@ -326,11 +348,11 @@ export class SceneView {
   readonly sun = new THREE.DirectionalLight(0xffffff, 1.5);
   readonly fill = new THREE.DirectionalLight(0xcfd8e6, 0.7);
   private lighting: Lighting = { ...STUDIO };
+  private editRevision = 0;
   private flashlight = new SourceFlashlight();
   private robotLight = new RobotIllumination();
-  private dullMaterials = new Map<string, THREE.Material[]>();
   private patchDynamicLighting(material: THREE.Material, robot = false) {
-    this.flashlight.patch(material); this.robotLight.patch(material, robot);
+    this.flashlight.patch(material); this.robotLight.patch(material, robot); this.shotLights.patch(material);
   }
   private robotMaterial(material: THREE.Material) {
     if (this.appearance.robotLight?.dull) this.dullMaterial(material);
@@ -457,66 +479,174 @@ export class SceneView {
   }
   /** robot meshes by mesh name: the materials each colourway gives them */
   private parts = new Map<string, { mesh: THREE.Mesh; product: THREE.Material | THREE.Material[]; model: THREE.Material }>();
+  private robotKit = new RobotKit();
+  private kitFrames = new Map<string,THREE.Matrix4>();
   private appearance: Appearance = { colorway: "grey", parts: {} };
   private paintCache = new Map<string, THREE.MeshPhysicalMaterial>();
   private highlighted: string | null = null;
-  private highlightMaterials = new Map<string, THREE.Material>();
+  private highlightSuppression = 0;
+  private partMaterials = new Map<string, THREE.Material[]>();
   private robotModel = "";
   private renderModel: RenderModel | null = null;
   private lastRobotPose: {xpos:Float32Array;xmat:Float32Array} | null = null;
-  private sourceBody: DogBody | null = null;
-  private bodyAsset: DogAsset | null = null;
-  private bodyLoad: Promise<DogAsset> | null = null;
+  private previewCache=new Map<string,HTMLCanvasElement>();
+
+  /** Gallery snapshots never mutate live meshes, renderer sizing, camera or appearance. */
+  previewChoice(request:PreviewRequest):HTMLCanvasElement {
+    if(request.kind!=='finish'&&request.kind!=='lighting'&&request.kind!=='antialiasing') {
+      if((this.appearance.sourceBody??'stock')!=='stock'&&this.getBodyVisualState().available&&this.appliedBody!==this.appearance.sourceBody)
+        throw new Error(this.bodyError??'The selected character is not ready for previews.');
+      if(this.headChoice==='ghost'&&this.getHeadVisualState().available&&!this.headOverride&&!this.sourceBody)
+        throw new Error(this.headError??'The native Ghost head is not ready for previews.');
+    }
+    const key=JSON.stringify([this.bodyGeneration,this.headGeneration,this.robotModel,
+      this.parts.values().next().value?.mesh.uuid,this.appearance,request]);
+    const cached=this.previewCache.get(key);
+    if(cached){const copy=document.createElement('canvas');copy.width=cached.width;copy.height=cached.height;copy.getContext('2d')!.drawImage(cached,0,0);return copy;}
+    let canvas:HTMLCanvasElement;
+    if(request.kind==='antialiasing')canvas=antialiasingPreview(request.value,this.renderer);
+    else {
+      const root=new THREE.Group();
+      const colorway=request.kind==='colorway'?request.value:this.appearance.colorway;
+      const applyPaint=(part:string,material:THREE.MeshPhysicalMaterial) => {
+        const cw=request.kind==='colorway'?request.value:(this.appearance.sourceBodyColorway??'model');
+        const base=cw==='grey'?GREY:cw==='product'?resolve(this.robotModel,part).paint:undefined;
+        const override=this.appearance.parts[part];
+        applyPartPaint(material,request.kind==='part'&&request.originalFinish
+          ?override?.color===undefined?undefined:{color:override.color}:override,base);
+      };
+      if(request.kind==='finish'||request.kind==='lighting') {
+        if(request.kind==='lighting'&&!request.lighting)throw new Error('This lighting preview requires its canonical preset settings.');
+        const material=new THREE.MeshPhysicalMaterial({color:0xa2acbc,...FINISH[request.kind==='finish'?request.value:'satin']});
+        const sphere=new THREE.Mesh(new THREE.SphereGeometry(.55,40,28),material);sphere.position.z=.6;root.add(sphere);
+        const base=new THREE.Mesh(new THREE.BoxGeometry(1.6,1.6,.1),new THREE.MeshPhysicalMaterial({color:0x686f7c,...FINISH.matte}));root.add(base);
+      } else if(this.sourceBody) {
+        if(request.kind==='module')throw new Error('Procedural modules are unavailable on this character.');
+        root.add(this.sourceBody.preview(request.kind==='part'?request.value:null,applyPaint));
+      } else {
+        for(const [name,entry] of this.parts) {
+          if(request.kind==='part'&&request.value!==name)continue;
+          if(name===R1_HEAD_PART&&this.headOverride&&request.kind!=='module') {
+            const mesh=this.headOverride.preview(material=>this.paintNativeHead(material,request.kind==='part'&&request.originalFinish));
+            mesh.applyMatrix4(entry.mesh.matrixWorld);root.add(mesh);continue;
+          }
+          const region=kitRegion(name),frame=this.kitFrames.get(name);
+          if(request.kind==='module'&&region!==request.region)continue;
+          const style=request.kind==='module'?request.value:(region?this.appearance.modules?.[region]??'stock':'stock');
+          const stock=this.robotKit.originalGeometry(entry.mesh,
+            name===R1_HEAD_PART&&this.headOverride?this.headOverride.originalGeometry:entry.mesh.geometry);
+          const geometry=region&&frame?this.robotKit.preview(entry.mesh,style,region,frame,stock):stock.clone();
+          if(!geometry)continue;
+          const paint=this.appearance.parts[name];
+          const original=colorway==='product'?entry.product:colorway==='model'?entry.model:this.paintMat(GREY);
+          const sourceMaterials=[original].flat();
+          const materials=(style==='stock'?sourceMaterials:sourceMaterials.slice(0,1)).map(material=>{
+            const copy=material.clone();
+            if(copy instanceof THREE.MeshStandardMaterial)applyPartPaint(copy,
+              request.kind==='part'&&request.originalFinish?paint?.color===undefined?undefined:{color:paint.color}:paint);
+            return copy;
+          });
+          if(style!=='stock')for(const material of materials)if(material instanceof THREE.MeshStandardMaterial){material.vertexColors=true;material.map=null;material.normalMap=null;}
+          const mesh=new THREE.Mesh(geometry,style==='stock'&&Array.isArray(original)?materials:materials[0]);
+          mesh.applyMatrix4(entry.mesh.matrixWorld);root.add(mesh);
+        }
+      }
+      canvas=renderPreview(this.renderer,root,request.kind==='lighting'?request.lighting!:STUDIO,this.scene.environment);
+      if(request.kind==='lighting'||request.kind==='finish') {
+        const context=canvas.getContext('2d')!;context.fillStyle='#101820';context.fillRect(0,200,224,24);
+        context.fillStyle='white';context.font='11px sans-serif';context.fillText('Representative studio sample',10,216);
+      }
+    }
+    if(this.previewCache.size>=96)this.previewCache.delete(this.previewCache.keys().next().value!);
+    const stored=document.createElement('canvas');stored.width=canvas.width;stored.height=canvas.height;stored.getContext('2d')!.drawImage(canvas,0,0);
+    this.previewCache.set(key,stored);return canvas;
+  }
+  private sourceBody: CharacterBody | null = null;
+  private appliedBody: BodyVisual = 'stock';
+  private readonly bodyAssets = new Map<Exclude<BodyVisual, 'stock'>, Promise<CharacterAsset>>();
+  private bodyPending: BodyVisual | null = null;
   private bodyRequest: Promise<void> | null = null;
   private bodyGeneration = 0;
   private bodyLoading = false;
   private bodyError: string | null = null;
 
   getBodyVisualState(): BodyVisualState {
-    return {choice:this.appearance.sourceBody??'stock',applied:this.sourceBody?'dog':'stock',
-      available:!!this.renderModel&&DogRetarget.available(this.renderModel),loading:this.bodyLoading,error:this.bodyError};
+    const choice = this.appearance.sourceBody ?? 'stock';
+    return { choice, applied: this.appliedBody, available: !!this.renderModel
+      && (choice === 'dog' ? DogRetarget.available(this.renderModel) : characterCompatible(this.renderModel, authoredCharacter(choice)?.physics ?? 'r1')),
+      loading: this.bodyLoading, error: this.bodyError };
   }
   async waitForRobotVisuals() {
-    if(this.appearance.sourceBody==='dog') {
-      if(!this.getBodyVisualState().available)throw new Error('Dog requires a supported R1 model.');
+    if((this.appearance.sourceBody??'stock')!=='stock') {
+      if(!this.getBodyVisualState().available)throw new Error('This character requires matching robot physics.');
       if(this.bodyRequest)await this.bodyRequest;
-      if(!this.sourceBody)throw new Error(this.bodyError??'The Source robot body has not finished loading.');
+      if(!this.sourceBody||this.appliedBody!==this.appearance.sourceBody)
+        throw new Error(this.bodyError??'The selected character has not finished loading.');
     } else await this.waitForSourceHead();
   }
   retrySourceBody(){this.bodyError=null;this.bodyRequest=this.updateSourceBody();}
-  private async updateSourceBody() {
+  /** Keep selected-model browsing bounded; never release the visible or requested source. */
+  private trimBodyAssets() {
+    for(const [id,load]of this.bodyAssets) {
+      if(this.bodyAssets.size<=3)break;
+      if(id===this.appliedBody||id===this.bodyPending)continue;
+      this.bodyAssets.delete(id);
+      // The owning request reports load failures; eviction only releases successful sources.
+      void load.then(asset=>asset.dispose(),()=>{});
+    }
+  }
+  private async updateSourceBody(): Promise<void> {
     const state=this.getBodyVisualState();
     if(state.choice==='stock'||!state.available) {
       const changed=!!this.sourceBody||this.bodyLoading||!!this.bodyError;
-      ++this.bodyGeneration;this.sourceBody?.dispose();this.sourceBody=null;this.bodyLoading=false;this.bodyError=null;
+      ++this.bodyGeneration;this.sourceBody?.dispose();this.sourceBody=null;this.appliedBody='stock';
+      this.bodyPending=null;this.bodyLoading=false;this.bodyError=null;this.trimBodyAssets();
       if(changed){this.setDisplay(this.display);this.onHeadVisualChange?.();}return;
     }
-    if(this.sourceBody){this.sourceBody.updateMaterials();return;}
-    if(this.bodyLoading)return;
-    const generation=++this.bodyGeneration;
-    this.bodyLoading=true;this.bodyError=null;this.onHeadVisualChange?.();
+    if(this.sourceBody&&this.appliedBody===state.choice) {
+      const changed=this.bodyLoading||!!this.bodyError;
+      ++this.bodyGeneration;this.bodyPending=null;this.bodyLoading=false;this.bodyError=null;
+      this.sourceBody.updateMaterials();this.trimBodyAssets();
+      if(changed)this.onHeadVisualChange?.();return;
+    }
+    if(this.bodyPending===state.choice) {
+      if(this.bodyLoading){await this.bodyRequest;return;}
+      if(this.bodyError)return;
+    }
+    const choice=state.choice,generation=++this.bodyGeneration;
+    this.bodyPending=choice;this.bodyLoading=true;this.bodyError=null;this.onHeadVisualChange?.();
     try {
-      this.bodyLoad??=loadDog().catch(error=>{this.bodyLoad=null;throw error});
-      this.bodyAsset=await this.bodyLoad;
-      if(generation!==this.bodyGeneration||this.appearance.sourceBody!=='dog')return;
-      this.sourceBody=this.bodyAsset.create(this.renderModel!,(part,material)=>{
+      let load=this.bodyAssets.get(choice);
+      if(load) {
+        this.bodyAssets.delete(choice);this.bodyAssets.set(choice,load);
+      } else {
+        const definition=authoredCharacter(choice),source=decodePmodelId(choice);
+        if(choice!=='dog'&&!definition&&!source)throw new Error('The selected character is unknown.');
+        load=(choice==='dog'?loadDog():definition?loadCharacter(definition):loadPmodel(source!).then(loadGoldSrcCharacter))
+          .catch(error=>{if(this.bodyAssets.get(choice)===load)this.bodyAssets.delete(choice);throw error});
+        this.bodyAssets.set(choice,load);
+      }
+      const asset=await load;
+      if(generation!==this.bodyGeneration||this.appearance.sourceBody!==choice){this.trimBodyAssets();return;}
+      const body=asset.create(this.renderModel!,(part,material)=>{
         const cw=this.appearance.sourceBodyColorway??'model';
-        const paint=this.appearance.parts[part]??(cw==='grey'?GREY:
-          cw==='product'?resolve(this.robotModel,part).paint:undefined);
-        if(paint){material.color.setHex(paint.color);const finish=FINISH[paint.finish];
-          material.roughness=paint.roughness??finish.roughness;material.metalness=paint.metalness??finish.metalness;
-          material.clearcoat=paint.clearcoat??finish.clearcoat??0;material.emissive.multiply(material.color);}
-        if(this.highlighted===part){material.emissive.setHex(0xe0a23c);material.emissiveIntensity=.35;}
+        const base=cw==='grey'?GREY:cw==='product'?resolve(this.robotModel,part).paint:undefined;
+        applyPartPaint(material,this.appearance.parts[part],base);
+        const highlighted=this.highlightSuppression===0&&this.highlighted===part;
+        if(highlighted){material.emissive.setHex(0xe0a23c);material.emissiveIntensity=.35;}
         this.robotMaterial(material);
         if(this.appearance.robotLight?.brightness&&!this.appearance.robotLight?.dull)material.emissiveMap=null;
         this.sourceAmbient.patch(material);this.patchDynamicLighting(material,true);this.displayMaterial(material);
+        return highlighted||!!this.appearance.robotLight?.dull||!!this.appearance.robotLight?.brightness;
       });
-      if(this.lastRobotPose)this.sourceBody.sync(this.lastRobotPose.xpos,this.lastRobotPose.xmat);
-      this.scene.add(this.sourceBody.root);this.setDisplay(this.display);
+      if(this.lastRobotPose)body.sync(this.lastRobotPose.xpos,this.lastRobotPose.xmat);
+      this.sourceBody?.dispose();this.sourceBody=body;this.appliedBody=choice;
+      this.scene.add(body.root);this.setDisplay(this.display);
+      this.previewCache.clear();this.trimBodyAssets();
     }catch(error){if(generation===this.bodyGeneration)this.bodyError=error instanceof Error?error.message:String(error)}
     if(generation===this.bodyGeneration){this.bodyLoading=false;this.onHeadVisualChange?.();}
   }
-  exportSourceBody(poses:Float32Array,ngeom:number,times:Float32Array){return this.sourceBody?.export(poses,ngeom,times)??null;}
+  exportSourceBody(geometry:GeometryTrack,times:Float32Array){return this.sourceBody?.export(geometry,times)??null;}
   private headChoice: HeadVisual = "stock";
   private headAsset: SourceHeadAsset | null = null;
   private headLoad: Promise<SourceHeadAsset> | null = null;
@@ -532,10 +662,10 @@ export class SceneView {
   getSourceHead(): HeadVisual { return this.headOverride ? "ghost" : "stock"; }
   async setSourceHead(kind: HeadVisual): Promise<void> {
     await this.setHeadVisual(kind);
-    if (kind === "ghost" && !this.headOverride) throw new Error(this.headError ?? "The Ghost head is only available on R1.");
+    if (kind === "ghost" && !this.headOverride && (this.appearance.sourceBody??'stock') === 'stock') throw new Error(this.headError ?? "The Ghost head is only available on R1.");
   }
   async waitForSourceHead(): Promise<void> {
-    if (this.headChoice !== "ghost" || !this.getHeadVisualState().available) return;
+    if ((this.appearance.sourceBody??'stock') !== 'stock' || this.headChoice !== "ghost" || !this.getHeadVisualState().available) return;
     if (this.headLoading && this.headLoad) await this.headLoad;
     // setHeadVisual registered its completion before this waiter.
     if (!this.headOverride) throw new Error(this.headError ?? "The Ghost head has not finished loading.");
@@ -551,8 +681,9 @@ export class SceneView {
     this.headChoice = choice;
     this.headLoading = false; this.headError = null;
     this.headOverride?.restore(); this.headOverride = null;
+    this.previewCache.clear();
     this.onHeadVisualChange?.();
-    if (choice !== "ghost" || !this.getHeadVisualState().available) return;
+    if (choice !== "ghost" || (this.appearance.sourceBody??'stock') !== 'stock' || !this.getHeadVisualState().available) return;
     this.headLoading = true; this.onHeadVisualChange?.();
     try {
       this.headLoad ??= loadGhostHead().catch((error: unknown) => { this.headLoad = null; throw error; });
@@ -570,20 +701,20 @@ export class SceneView {
     if (generation === this.headGeneration) this.onHeadVisualChange?.();
   }
 
+  /** Canonical native head paint, shared by live and highlight-free previews. */
+  private paintNativeHead(native: THREE.MeshPhysicalMaterial, originalFinish=false) {
+    const paint=this.appearance.parts[R1_HEAD_PART];
+    applyPartPaint(native,originalFinish?paint?.color===undefined?undefined:{color:paint.color}:paint);
+  }
+
   private applyHeadVisual() {
-    if (this.headChoice !== "ghost" || !this.headAsset || !this.headToFile || !this.getHeadVisualState().available) return;
+    if ((this.appearance.sourceBody??'stock') !== 'stock' || this.headChoice !== "ghost" || !this.headAsset || !this.headToFile || !this.getHeadVisualState().available) return;
     const part = this.parts.get(R1_HEAD_PART)!;
     this.headOverride?.restore();
     this.headOverride = this.headAsset.apply(part.mesh, this.headToFile, material => {
       const native = material as THREE.MeshPhysicalMaterial;
-      const paint = this.appearance.parts[R1_HEAD_PART];
-      if (paint) {
-        native.color.setHex(paint.color);
-        native.roughness = paint.roughness ?? FINISH[paint.finish].roughness;
-        native.metalness = paint.metalness ?? FINISH[paint.finish].metalness;
-        native.clearcoat = paint.clearcoat ?? FINISH[paint.finish].clearcoat;
-      }
-      if (this.highlighted === R1_HEAD_PART) {
+      this.paintNativeHead(native);
+      if (this.highlightSuppression===0 && this.highlighted === R1_HEAD_PART) {
         native.emissive.setHex(0xe0a23c); native.emissiveIntensity = .35;
       }
       this.robotMaterial(material);
@@ -591,11 +722,12 @@ export class SceneView {
       this.patchDynamicLighting(material, true);
       this.displayMaterial(material);
     });
+    this.previewCache.clear();
   }
   private floors: THREE.Object3D[] = [];
   private readonly tmp = new THREE.Matrix4();
   /** set while an export owns the canvas size (beginOffscreen … endOffscreen) */
-  private offscreen: { ratio: number; background: THREE.Scene["background"]; fog: THREE.Scene["fog"]; transparent: boolean } | null = null;
+  private offscreen: { ratio: number; background: THREE.Scene["background"]; fog: THREE.Scene["fog"]; transparent: boolean; restoreHighlights:()=>void } | null = null;
 
   constructor(readonly container: HTMLElement) {
     // preserveDrawingBuffer: screenshots and video export read the canvas anytime;
@@ -603,6 +735,8 @@ export class SceneView {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(this.renderer.domElement);
+    this.renderer.domElement.addEventListener('webglcontextlost',()=>this.previewCache.clear());
+    this.renderer.domElement.addEventListener('webglcontextrestored',()=>this.previewCache.clear());
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x0b0e12);
@@ -649,16 +783,16 @@ export class SceneView {
 
   /** (Re)build the per-geom meshes from a RenderModel sent by the sim worker. */
   build(desc: RenderModel) {
-    ++this.bodyGeneration;this.sourceBody?.dispose();this.sourceBody=null;this.bodyLoading=false;this.bodyError=null;
+    this.previewCache.clear();
+    ++this.bodyGeneration;this.sourceBody?.dispose();this.sourceBody=null;this.appliedBody='stock';this.bodyPending=null;this.bodyLoading=false;this.bodyError=null;
     this.renderModel=desc;this.lastRobotPose=null;
     ++this.headGeneration;
     this.headOverride?.restore(); this.headOverride = null;
     this.headToFile = null; this.headLoading = false; this.headError = null;
+    this.robotKit.reset();this.kitFrames.clear();
     this.robotModel = desc.robot;
-    for (const material of this.highlightMaterials.values()) material.dispose();
-    this.highlightMaterials.clear();
-    for (const materials of this.dullMaterials.values()) for (const material of materials) material.dispose();
-    this.dullMaterials.clear();
+    for (const materials of this.partMaterials.values()) for (const material of materials) material.dispose();
+    this.partMaterials.clear();
     for (const m of this.geomMeshes) {
       if (!m) continue;
       this.scene.remove(m);
@@ -735,6 +869,9 @@ export class SceneView {
       mesh.receiveShadow = true;
       for (const m of [mesh.material].flat()) this.patchDynamicLighting(m);
       if (robotPart && !this.parts.has(meshName)) {
+        const md=desc.meshes[desc.dataid[g]];
+        this.kitFrames.set(meshName,new THREE.Matrix4().compose(new THREE.Vector3(...md.pos),
+          new THREE.Quaternion(md.quat[1],md.quat[2],md.quat[3],md.quat[0]),new THREE.Vector3(1,1,1)));
         const model = new THREE.MeshPhysicalMaterial({
           color: new THREE.Color(desc.rgba[4 * g], desc.rgba[4 * g + 1], desc.rgba[4 * g + 2]),
           side: THREE.DoubleSide, ...FINISH.satin });
@@ -911,7 +1048,9 @@ export class SceneView {
 
   getSourceTime() { return this.sourceAnimationTime ?? Math.max(0, (performance.now() - this.sourceAnimationStart) / 1000); }
   setSourceTime(time: number | null) { this.sourceAnimationTime = time; }
-  getVisualRevision(){return `${this.terrainGeneration}:${this.bodyGeneration}:${this.headGeneration}`;}
+  getVisualRevision(){return `${this.terrainGeneration}:${this.bodyGeneration}:${this.headGeneration}:${this.editRevision}`;}
+  getShotLights(): ShotLight[] { return this.shotLights.get(); }
+  setShotLights(lights: readonly ShotLight[]) { this.shotLights.set(lights); ++this.editRevision; }
 
   /** Share map clipping with the live camera, shot preview and exported camera. */
   configureCamera(camera:THREE.Camera){
@@ -939,7 +1078,7 @@ export class SceneView {
       // superseding the entity renderamt. Keep the authored amount in node metadata.
       for (const material of [sprite.material].flat()) material.opacity=state.alpha;
     }
-    for (const detail of this.sourceDetails) detail.rotation.set(0, 0,
+    for (const detail of this.sourceDetails) if(!prepareDetailBatch(detail,camera.position))detail.rotation.set(0, 0,
       Math.atan2(camera.position.y - detail.position.y, camera.position.x - detail.position.x) - Math.PI / 2);
   }
 
@@ -954,7 +1093,7 @@ export class SceneView {
   private renderSourceScene(camera: THREE.Camera) {
     const draw=()=>this.drawSourceScene(camera);
     if(this.sourceLighting&&this.sourceColorMap&&this.terrainVisual) {
-      this.sourceColor.render(this.renderer,draw,this.sourceAmbient.linearOutput,!!this.offscreen?.transparent);
+      this.sourceColor.render(this.renderer,draw,this.sourceAmbient.linearOutput,!!this.offscreen?.transparent,camera);
     }else draw();
   }
 
@@ -973,18 +1112,21 @@ export class SceneView {
     for (const [source, clone] of this.sourceSkyLights) {
       clone.copy(source,false); clone.castShadow = false;
     }
-    const brightness = this.robotLight.brightness.value, autoClear = renderer.autoClear;
+    const brightness = this.robotLight.brightness.value, lightCount = this.shotLights.count.value, autoClear = renderer.autoClear;
     const background = this.scene.background, visible = this.sourceSky.map(s => s.visible);
     try {
       this.robotLight.brightness.value = 0;
+      this.shotLights.count.value = 0;
       this.flashlight.withoutLight(() => renderer.render(sky.scene,sky.camera));
       this.robotLight.brightness.value = brightness;
+      this.shotLights.count.value = lightCount;
       renderer.clearDepth();
       renderer.autoClear = false; this.scene.background = null;
       for (const mesh of this.sourceSky) mesh.visible = false;
       drawVisibleWorld();
     } finally {
       this.robotLight.brightness.value = brightness;
+      this.shotLights.count.value = lightCount;
       renderer.autoClear = autoClear; this.scene.background = background;
       this.sourceSky.forEach((mesh,index) => mesh.visible = visible[index]);
     }
@@ -1018,7 +1160,7 @@ export class SceneView {
   beginOffscreen(w: number, h: number, opts: { transparent?: boolean; floor?: boolean } = {}) {
     const r = this.renderer;
     if (!this.offscreen)
-      this.offscreen = { ratio: r.getPixelRatio(), background: this.scene.background, fog: this.scene.fog, transparent: !!opts.transparent };
+      this.offscreen = { ratio: r.getPixelRatio(), background: this.scene.background, fog: this.scene.fog, transparent: !!opts.transparent, restoreHighlights:this.suspendHighlights() };
     r.setPixelRatio(1);
     r.setSize(w, h, false);
     const gl = r.getContext();
@@ -1048,6 +1190,7 @@ export class SceneView {
     for (const f of this.floors) f.visible = true;
     this.renderer.setPixelRatio(o.ratio);
     this.resize();
+    o.restoreHighlights();
   }
 
   /** The rendered parts for a scene export: every visible geom mesh (ground planes excluded) with
@@ -1079,15 +1222,45 @@ export class SceneView {
   /** Robot mesh (STL) names in the scene, sorted. */
   partNames(): string[] { return this.sourceBody?.partNames()??[...this.parts.keys()].sort(); }
 
-  setAppearance(a: Appearance) {
-    this.appearance = { ...a, sourceBody:a.sourceBody==='dog'?'dog':'stock', robotLight: robotLightSettings(a.robotLight) };
+  /** Commit body/head together; never start a native download for an obsolete identity. */
+  setAppearance(a: Appearance, head?: HeadVisual) {
+    const body = a.sourceBody ?? 'stock';
+    const bodyChanged = (this.appearance.sourceBody ?? 'stock') !== body;
+    this.appearance = structuredClone(a);
+    this.appearance.sourceBody = body;
+    this.appearance.robotLight = robotLightSettings(a.robotLight);
+    ++this.editRevision;
+    if (bodyChanged || (head !== undefined && head !== this.headChoice)) void this.setHeadVisual(head ?? this.headChoice);
     this.robotLight.set(this.appearance.robotLight);
     for (const name of this.parts.keys()) this.applyPart(name);
-    if(this.bodyLoading&&this.appearance.sourceBody==='dog')return;
     this.bodyRequest=this.updateSourceBody();
   }
 
   getAppearance(): Appearance { return structuredClone(this.appearance); }
+
+  /** Display readback only. A single-axis edit must not persist the other resolved defaults. */
+  partPaint(name:string):PartPaint {
+    let base=this.sourceBody?.nativePaintFor(name);
+    if(base) {
+      const cw=this.appearance.sourceBodyColorway??'model';
+      if(cw==='grey')base=GREY;
+      else if(cw==='product')base=resolve(this.robotModel,name).paint;
+    } else if(name===R1_HEAD_PART&&this.headOverride)base=this.headOverride.nativePaintFor();
+    if(!base) {
+      const entry=this.parts.get(name);
+      if(!entry)throw new Error(`Part is not available: ${name}`);
+      const material=this.appearance.colorway==='product'?[entry.product].flat()[0]
+        :this.appearance.colorway==='model'?entry.model:this.paintMat(GREY);
+      if(!(material instanceof THREE.MeshStandardMaterial||material instanceof THREE.MeshBasicMaterial))
+        throw new Error(`Part material is not editable: ${name}`);
+      base=readPartPaint(material);
+    }
+    const override=this.appearance.parts[name],finish=override?.finish??base.finish,preset=FINISH[finish];
+    return {color:override?.color??base.color,finish,
+      roughness:override?.roughness??(override?.finish!==undefined?preset.roughness:base.roughness??preset.roughness),
+      metalness:override?.metalness??(override?.finish!==undefined?preset.metalness:base.metalness??preset.metalness),
+      clearcoat:override?.clearcoat??(override?.finish!==undefined?preset.clearcoat:base.clearcoat??preset.clearcoat)};
+  }
 
   private paintMat(p: PartPaint): THREE.MeshPhysicalMaterial {
     const key = `${p.color}/${p.finish}/${p.roughness}/${p.metalness}/${p.clearcoat}`;
@@ -1116,8 +1289,10 @@ export class SceneView {
   private sourceAnimationStart = 0;
   private sourceAnimationTime: number | null = null;
   private sourceAmbient = new SourceAmbient();
+  private shotLights = new ShotLights(this.sourceAmbient.exposure);
   private sourceColor=new SourceColor();
   private sourceColorMap=false;
+  setSourceAntialiasing(mode: SourceAntialiasing) { this.sourceColor.setAntialiasing(mode); }
   private sourceStyles: SourceLightStyles | null = null;
   private sourceMaterials=new SourceMaterials();
   private terrainMaterials: { mesh: THREE.Mesh; original: THREE.Material | THREE.Material[];
@@ -1162,6 +1337,7 @@ export class SceneView {
     this.sourceColorMap=!!url&&new URL(url,location.href).pathname.endsWith('/nt_ghost_ctg/visual.glb');
     this.configureCamera(this.camera);
     this.sourceColor.reset();
+    this.sourceColor.setColorCorrections([]);
     this.sourceSky3D = null; this.sourceSkyLights = [];
     this.sourceVisibility = null;
     this.sourceStyles = null;
@@ -1190,9 +1366,13 @@ export class SceneView {
     const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
     const loader = new GLTFLoader();
     const nativeTextures=new Map<GLTFParser,SourceNativeTextures>();
+    loader.register(parser=>{
+      const native=new SourceNativeTextures(parser,context,this.renderer);nativeTextures.set(parser,native);
+      return native;
+    });
     const load=async(path:string,phase:string)=>{
       const result=await loader.loadAsync(path,e=>report(phase,e.loaded,e.total));
-      const native=new SourceNativeTextures(result.parser,context,this.renderer);nativeTextures.set(result.parser,native);
+      const native=nativeTextures.get(result.parser)!;
       const pending:Promise<void>[]=[];
       result.scene.traverse(object=>{if(object instanceof THREE.Mesh){
         context.own(object.geometry);
@@ -1208,19 +1388,25 @@ export class SceneView {
       return result;
     };
     const manifest = fetch(new URL('manifest.json', new URL(url, location.href))).then(r => r.json());
+    const colorLayers=manifest.then(m=>loadSourceColorLayers(m,new URL(url,location.href)));
     const visibility = manifest.then(async (m: { visibility?: string }) => {
       if (m.visibility !== 'visibility.json') return null;
       const response = await fetch(new URL(m.visibility,new URL(url,location.href)));
       if (!response.ok) throw new Error('Source visibility data failed to load');
       return response.json() as Promise<SourceVisibilityData>;
     });
+    const visual=manifest.then((m:SourceMapVisuals)=>load(m.native_textures?.visual
+      ?new URL(m.native_textures.visual,new URL(url,location.href)).href:url,'map textures'));
     const props = manifest
-      .then((manifest: { props?: { visual?: string } }) => manifest.props?.visual === 'props.glb'
-        ? load(new URL('props.glb', new URL(url, location.href)).href,'models') : null);
-    const [gltf, propGltf, visibilityData] = await Promise.all([load(url,'map textures'), props, visibility]);
+      .then((m:SourceMapVisuals) => m.props?.visual === 'props.glb'
+        ? load(new URL(m.native_textures?.props??'props.glb', new URL(url, location.href)).href,'models') : null);
+    const [gltf, propGltf, visibilityData, mapManifest, grading] = await Promise.all([visual, props, visibility, manifest, colorLayers]);
     report('preparing materials', 0, 0);
     const sourceStyles = await styles;
     if (!current()) return;
+    this.sourceColorMap=this.sourceColorMap||mapManifest.source_renderer?.version===1;
+    this.sourceColor.setColorCorrections(grading);
+    this.configureCamera(this.camera);
     let mixer:THREE.AnimationMixer|null=null;
     const sky:THREE.Mesh[]=[],sprites:THREE.Mesh[]=[],details:THREE.Mesh[]=[];
     if (propGltf?.animations.length) {
@@ -1237,6 +1423,7 @@ export class SceneView {
       });
       gltf.scene.add(propGltf.scene);
     }
+    batchSourceDetails(gltf.scene,context);
     const cubes = new Map<string, Promise<THREE.CubeTexture>>();
     const effects = async (source: THREE.MeshBasicMaterial, original: THREE.MeshStandardMaterial, mesh: THREE.Mesh) => {
       const parser = materialParsers.get(original) ?? gltf.parser;
@@ -1304,7 +1491,7 @@ export class SceneView {
                 source.transparent = true; source.depthWrite = false; source.blending = THREE.AdditiveBlending;
                 m.transparent = true; m.depthWrite = false; m.blending = THREE.AdditiveBlending;
                 o.castShadow = false; sprites.push(o);
-              } else if (o.userData.sourceDetail) { details.push(o); }
+              } else if (o.userData.sourceDetail) { details.push(o);patchDetailBatchMaterial(o,source); }
               else await effects(source, m, o);
               if (!o.userData.sourceSky && !o.userData.sourceSprite && !o.userData.sourceDetail && !m.userData.sourceUnlit) {
                 this.patchDynamicLighting(source); this.patchDynamicLighting(m);
@@ -1362,25 +1549,29 @@ export class SceneView {
     const e = this.parts.get(name);
     if (!e) return;
     if (name === R1_HEAD_PART) { this.headOverride?.restore(); this.headOverride = null; }
-    this.highlightMaterials.get(name)?.dispose(); this.highlightMaterials.delete(name);
-    const o = this.appearance.parts[name], cw = this.appearance.colorway;
-    let mat: THREE.Material | THREE.Material[] = o ? this.paintMat(o)
-      : cw === "product" ? e.product : cw === "model" ? e.model : this.paintMat(GREY);
-    if (name === this.highlighted) {
-      const hl = (Array.isArray(mat) ? mat[0] : mat as THREE.MeshPhysicalMaterial).clone() as THREE.MeshPhysicalMaterial;
-      hl.emissive = new THREE.Color(0xe0a23c);
-      hl.emissiveIntensity = 0.35;
-      mat = hl;
-      this.highlightMaterials.set(name, hl);
-    }
-    for (const previous of this.dullMaterials.get(name) ?? []) previous.dispose();
-    this.dullMaterials.delete(name);
-    if (this.appearance.robotLight?.dull || this.appearance.robotLight?.brightness) {
-      const copies = [mat].flat().map(material => { const copy = material.clone(); this.robotMaterial(copy); return copy; });
-      this.dullMaterials.set(name, copies);
-      mat = Array.isArray(mat) ? copies : copies[0];
+    this.robotKit.restore(e.mesh);
+    for(const material of this.partMaterials.get(name)??[])material.dispose();
+    this.partMaterials.delete(name);
+    const o=this.appearance.parts[name],cw=this.appearance.colorway;
+    let mat:THREE.Material|THREE.Material[]=cw==='product'?e.product:cw==='model'?e.model:this.paintMat(GREY);
+    const highlighted=this.highlightSuppression===0&&name===this.highlighted;
+    if(o||highlighted||this.appearance.robotLight?.dull||this.appearance.robotLight?.brightness) {
+      const copies=[mat].flat().map(material=>{
+        const copy=material.clone();
+        if(copy instanceof THREE.MeshStandardMaterial) {
+          applyPartPaint(copy,o);
+          if(highlighted){copy.emissive.setHex(0xe0a23c);copy.emissiveIntensity=.35;}
+          this.robotMaterial(copy);
+        }
+        return copy;
+      });
+      this.partMaterials.set(name,copies);
+      mat=Array.isArray(mat)?copies:copies[0];
     }
     e.mesh.material = mat;
+    const region=kitRegion(name),frame=this.kitFrames.get(name);
+    if(region&&frame)this.robotKit.apply(e.mesh,this.appearance.modules?.[region]??'stock',region,frame);
+    mat=e.mesh.material;
     for (const m of [mat].flat()) {
       this.sourceAmbient.patch(m);
       this.patchDynamicLighting(m, true);
@@ -1394,14 +1585,26 @@ export class SceneView {
     const prev = this.highlighted;
     this.highlighted = name;
     if (prev) this.applyPart(prev);
-    if (name) this.applyPart(name);
+    if (name && name!==prev) this.applyPart(name);
     this.sourceBody?.updateMaterials();
+  }
+
+  /** Capture scopes suppress only transient selection paint, not deliberate robot or shot lights. */
+  suspendHighlights():()=>void {
+    if(++this.highlightSuppression===1&&this.highlighted)this.highlight(this.highlighted);
+    let active=true;
+    return ()=>{
+      if(!active)return;
+      active=false;
+      if(--this.highlightSuppression===0&&this.highlighted)this.highlight(this.highlighted);
+    };
   }
 
   // ---- lighting --------------------------------------------------------------
   getLighting(): Lighting { return { ...this.lighting }; }
 
   setLighting(l: Lighting) {
+    ++this.editRevision;
     this.sourceExposure.value = l.exposure;
     this.sourceAmbient.exposure.value = l.exposure;
     this.flashlight.exposure.value = l.exposure;
@@ -1440,7 +1643,6 @@ export class SceneView {
 
   /** Keep the camera orbiting around the robot base. */
   follow(x: number, y: number, z: number) {
-    this.sourceAmbient.sample(x, y, z);
     const t = this.controls.target;
     const dx = x - t.x, dy = y - t.y, dz = z - t.z;
     t.set(x, y, z);

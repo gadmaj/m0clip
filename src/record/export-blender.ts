@@ -8,17 +8,24 @@ import * as THREE from "three";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { checkerTexture, type SceneView } from "../render/scene";
 import type { RenderModel } from "../sim/protocol";
-import { GEOM_STRIDE, type Take } from "./take";
+import { GEOM_STRIDE } from '../core/geometry';
+import type { Take } from "./take";
 import type { Shot, ShotPath } from "./shot";
 import { prepareLosslessTextures } from "./lossless-textures";
+import { expandDetailBatches } from '../render/source-details';
 import { losslessImageWriter } from "./lossless-images";
 import { SceneCamera, infiniteCameraWriter } from '../render/scene-camera';
+import { shotLightObjects } from '../render/shot-lights';
+import type { LookState } from '../ui/look';
+import type { ShotEdits } from './post';
+import { extraSkinningWriter } from '../render/extra-skin';
 
 export interface GlbJob {
   fps: number;              // key rate; keys are in seconds, so motion plays at true speed at any scene rate
   t0: number; t1: number;
   camera: { path: ShotPath; shot: Shot; aspect: number } | null;
   floor: boolean;           // ground plane (terrain geoms are always included)
+  look?: LookState;         // effective review Look, including the fallback for legacy takes
 }
 
 /** −90° about X: MuJoCo Z-up → glTF Y-up. */
@@ -35,25 +42,30 @@ function pushQuat(out: number[], q: THREE.Quaternion) {
 
 export async function exportGlb(take: Take, view: SceneView, model: RenderModel, job: GlbJob): Promise<Blob> {
   await Promise.all([view.waitForRobotVisuals(),view.waitForTerrainVisuals()]);
+  const restoreHighlights=view.suspendHighlights();
+  try {
+  const appearance = view.getAppearance(), sourceHead = view.getSourceHead(), lights = view.getShotLights();
+  const look = structuredClone(job.look ?? take.meta.edits?.look ?? take.meta.look);
+  const shotEdits: ShotEdits = {
+    version: 1, appearance, sourceHead, ...(look ? { look } : {}), lights,
+  };
   const N = Math.max(2, Math.round((job.t1 - job.t0) * job.fps) + 1);
   const times = Float32Array.from({ length: N }, (_, i) => Math.min(i / job.fps, job.t1 - job.t0));
-  const ng = take.meta.ngeom;
-  const poses = new Float32Array(N * ng * GEOM_STRIDE);
-  const tmp = new Float32Array(ng * GEOM_STRIDE);
-  for (let i = 0; i < N; i++) {
-    take.geomPoseAt(job.t0 + times[i], tmp);
-    poses.set(tmp, i * ng * GEOM_STRIDE);
-  }
+  const geometry = take.sampleGeometry(times, job.t0), poses = geometry.values;
 
   const scene = new THREE.Scene();
   scene.name = `${take.meta.robot}_take`;
   scene.userData = {
-    generator: "unitree-mujoco-web", robot: take.meta.robot, model: take.meta.model,
+    generator: "m0clip-ts", robot: take.meta.robot, model: take.meta.model,
     terrain: take.meta.terrain, policy: take.meta.policy, recorded: take.meta.created,
     range_s: [job.t0, job.t1], key_fps: job.fps,
-    robotAppearance: take.meta.appearance, robotFade: take.meta.robotFade, noclipTransitions: take.events.filter(event => event.kind === 'noclip'),
+    robotAppearance: appearance, recordedAppearance: structuredClone(take.meta.appearance),
+    sourceHead, recordedSourceHead: take.meta.sourceHead, look, recordedLook: structuredClone(take.meta.look),
+    shotEdits, sourceRendering: 'Native Source lightmaps, tone mapping and custom shader effects are not reproduced by glTF materials.',
+    robotFade: take.meta.robotFade, noclipTransitions: take.events.filter(event => event.kind === 'noclip'),
   };
   const robot = new THREE.Group(), world = new THREE.Group();
+  const detailCleanup: (()=>void)[]=[];
   robot.name = take.meta.robot;
   world.name = "terrain";
   scene.add(robot, world);
@@ -77,28 +89,34 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
                                 : meshName ?? `terrain_${geom}`);
     node.userData = { geom, body: model.bodyNames[body] ?? "", mesh: meshName ?? "",
       ...(mesh.userData.sourceRobotPart ? { sourceModel: mesh.userData.sourceRobotPart } : {}) };
+    if(mesh.userData.robotModule)node.userData.robotModule={...mesh.userData.robotModule};
+    const first = geometry.offset(0, geom);
+    (body > 0 ? robot : world).add(node);
+    if (geometry.isFixed(geom)) {
+      node.position.set(poses[first], poses[first+2], -poses[first+1]);
+      node.quaternion.set(poses[first+4],poses[first+5],poses[first+6],poses[first+3]).premultiply(TO_YUP);
+      continue;
+    }
     const pos: number[] = [], rot: number[] = [];
     let moves = false;
     for (let i = 0; i < N; i++) {
-      const o = (i * ng + geom) * GEOM_STRIDE;
-      pos.push(...yUp(poses[o], poses[o + 1], poses[o + 2]));
+      const o = geometry.offset(i, geom);
+      pos.push(poses[o], poses[o + 2], -poses[o + 1]);
       q.set(poses[o + 4], poses[o + 5], poses[o + 6], poses[o + 3]).premultiply(TO_YUP);
       pushQuat(rot, q);
       if (i && !moves) {
-        const p0 = geom * GEOM_STRIDE;
-        for (let k = 0; k < GEOM_STRIDE; k++) if (Math.abs(poses[o + k] - poses[p0 + k]) > 1e-6) { moves = true; break; }
+        for (let k = 0; k < GEOM_STRIDE; k++) if (Math.abs(poses[o + k] - poses[first + k]) > 1e-6) { moves = true; break; }
       }
     }
     node.position.fromArray(pos, 0);
     node.quaternion.fromArray(rot, 0);
-    (body > 0 ? robot : world).add(node);
     if (moves) {
       tracks.push(new THREE.VectorKeyframeTrack(`${node.name}.position`, times, pos));
       tracks.push(new THREE.QuaternionKeyframeTrack(`${node.name}.quaternion`, times, rot));
     }
   }
 
-  const sourceBody=view.exportSourceBody(poses,ng,times);
+  const sourceBody=view.exportSourceBody(geometry,times);
   if(sourceBody){
     const wrap=new THREE.Group();wrap.name=unique('source_robot');wrap.quaternion.copy(TO_YUP);
     wrap.add(sourceBody.root);robot.add(wrap);tracks.push(...sourceBody.tracks);
@@ -111,6 +129,7 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
     wrap.quaternion.copy(TO_YUP);
     // Object3D.clone() leaves SkinnedMesh skeletons pointing into the live scene.
     const terrain = cloneSkeleton(view.terrainObject);
+    detailCleanup.push(expandDetailBatches(terrain));
     terrain.traverse(object => {
       // Background sky and additive camera-facing glows are render effects, not solid DCC geometry.
       if (object.userData.sourceSky || object.userData.sourceSprite) object.visible = false;
@@ -128,6 +147,13 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
     floor.quaternion.copy(TO_YUP);
     world.add(floor);
   }
+
+  // Light positions and aim are authored in Z-up; convert their entire hierarchy exactly once.
+  const lightWrap = new THREE.Group();
+  lightWrap.name = unique('shot_lights');
+  lightWrap.quaternion.copy(TO_YUP);
+  lightWrap.add(shotLightObjects(lights));
+  scene.add(lightWrap);
 
   if (job.camera) {
     const { path, shot, aspect } = job.camera;
@@ -157,9 +183,10 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
   const { GLTFExporter } = await import("three/examples/jsm/exporters/GLTFExporter.js");
   const cleanup = prepareLosslessTextures(scene),images=losslessImageWriter(view.renderer);
   try {
-    const glb = await new GLTFExporter().register(images.plugin).register(infiniteCameraWriter).parseAsync(scene, {
+    const glb = await new GLTFExporter().register(images.plugin).register(infiniteCameraWriter).register(extraSkinningWriter).parseAsync(scene, {
       binary: true, trs: true, onlyVisible: true, animations: tracks.length ? [clip] : [],
     });
     return new Blob([glb as ArrayBuffer], { type: "model/gltf-binary" });
-  } finally { images.dispose();cleanup(); }
+  } finally { images.dispose();cleanup();for(const dispose of detailCleanup)dispose(); }
+  } finally { restoreHighlights(); }
 }

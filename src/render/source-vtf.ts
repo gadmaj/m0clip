@@ -1,12 +1,21 @@
 /** Native Source texture levels. VTF layout and sampling follow noclip.website
  * SourceEngine/VTF.ts (Copyright Jasper St. Pierre; MIT, LICENSE.noclip). */
 import * as THREE from 'three';
-import type { GLTFParser } from 'three/addons/loaders/GLTFLoader.js';
+import type { GLTFLoaderPlugin, GLTFParser } from 'three/addons/loaders/GLTFLoader.js';
 import type { SourceMaterials } from './source-materials';
 import { unzlibSync } from 'fflate';
 
 export interface SourceMip { width:number; height:number; data:Uint8Array }
 export interface SourceVtf { width:number; height:number; flags:number; format:number; levels:SourceMip[] }
+interface SourceVtfMetadata {
+  bufferView:number;frame:number;face:number;path:string;compression?:'zlib';
+  image?:{name?:string;extras?:Record<string,unknown>};
+}
+interface SourceTextureDefinition {
+  name?:string;
+  extras?:{sourceVtf?:SourceVtfMetadata};
+  extensions?:{M0CLIP_texture_vtf?:SourceVtfMetadata};
+}
 const rawFormats:Record<number,string>={0:'RGBA',1:'ABGR',2:'RGB',3:'BGR',5:'I',6:'IA',8:'A',11:'ARGB',12:'BGRA',16:'BGRX'};
 const blockFormats:Record<number,number>={13:8,14:16,15:16,20:8};
 function levelSize(format:number,width:number,height:number){
@@ -88,42 +97,63 @@ export function decodeSourceMip(mip:SourceMip,format:number):SourceMip {
   return{width,height,data:out};
 }
 
-export class SourceNativeTextures {
+export class SourceNativeTextures implements GLTFLoaderPlugin {
+  readonly name='M0CLIP_texture_vtf';
   private variants=new WeakMap<THREE.Texture,Map<string,Promise<THREE.Texture>>>();
   private parsed=new Map<number,Promise<SourceVtf>>();
   private buffers=new Map<number,Promise<ArrayBuffer>>();
   constructor(private parser:GLTFParser,private context:SourceMaterials,private renderer:THREE.WebGLRenderer){}
+  loadTexture(index:number):Promise<THREE.Texture>|null {
+    const definition=this.parser.json.textures[index] as SourceTextureDefinition|undefined;
+    const meta=definition?.extensions?.M0CLIP_texture_vtf;
+    if(!meta)return null;
+    return this.vtf(index,meta).then(vtf=>{
+      let pixels:Uint8Array|undefined;
+      const texture=this.context.own(new THREE.DataTexture());
+      texture.image={width:vtf.width,height:vtf.height,get data(){return pixels??=decodeSourceMip(vtf.levels[0],vtf.format).data;}};
+      texture.name=definition?.name??meta.image?.name??'';
+      texture.userData={...meta.image?.extras,mimeType:'image/png'};
+      this.parser.associations.set(texture,{textures:index});
+      return texture;
+    });
+  }
+  private vtf(index:number,meta:SourceVtfMetadata):Promise<SourceVtf>{
+    // Parsing is per frame/face, while GLTFParser shares the underlying VTF buffer.
+    let parsed=this.parsed.get(index);
+    if(!parsed){
+      let buffer=this.buffers.get(meta.bufferView);
+      if(!buffer){buffer=this.parser.getDependency('bufferView',meta.bufferView).then((data:ArrayBuffer)=>{
+        if(meta.compression!=='zlib')return data;
+        const decoded=unzlibSync(new Uint8Array(data));return decoded.buffer.slice(decoded.byteOffset,decoded.byteOffset+decoded.byteLength) as ArrayBuffer;
+      });this.buffers.set(meta.bufferView,buffer);}
+      parsed=buffer.then(data=>parseSourceVtf(data,meta.frame,meta.face));this.parsed.set(index,parsed);
+    }
+    return parsed;
+  }
   async get(index:number,colorSpace:string=THREE.NoColorSpace):Promise<THREE.Texture>{
     const texture=this.context.own(await this.parser.getDependency('texture',index) as THREE.Texture);
     return this.restore(texture,index,colorSpace);
   }
   restore(original:THREE.Texture,index:number,colorSpace=original.colorSpace):Promise<THREE.Texture>{
-    const meta=this.parser.json.textures[index]?.extras?.sourceVtf as {bufferView:number;frame:number;face:number;path:string;compression?:'zlib'}|undefined;
+    const definition=this.parser.json.textures[index] as SourceTextureDefinition|undefined;
+    const meta=definition?.extensions?.M0CLIP_texture_vtf??definition?.extras?.sourceVtf;
     if(!meta){if(original.colorSpace!==colorSpace){original.colorSpace=colorSpace;original.needsUpdate=true;}return Promise.resolve(original);}
     let variants=this.variants.get(original);if(!variants){variants=new Map();this.variants.set(original,variants);}
     let result=variants.get(colorSpace);
     if(!result){
       result=(async()=>{
-        // Parsing is per frame/face, while GLTFParser shares the underlying VTF buffer.
-        let parsed=this.parsed.get(index);
-        if(!parsed){
-          let buffer=this.buffers.get(meta.bufferView);
-          if(!buffer){buffer=this.parser.getDependency('bufferView',meta.bufferView).then((data:ArrayBuffer)=>{
-            if(meta.compression!=='zlib')return data;
-            const decoded=unzlibSync(new Uint8Array(data));return decoded.buffer.slice(decoded.byteOffset,decoded.byteOffset+decoded.byteLength) as ArrayBuffer;
-          });this.buffers.set(meta.bufferView,buffer);}
-          parsed=buffer.then(data=>parseSourceVtf(data,meta.frame,meta.face));this.parsed.set(index,parsed);
-        }
-        const vtf=await parsed;
+        const vtf=await this.vtf(index,meta);
         if(original.image.width!==vtf.width||original.image.height!==vtf.height)throw new Error(`Source texture dimensions differ: ${meta.path}`);
         const block=blockFormats[vtf.format],compressed=!!block&&this.renderer.extensions.has('WEBGL_compressed_texture_s3tc')
           &&(colorSpace!==THREE.SRGBColorSpace||this.renderer.extensions.has('WEBGL_compressed_texture_s3tc_srgb'));
         const format=compressed?vtf.format===13||vtf.format===20?THREE.RGBA_S3TC_DXT1_Format:vtf.format===14?THREE.RGBA_S3TC_DXT3_Format:THREE.RGBA_S3TC_DXT5_Format:THREE.RGBAFormat;
         const texture=this.context.own(new THREE.CompressedTexture([],vtf.width,vtf.height));texture.copy(original);
         (texture as THREE.Texture).format=format;texture.colorSpace=vtf.format===5?THREE.NoColorSpace:colorSpace;
-        texture.mipmaps=compressed?vtf.levels:vtf.levels.map(level=>decodeSourceMip(level,vtf.format));
-        // Retain the original decoded image for lossless PNG/GLB export. Three's
-        // compressed upload path reads width/height here and pixel data from mipmaps.
+        const nativeImage=definition?.extensions?.M0CLIP_texture_vtf&&original instanceof THREE.DataTexture?original.image as {data:Uint8Array}:null;
+        texture.mipmaps=compressed?vtf.levels:vtf.levels.map((level,mip)=>nativeImage&&mip===0
+          ?{width:level.width,height:level.height,data:nativeImage.data}:decodeSourceMip(level,vtf.format));
+        // Keep exact export pixels, decoded only on demand for native-only assets.
+        // Compressed upload reads width/height here and pixel data from mipmaps.
         texture.image=original.image;texture.flipY=false;texture.generateMipmaps=false;
         texture.wrapS=vtf.flags&4?THREE.ClampToEdgeWrapping:THREE.RepeatWrapping;
         texture.wrapT=vtf.flags&8?THREE.ClampToEdgeWrapping:THREE.RepeatWrapping;

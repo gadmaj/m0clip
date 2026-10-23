@@ -6,6 +6,7 @@ positions, winding, UVs and lightmap packing; only restore the shading frame.
 import numpy as np
 from import_source_bsp import displacement, face_points, SURF_HIDE, SCALE
 from source_models import qangle
+from source_triangulation import native_face_triangles
 
 
 def unit(v):
@@ -26,6 +27,7 @@ def displacement_normals(grid):
 
 class SurfaceFrames:
     def __init__(self, bsp, model):
+        self.bsp = bsp
         self.model = model
         self.normals = np.frombuffer(bsp.lump(30), '<f4').reshape(-1, 3)
         self.indices = np.frombuffer(bsp.lump(31), '<u2')
@@ -101,7 +103,7 @@ def apply_world_frames(glb, frames, manifest):
     return dict(faces=faces, vertices=vertices, changed_normals=smoothed)
 
 
-def brush_faces(model, entity):
+def brush_faces(model, entity, bsp=None):
     brush = model['models'][int(entity['model'][1:])]
     for fi in range(brush['firstface'], brush['firstface']+brush['numfaces']):
         face = model['faces'][fi]
@@ -110,7 +112,7 @@ def brush_faces(model, entity):
         if info['texdata'] < 0 or info['flags'] & SURF_HIDE: continue
         if model['texname'](info['texdata']).lower().startswith('tools/'): continue
         if face['disp'] >= 0: raise ValueError('Unexpected displacement in a Ghost brush entity')
-        if face['numedges'] >= 3: yield fi
+        if face['numedges'] >= 3 and (bsp is None or native_face_triangles(bsp, face) is not None): yield fi
 
 
 def apply_brush_frames(glb, frames, manifest):
@@ -118,7 +120,7 @@ def apply_brush_frames(glb, frames, manifest):
     nodes = [n for n in glb.json['nodes'] if n.get('extras', {}).get('sourceBrush')]
     entities = [e for e in frames.model['ents'] if e.get('model', '').startswith('*')
                 and e['classname'] in ('func_illusionary', 'func_brush', 'func_wall', 'func_detail')]
-    entities = [e for e in entities if list(brush_faces(frames.model, e))]
+    entities = [e for e in entities if list(brush_faces(frames.model, e, frames.bsp))]
     if len(nodes) != len(entities): raise ValueError('Brush entity inventory differs from Source')
     count = vertices = changed = 0
     for node, entity in zip(nodes, entities):
@@ -126,7 +128,7 @@ def apply_brush_frames(glb, frames, manifest):
             raise ValueError('Brush entity order differs from Source')
         r = qangle([float(v) for v in entity.get('angles', '0 0 0').split()])
         pos = np.array([float(v) for v in entity.get('origin', '0 0 0').split()])
-        primitives = glb.json['meshes'][node['mesh']]['primitives']; faces = list(brush_faces(frames.model, entity))
+        primitives = glb.json['meshes'][node['mesh']]['primitives']; faces = list(brush_faces(frames.model, entity, frames.bsp))
         if len(primitives) != len(faces): raise ValueError('Brush primitive count differs from Source faces')
         for primitive, fi in zip(primitives, faces):
             points, normal, tangent = frames.frame(fi, rotation @ r)

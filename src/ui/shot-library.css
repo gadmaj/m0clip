@@ -1,0 +1,70 @@
+.shot-library-dialog {
+  box-sizing: border-box; width: min(960px, calc(100vw - 24px));
+  height: min(760px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px);
+  margin: auto; padding: 12px; overflow: hidden;
+  font: 13px/1.5 var(--sans); color: var(--text); background: var(--panel);
+  border: 1px solid var(--line-hi); border-radius: var(--r);
+  box-shadow: 2px 2px 0 var(--shadow), inset 1px 1px 0 var(--bevel);
+}
+.shot-library-dialog[open] { display: flex; flex-direction: column; gap: 8px; }
+.shot-library-dialog::backdrop { background: var(--scrim); }
+.shot-library-dialog header, .shot-library-dialog footer {
+  display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px;
+}
+.shot-library-dialog header { padding-bottom: 8px; border-bottom: 1px solid var(--line-hi); }
+.shot-library-dialog footer { padding-top: 8px; border-top: 1px solid var(--line-hi); }
+.shot-library-dialog h2 { margin: 0; font-size: 13px; font-weight: 700; }
+.shot-library-dialog button, .shot-library-dialog input { min-height: 44px; font: inherit; color: inherit; }
+.shot-library-dialog .btn { padding: 6px 12px; white-space: nowrap; }
+.shot-library-dialog .btn.danger { color: var(--danger); }
+.shot-library-dialog .btn:disabled { opacity: .6; cursor: not-allowed; }
+.shot-library-dialog .btn.danger:hover:not(:disabled) { background: var(--danger-dim); }
+.shot-library-search {
+  box-sizing: border-box; flex: 0 0 auto; min-width: 0; width: 100%; margin: 0; padding: 8px;
+  background: var(--bg); border: 1px solid var(--line-hi); border-radius: var(--r);
+}
+.shot-library-search::placeholder { color: var(--text-2); opacity: 1; }
+.shot-library-grid {
+  display: grid; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); grid-auto-rows: max-content;
+  align-content: start; gap: 8px;
+}
+.shot-library-card {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 8px;
+  background: var(--raised); border: 1px solid var(--line-hi); border-radius: var(--r);
+}
+.shot-library-card h3 { margin: 0; font-size: 13px; font-weight: 700; overflow-wrap: anywhere; }
+.shot-library-card p { margin: 0; overflow-wrap: anywhere; }
+.shot-library-scene, .shot-library-details, .shot-library-dialog footer small { color: var(--text-2); }
+.shot-library-details { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; font-size: 11px; }
+.shot-library-preview {
+  display: flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 100%; aspect-ratio: 16 / 10;
+  overflow: hidden; background: var(--bg); color: var(--text-2); border-radius: var(--r); font-size: 12px;
+}
+.shot-library-preview img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.shot-library-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+.shot-library-card .shot-library-actions .btn { flex: 1 0 auto; padding: 6px 8px; }
+.shot-library-status, .shot-library-blocked {
+  flex: 0 0 auto; margin: 0; max-height: 25dvh; overflow-y: auto; overflow-wrap: anywhere; color: var(--text-2);
+}
+.shot-library-status[data-error="true"], .shot-library-blocked { color: var(--danger); }
+.shot-library-confirm {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px; background: var(--raised);
+  border: 1px solid var(--line-hi); border-radius: var(--r); overflow-wrap: anywhere;
+}
+.shot-library-confirm p { margin: 0 0 16px; }
+.shot-library-photo { display: flex; flex: 1 1 auto; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
+.shot-library-photo > .shot-library-actions { margin-top: 0; }
+.shot-library-photo-frame {
+  display: flex; flex: 1 1 auto; align-items: center; justify-content: center; min-width: 0; min-height: 0;
+  overflow: hidden; background: var(--bg); border: 1px solid var(--line-hi);
+}
+.shot-library-photo-frame img { display: block; min-width: 0; max-width: 100%; min-height: 0; max-height: 100%; object-fit: contain; }
+.shot-library-photo-caption { flex: 0 0 auto; margin: 0; max-height: 20dvh; overflow-y: auto; overflow-wrap: anywhere; color: var(--text-2); }
+.shot-library-dialog [hidden] { display: none !important; }
+.shot-library-dialog :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 550px) {
+  .shot-library-dialog { padding: 10px; }
+  .shot-library-grid { grid-template-columns: minmax(0, 1fr); }
+  .shot-library-card { padding: 6px; }
+}

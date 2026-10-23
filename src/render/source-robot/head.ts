@@ -3,6 +3,8 @@
  * the connected torso/legs or arms into an articulated R1 skin. */
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { readPartPaint } from '../paint-material';
+import type { PartPaint } from '../scene';
 
 export const GHOST_HEAD_URL = '/assets/source-robots/neotokyo-girlbot/girlbot_head.glb';
 export const R1_HEAD_PART = 'head_yaw_link';
@@ -37,8 +39,14 @@ export function fitGhostHead(
 }
 
 export interface SourceHeadOverride {
+  /** Representative authored defaults, independent of live paint and highlights. */
+  nativePaintFor(): PartPaint | undefined;
   /** Restores the exact original geometry/material; call before rebuilding a robot. */
   restore(): void;
+  /** Caller owns the cloned geometry/material; native maps remain asset-owned. */
+  preview(patchMaterial?: (material: THREE.MeshPhysicalMaterial) => void): THREE.Mesh;
+  /** Stock geometry saved before the native replacement; borrowed, not owned. */
+  readonly originalGeometry: THREE.BufferGeometry;
 }
 
 export interface SourceHeadAsset {
@@ -71,18 +79,30 @@ export async function loadGhostHead(url = GHOST_HEAD_URL): Promise<SourceHeadAss
       // Keep the native maps while supporting the existing robot paint/clearcoat controls.
       THREE.MeshStandardMaterial.prototype.copy.call(material, source.material as THREE.MeshStandardMaterial);
       Object.assign(material,{defines:{STANDARD:'',PHYSICAL:''}});
+      const previewMaterial = material.clone();
       patchMaterial?.(material);
       target.geometry = geometry; target.material = material;
       const previous = target.userData.sourceRobotPart;
       target.userData.sourceRobotPart = 'models/nt/props_tech/girlbot_head.mdl';
       let restored = false;
-      const override: SourceHeadOverride = { restore() {
+      const override: SourceHeadOverride = { originalGeometry,
+        nativePaintFor() {
+          const material = source.material;
+          return material instanceof THREE.MeshStandardMaterial || material instanceof THREE.MeshBasicMaterial
+            ? readPartPaint(material) : undefined;
+        },
+        preview(patch) {
+          const copy = previewMaterial.clone();
+          patch?.(copy);
+          return new THREE.Mesh(geometry.clone(), copy);
+        },
+        restore() {
         if (restored) return;
         restored = true;
         target.geometry = originalGeometry; target.material = originalMaterial;
         if (previous === undefined) delete target.userData.sourceRobotPart;
         else target.userData.sourceRobotPart = previous;
-        geometry.dispose(); material.dispose(); active.delete(override);
+        geometry.dispose(); material.dispose(); previewMaterial.dispose(); active.delete(override);
       } };
       active.add(override);
       return override;

@@ -2,7 +2,7 @@
  * networks (and clip / data files, when the family needs them). Every pack is a
  * firmware-faithful G1 / R1 / Go2 policy: R1 → r1_fw.ts, Go2 → go2_fw.ts, G1 →
  * the g1*.ts drivers picked by `g1.obs_scheme`. */
-import { OnnxPolicy, OnnxSession } from "../policy";
+import { OnnxPolicy, OnnxSession, withPolicySessions } from "../policy";
 import type { EvalConfig, RobotSpec } from "../types";
 import type { Engine } from "../../sim/engine";
 import { assetUrl, loadTraj } from "../assets";
@@ -20,6 +20,11 @@ import { makeGo2FwDriver } from "./go2_fw";
 export type { BaseDriver };
 
 export async function makeDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine):
+    Promise<BaseDriver> {
+  return withPolicySessions(() => createDriver(cfg, spec, eng));
+}
+
+async function createDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine):
     Promise<BaseDriver> {
   const fam = cfg.family;
   const policyUrl = assetUrl(cfg.policy.path).replace(/\.mnn$/, ".onnx");

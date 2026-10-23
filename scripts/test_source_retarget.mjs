@@ -1,7 +1,7 @@
 /** Native bind pose, geom/body-frame conversion, rigid motion and recording invariants. */
 import assert from 'node:assert/strict';import fs from 'node:fs/promises';import{build}from'esbuild';
-const result=await build({stdin:{contents:"export * as THREE from 'three';export {DogRetarget} from './src/render/source-robot/retarget';",resolveDir:process.cwd()},bundle:true,format:'esm',platform:'node',write:false});
-const{THREE,DogRetarget}=await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
+const result=await build({stdin:{contents:"export * as THREE from 'three';export {DogRetarget} from './src/render/source-robot/retarget';export {GeometryTrack} from './src/core/geometry';",resolveDir:process.cwd()},bundle:true,format:'esm',platform:'node',write:false});
+const{THREE,DogRetarget,GeometryTrack}=await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
 const native=JSON.parse(await fs.readFile('public/assets/source-robots/halflife2-dog/analysis.json','utf8'));
 const names=['world','pelvis','torso_link','waist_roll_link','left_hip_yaw_link','left_knee_link','left_ankle_roll_link','right_hip_yaw_link','right_knee_link','right_ankle_roll_link','left_shoulder_yaw_link','left_elbow_link','left_wrist_roll_link','right_shoulder_yaw_link','right_elbow_link','right_wrist_roll_link','head_pitch_link','head_yaw_link'];
 const pos=new Float64Array(names.length*3),quat=new Float64Array(names.length*4),parent=new Int32Array(names.length),gpos=new Float64Array((names.length-1)*3),gquat=new Float64Array((names.length-1)*4);
@@ -18,7 +18,7 @@ for(let i=0;i<original.length;i++)assert.ok(original[i].angleTo(pose.bones[i])<1
 assert.ok(pose.position.distanceTo(root.clone().applyMatrix4(move))<1e-8);assert.ok(pose.quaternion.angleTo(new THREE.Quaternion().setFromRotationMatrix(move).multiply(orientation))<1e-6);
 const xpos=new Float32Array(model.ngeom*3),xmat=new Float32Array(model.ngeom*9),recorded=new Float32Array(model.ngeom*7);
 world.forEach((m,g)=>{const e=m.elements;new THREE.Vector3().setFromMatrixPosition(m).toArray(xpos,g*3);xmat.set([e[0],e[4],e[8],e[1],e[5],e[9],e[2],e[6],e[10]],g*9);const p=new THREE.Vector3().setFromMatrixPosition(m),q=new THREE.Quaternion().setFromRotationMatrix(m);recorded.set([p.x,p.y,p.z,q.w,q.x,q.y,q.z],g*7)});
-const live=rig.createPose(),replay=rig.createPose();rig.fromFrame(xpos,xmat,live);rig.fromRecorded(recorded,0,replay);assert.ok(live.position.distanceTo(replay.position)<1e-7);for(let i=0;i<original.length;i++)assert.ok(live.bones[i].angleTo(replay.bones[i])<1e-6,`replay ${i}`);
+const live=rig.createPose(),replay=rig.createPose();rig.fromFrame(xpos,xmat,live);rig.fromRecorded(GeometryTrack.dense(model.ngeom,1,recorded),0,replay);assert.ok(live.position.distanceTo(replay.position)<1e-7);for(let i=0;i<original.length;i++)assert.ok(live.bones[i].angleTo(replay.bones[i])<1e-6,`replay ${i}`);
 const elbow=names.indexOf('left_elbow_link'),left=model.bodyid.indexOf(elbow),before=rig.createPose();rig.evaluate((g,m)=>m.copy(world[g]),before);
 rig.evaluate((g,m)=>{m.copy(world[g]);if(g===left)m.premultiply(new THREE.Matrix4().makeRotationX(.6))},pose);
 assert.ok(pose.bones[24].angleTo(before.bones[24])>.59);assert.ok(pose.bones[38].angleTo(before.bones[38])<1e-6);

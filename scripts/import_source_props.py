@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Ghost-only pilot: restore Source prop models and visible brush entities.
+"""Restore Source prop models and visible brush entities on NeoTokyo maps.
 
     python scripts/import_source_props.py --map nt_ghost_ctg
 
 Exports props.glb separately from terrain/physics. Physics props are shown at authored placement;
 Source gameplay physics, skeletal animation and particle entities are not simulated.
-No other map is changed. Source formats / lighting follow noclip.website (LICENSE.noclip).
+Only the selected map changes. Source formats / lighting follow noclip.website (LICENSE.noclip).
 """
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from source_models import StudioModel, static_props, entity_props, qangle
 from source_lightmaps import LightmapAtlas
 from source_materials import MaterialExport
 from source_animation import AnimationModel
+from source_triangulation import gltf_face_triangles
 
 
 class PropLighting:
@@ -106,7 +107,7 @@ class GLB:
     """Shared model geometry / textures; per-placement lighting only duplicates color attributes."""
     def __init__(self):
         self.buffer = bytearray()
-        self.json = dict(asset={'version': '2.0', 'generator': 'Ghost Source props pilot'},
+        self.json = dict(asset={'version': '2.0', 'generator': 'Source map assets'},
                          scene=0, scenes=[{'nodes': []}], nodes=[], meshes=[], materials=[], accessors=[],
                          bufferViews=[], buffers=[], images=[], textures=[],
                          samplers=[{'wrapS': 10497, 'wrapT': 10497, 'magFilter': 9729, 'minFilter': 9987}])
@@ -330,7 +331,8 @@ def convert(map_dir: Path, bsp, fs, workers=8):
                 uv = (pts @ vec[:, :3].T + vec[:, 3]) / np.maximum(td['w'][:2], 1)
                 positions = ((pts @ r.T + pos - origin) @ rotation.T) * SCALE
                 normal = rotation @ r @ front_normal(face_points(m, face))
-                tri = np.stack([np.zeros(count - 2, int), np.arange(1, count - 1), np.arange(2, count)], 1)
+                tri = gltf_face_triangles(bsp, face)
+                if tri is None: continue
                 primitives.append(dict(attributes=dict(POSITION=glb.accessor(positions, 'VEC3'),
                     NORMAL=glb.accessor(np.broadcast_to(normal, positions.shape), 'VEC3'),
                     TEXCOORD_0=glb.accessor(uv, 'VEC2'), TEXCOORD_1=glb.accessor(atlas.uv(m, fi, pts), 'VEC2')),
@@ -367,7 +369,8 @@ def convert(map_dir: Path, bsp, fs, workers=8):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--map', choices=['nt_ghost_ctg'], required=True, help='Ghost pilot only; other maps await approval')
+    from import_source_bsp import GAMES
+    parser.add_argument('--map', choices=GAMES['neotokyo'][2], required=True)
     parser.add_argument('--workers', type=int, default=8)
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
