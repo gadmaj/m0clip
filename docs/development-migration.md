@@ -1,6 +1,32 @@
 # Development move to 192.168.20.156
 
-## Current release (2026-10-19)
+## Current operations (2026-10-23)
+
+The canonical site is <https://m0clip.com/>. The old
+<https://gadmaj.org/mowat/> page is now a fixed redirect to that address.
+The named `m0clip-tunnel.service` connects to the existing Caddy origin without
+restarting it. The old Quick Tunnel remains running for old-origin file recovery;
+its automatic link publisher has been retired. See [hosting](hosting.md) and
+[entry-point operations](mowat-hosting.md) for the actual cutover evidence.
+
+OMP is the active assistant. The verified tmux server and OMP process both belong
+to `m0clip-omp.scope` under the persistent user manager, with lingering enabled
+and no attached tmux clients. They are not children of the SSH terminal. Closing
+SSH does not stop this run; exit/kill, VM shutdown, reboot or OOM can still stop it.
+Reattach with `tmux attach -t m0clip-omp`. Inspect the current process cgroup rather
+than assuming the future launcher's `.service` is the active unit.
+
+The VM exposes 12 vCPUs and 30.6 GiB RAM. `m0clip-vitals.service` samples guest
+CPU steal, quota throttling, pressure, paging and free disk every ten seconds,
+with bounded logs. Host-side Proxmox reservations and thermal limits remain
+outside guest visibility.
+
+Development checkpoint `9201ebc` was pushed to `gadmaj/m0clip` `master`.
+The user authorizes further substantial-progress commits/pushes without another
+confirmation. Browser verification and production promotion are separate gates;
+a pushed development checkpoint is not a claim that its private candidate is live.
+
+## Release record (2026-10-19; historical)
 
 The requested release is live at <https://gadmaj.org/mowat>. The repository is
 <https://github.com/gadmaj/m0clip>, with the same GitHub repository ID and

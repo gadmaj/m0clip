@@ -24,18 +24,19 @@ Cloudflare nameservers are `alaric.ns.cloudflare.com` and
 privately and replaced with the proxied tunnel CNAME; both apex MX records
 were preserved exactly. No unrelated DNS records were changed.
 
-Real public-DNS HTTPS checks returned the exact current cycle-16 HTML,
-COOP/COEP headers, and HTTP 206 with `PK\\x03\\x04` for policy bytes 0–3 of
-214854099. Public resolvers return `104.21.54.122` and `172.67.138.134`.
-The node's router resolver (`192.168.20.1`) still returned NOERROR with no A
-answer after a guest-cache flush. A live public-DNS DoH request verified the
-hostname with normal TLS validation; no application or publisher API was patched.
-This transport proof is not yet the dedicated new-domain Chrome/capture proof.
+Initial public-DNS HTTPS checks returned the exact cycle-16 HTML, COOP/COEP,
+and HTTP 206 with ZIP bytes `50 4b 03 04` for range 0–3/214854099.
+Public resolvers return `104.21.54.122` and `172.67.138.134`. The node's router
+(`192.168.20.1`) still returns the old Porkbun nameservers with an 86400-second
+TTL and no A answer; a guest-cache flush cannot clear that upstream delegation.
+A live public-DNS DoH request verified the hostname with normal TLS validation.
+Native Chrome used an explicit hostname pin, not evidence of normal VM DNS.
 
 The canonical redirect was pushed to `gadmaj/website` `exp` in
 `232647aac977e5216d8394bf7d88380dcbbf648a`, changing only `mowat/index.html`
-and `mowat/current.json`. Pages deployment and native redirect checks are
-still pending. See [entry-point operations](mowat-hosting.md).
+and `mowat/current.json`. Pages deployed the exact fixed landing; native Chrome
+verified query/hash forwarding, history replacement and the JavaScript-disabled
+fallback. See [entry-point operations](mowat-hosting.md).
 
 The node must remain online. Browser storage is origin-local: old-origin
 policies, preferences, saved views, takes, PNGs and recovery checkpoints do not
@@ -43,9 +44,59 @@ automatically transfer to `m0clip.com`. Open the old address and download
 `.take.zip` files and PNGs for backup. A permanent hostname or storage permission
 does not migrate them.
 
-## Published cycle 16: native-backed Ghost
+## Published cycle 17: Source facing and device storage
 
-The current immutable release is
+The current immutable runtime is
+`~/.local/state/m0clip-releases/source-storage-20261023-r1/`, with matching
+`-source` snapshot. HTML SHA256:
+`d843711edc1fdd2dd1db3954ce77eab4f94189a0a26c9137d7df2cc4f9de04fa`.
+Shell `main-Dl4P2RE8.js` loads `main-Dz6_X5lc.js`; its CSS is
+`main-C7YrFdK3.css`, exporter `GLTFExporter-tS-Ouomz.js`.
+
+Four new hashed assets preceded HTML last. All 415 canonical data assets match
+both the previous release and the live origin exactly; the nine current code
+assets also match through actual canonical HTTPS. Old client assets remain.
+Host, Quick Tunnel and named-tunnel PIDs/invocation IDs did not change. No
+database/schema migration occurred. Rollback HTML is retained in
+`~/.local/state/m0clip-qa/2026-10-23-source-storage-candidate/promotion-rollback/`.
+
+GoldSrc's native clockwise fan/strip commands now become Three's counter-clockwise
+front faces. Authored normals, positions, UVs, rigging and material flags remain
+unchanged; no DoubleSide or lighting workaround. Native Picardia and upstream
+Barney pass exact baseline comparisons with 16376/16378 and 1176/1179 outward
+faces. The few authored atypical faces stay intact. PSX Skeleton remains exact,
+including its authored DoubleSide material. The CPU regression fails against the
+old decoder and passes against the corrected one.
+
+Returning users get an optional storage offer only after scene entry, not during
+selection/loading/Pong. First entry, dismissal, existing persistence and blocked
+local marker storage do not cause repeated offers. Help retains a manual action.
+Native Chrome exercised actual denial and grant without API patches; all ten
+inventoried stores retained exact records and binary hashes. At 320/390 widths,
+including 480px height, actions remain reachable by native scrolling without
+overlapping the dock. Protection is origin-local and does not grant folder access.
+
+Private native acceptance includes real motion, recording, Recorded/Shot playback,
+part finish/reset, PNG storage/download/reload and an animated portable GLB with
+corrected facing. Its original 1038.4-second pointer film fully decodes with
+5192 native-timestamp packets and observed recorder close. Five original helper
+failures, including the recovered original PNG observer timeout, remain retained;
+two cancelled Source index requests have successful replacements.
+
+The separate actual canonical Chrome smoke passes secure TLS, isolation and exact
+code identities, a fresh origin, outward Picardia, unchanged PSX, a 95-frame take,
+Recorded/Shot playback, return-only consent and genuine persistence grant. Its
+1075032-byte PNG survives reload/grant and native redownload byte-exact; the take
+reopens. No app, HTTP/network or helper errors were observed in this thin public
+scope. Its original 256.6-second/1283-packet pointer film fully decodes and has
+actual recorder-close proof. Private Barney/GLB/narrow/denial cases were carried
+forward, not repeated. This is not a new Ghost/all-model benchmark or old-origin
+data-migration claim. Evidence roots end in `2026-10-23-source-storage-candidate`
+and `2026-10-23-source-storage-public` under `~/.local/state/m0clip-qa/`.
+
+## Published cycle 16: native-backed Ghost (previous)
+
+The previous immutable release is
 `~/.local/state/m0clip-releases/models-native-textures-20261022-r1/`, with matching
 `-source` snapshot. Ghost selects `visual-native.glb` and `props-native.glb` through
 the optional `native_textures` manifest field. The required `M0CLIP_texture_vtf`

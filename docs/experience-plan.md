@@ -1,26 +1,23 @@
 # m0clip experience plan
 
-Status: the user has activated a ten-day improvement objective. This is the working
-backlog, not a claim that every candidate feature is implemented. Domain cutover
-remains credential-gated; reachable local improvements proceed in small verified
-cycles. Cycles 1–16 are published at <https://gadmaj.org/mowat>. The current release
-uses the `main-CQHm4S1j.js` shell and loads `main-B23AJOz9.js`
-after Load scene. Selected map and policy work overlap physics preparation;
-loading still reports known payload and current-download ETA rather than an
-invented final total. The quiet Source-style workspace, delayed loading-bar Pong,
-native actor-material correction and non-destructive post tools are published.
-Twelve deliverable requested source entries now provide 96 pictured choices and
-90 authored bodies, alongside Picardia search and durable browser-local Shots.
-Cycle 12 passed scoped public native motion/capture/reopen/playback checks.
-Remaining roster entries retain individual permission or original-file blockers.
-Cycle 13's public core paths pass with two retained workflow failures. Cycle 14
-publishes the pending-save and map-dialog fixes after private native qualification;
-its separate bounded public native verification and independent parent review pass.
-Cycle 15 publishes lossless explicit native mesh entities after new-worker/private
-compatibility qualification; separate bounded public native acceptance and parent review pass.
-Cycle 16 removes duplicate Ghost texture-preview payload without reducing native
-pixels or mips. Private actual capture/export/Blender checks and all 424 public
-HTTP entity checks and separate public native storage/capture acceptance pass.
+Status: the ten-day improvement objective remains active. Cycles 1–17 are
+published at **https://m0clip.com/**; `gadmaj.org/mowat` is now a fixed redirect.
+The current shell is `main-Dl4P2RE8.js`, with `main-Dz6_X5lc.js` loaded only
+after Load scene. Selection, known-payload progress, delayed loading-bar Pong,
+Source-style controls, native lighting and non-destructive post tools remain.
+Twelve deliverable requested source entries provide 96 pictured choices and
+90 authored bodies, alongside client-side Picardia/pmodels search and local Shots.
+Remaining roster entries retain their individual permission/original-file blockers.
+
+Cycle 17 corrects native GoldSrc winding without changing PSX or authored
+attributes, and adds return-only optional persistent browser storage with a Help
+action. Private and separate canonical native capture/storage checks pass.
+The named Cloudflare tunnel and fixed legacy redirect are live; Porkbun remains
+the registrar and the user skipped further Porkbun CLI setup. Router DNS still
+has old Porkbun delegation, so normal VM DNS is not claimed. Public DNS, TLS and
+actual hostname-pinned Chrome are qualified separately. Browser data does not
+automatically migrate between hostnames. Substantial progress is committed/pushed
+to `gadmaj/m0clip` without waiting for the full multi-day objective.
 
 ## Published cycle 1
 
@@ -1580,8 +1577,58 @@ time-sync proof. The auxiliary favicon404 belongs to static pre-app JSON
 navigation; it and ReadPixels warnings remain explicit. No borrowed private
 full-map/Blender, all-model or blanket zero-error claim.
 
-The ten-day objective remains active. Domain credentials and the remaining
-original-model permissions/files are still external prerequisites.
+The ten-day objective remains active. Cycle 17 below resolves the domain-access
+prerequisite; remaining original-model permissions/files still block those intakes.
+
+## Published cycle 17: corrected Source characters and device storage
+
+Native GoldSrc MDL uses clockwise faces. The importer now reverses fan and both
+strip parities for Three's front-face convention, preserving authored positions,
+normals, UVs, bone transforms and material flags. The actual Picardia CPU regression
+fails on public16 source and passes on the fix. Native Chrome compares Picardia
+and upstream Barney against retained baseline geometry; all attributes and
+unoriented topology remain exact, with only winding corrected. PSX is untouched.
+
+Returning users can request persistent browser storage after entering a scene.
+The first entry and unfinished loading never display the offer. Dismissal is
+remembered; Help offers manual retry/status. Actual Chrome denial leaves saving
+best-effort; actual grant reports `persisted=true`. No storage API was mocked.
+Saved take/PNG/policy records remain byte-exact across requests and reloads.
+This does not grant Downloads-folder access, create backups, or migrate origins.
+
+Private native QA covers visible physics, 124 recording frames, advancing
+Recorded/Shot, finish/reset, original PNG retention and a corrected animated GLB.
+All ten inventoried stores remain exact. At 320/390 widths and 480px height,
+native wheel reaches both 44px actions with no dock overlap or horizontal overflow.
+The short-height prompt still needs scrolling; reducing its text and keeping
+actions visible without scrolling is a concrete next UI critique.
+
+Only four hashed assets and HTML changed in production; all 415 data assets match
+the previous release, with no schema or service restart. The nine code assets
+match through canonical HTTPS. Separate canonical native QA records 95 real
+frames with advancing playback, original PNG save/reload/redownload, return-only
+consent, genuine grant and saved-Shot reopening; PSX remains healthy.
+
+Original private/public pointer films (1038.4/256.6 seconds) fully decode with
+native PTS/DTS and actual recorder-close acknowledgment. Parent checked original
+movie/PNG/GLB hashes and viewed real frames. Private first-helper failures remain
+preserved, including a successful native PNG recovered after its observer timed
+out; public thin smoke has no app/HTTP/network/helper failures. This does not
+repeat private GLB/Barney/denial/narrow coverage or claim another full Ghost audit.
+
+Cloudflare is authorized; m0clip.com routes through the persistent named tunnel.
+The two legacy redirect files were deployed with query/hash and no-JavaScript
+fallback checked in native Chrome. Both mail records were preserved. Public DNS
+and TLS pass, while router DNS still returns old Porkbun nameservers. Chrome's
+explicit hostname pin is documented rather than presented as normal VM DNS.
+The old Quick Tunnel remains for saved-file recovery, not as the main address.
+
+The development checkpoint `9201ebc` is on GitHub. The README now describes actual
+usage, limits, build inputs and upstream developers instead of release-audit bulk.
+OMP runs in its detached user-manager scope and survives closing SSH. The bounded
+VM monitor's first 513 samples observed at most 0.059% steal, at least 8.553 GiB
+available RAM, no quota-throttle/OOM intervals and no swap I/O; host thermal limits
+remain outside guest visibility.
 
 ## Baseline findings and remaining constraints
 
@@ -1606,8 +1653,8 @@ original-model permissions/files are still external prerequisites.
   A separate preview must use its own camera/rectangle while keeping the same
   part identities, paint and module state.
 - The pre-library baseline kept recording state in RAM; stopping another take
-  replaced `App.take`. The private Shots candidate now persists independent takes,
-  PNGs, camera/range/appearance edits and committed interrupted-recording prefixes.
+  replaced `App.take`. Published Shots now retain independent takes, PNGs,
+  camera/range/appearance edits and committed interrupted-recording prefixes.
 - Existing `.take.zip` files do not embed map/model/policy assets. New physical
   topology and model revisions need compatibility handling, not name matching.
 - `docs/source-robot-models.md` records native rig limits. Dog already has supported
@@ -1623,7 +1670,7 @@ original-model permissions/files are still external prerequisites.
   A future identity refinement should distinguish those roles without introducing
   another appearance state or losing deliberate live/review preferences.
 
-## Verification from this planning pass
+## Initial planning-pass verification (historical)
 
 GitHub returned `gadmaj/m0clip` with admin access after the rename, and local origin
 was updated. Porkbun CLI 1.0.1 launches, but `porkbun ping` reports missing keys.
@@ -1634,4 +1681,4 @@ showed the intro, and accepted Escape to dismiss it. The first Ghost readiness w
 failed while preparing materials/policy; a later observation showed Ghost and R1
 rendered, both loading overlays cleared and the Walk and run policy running.
 This is one public-scene smoke check, not an all-map regression or timing benchmark.
-`m0clip.com` still redirects to Porkbun Easy Links; cutover needs provider access.
+At that planning pass, `m0clip.com` still used Porkbun Easy Links. Cycle 17 above supersedes that domain blocker.

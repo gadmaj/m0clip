@@ -1,80 +1,83 @@
-# Stable playpen entry point
+# m0clip entry points
 
-Public address: <https://gadmaj.org/mowat>
+Canonical application: **https://m0clip.com/**
+Legacy entry: **https://gadmaj.org/mowat/**
 
-The application repository is [gadmaj/m0clip](https://github.com/gadmaj/m0clip)
-and its workspace is `/home/g/m0clip-ts`. This entry point belongs to the separate
-website repository, so its `/mowat` URL remains unchanged. The redirect's display
-name was updated in `exp` commit `a16d2598a0410e85729508e5c8bf23597eefb62e`.
-The application was released with an in-place Caddy reload, retaining the active
-tunnel address. Public Chromium and HTTP checks passed after the rename.
+The legacy page is a fixed redirect to m0clip.com. It preserves the incoming
+query and fragment with `URL` setters and `location.replace`; query fields cannot
+choose another destination. Without JavaScript, the page has a visible absolute
+**Open m0clip.com** link. GitHub Pages serves static HTML, so this is not an HTTP
+301. The app itself defaults to Ghost when no map is specified.
 
-The website is gadmaj/website on GitHub. Pages currently serves the exp branch.
-Its node checkout is /home/g/website. The initial page commit is
-3ad69a100002fd5f1aa0ddfd2b7ccffa3546fbd5.
+## Hosting
 
-## How the address stays current
+`m0clip-tunnel.service` runs the named Cloudflare tunnel `m0clip` to the existing
+Caddy origin on `127.0.0.1:4173`. Both run under the lingering user manager. The VM
+must remain online. Configuration is in `deploy/development/`; credentials stay
+under `~/.cloudflared/`, not in Git.
 
-The redirect fetches the published
-[current.json](https://gadmaj.org/mowat/current.json)
-with a unique query string and browser caching disabled. The repository is private,
-so visitors read this public Pages copy rather than authenticated raw GitHub files.
-It accepts only HTTPS trycloudflare.com destinations, preserves incoming query
-parameters and URL fragments, and defaults to Ghost.
+The old `unitree-public.service` Quick Tunnel remains running for old-origin
+saved-file recovery. Its address is no longer the redirect destination. Avoid
+restarting it: a new Quick Tunnel address is a different browser-storage origin.
+Saved takes, PNGs, policies and preferences do not move to m0clip.com by changing
+DNS. Open the old address, download take ZIPs/PNGs and reopen takes on the new one.
 
-On the node, unitree-mowat-link.timer checks every 30 seconds and after reboot.
-Its oneshot service runs deploy/development/publish-mowat-link.py. This reads only
-the running public tunnel's invocation, verifies that the public URL serves the
-same HTML as local Caddy, and confirms the tunnel did not restart during that check.
-It publishes only mowat/current.json to exp through an isolated bare repository,
-~/.local/share/unitree-dev/website-publisher.git. Normal pushes are retried if a
-concurrent website edit arrives. Other website paths are preserved.
+The automatic `unitree-mowat-link.timer` and its oneshot service are retired.
+The timer was disabled and stopped after the fixed landing deployed. Their
+installed templates were archived privately; the old polling templates and
+autostart references were removed from the project. The hosting, recovery tunnel
+and vitals monitor were left running.
 
-Successful publication is recorded in
-~/.local/state/unitree-mowat-link/published.json. An unchanged invocation makes
-no GitHub request or commit. New addresses are normally committed within one polling interval after becoming
-healthy. GitHub Pages then deploys the new manifest, usually within another minute
-or two. Cold tunnels and cache propagation can add time. The previous destination
-can remain visible during this deployment interval.
+## Publishing the landing
 
-The node must be online to serve MoWAT. The stable entry page and last published
-address remain available on GitHub when the node is offline.
+The landing belongs to the separate private `gadmaj/website` repository. Pages
+serves its `exp` branch. The local `/home/g/website` checkout can be stale and is
+not overwritten by the publisher.
 
-## Credentials and operations
+The exact source files are:
 
-A separate key, ~/.ssh/id_ed25519_unitree_website, has write access only to
-gadmaj/website. The private half stays on the node. The broader GitHub login was
-not copied. GitHub deploy-key ID 166904112 is titled
-"MoWAT automatic live link (gdev-kubu)". GitHub's published Ed25519 host key is
-pinned in ~/.ssh/unitree-github-known_hosts.
+- `deploy/development/mowat/index.html`
+- `deploy/development/mowat/current.json`
 
-On the node:
+`current.json` keeps the canonical address for older bookmarks/tools; the new
+landing does not fetch it. Preview or publish with:
 
-- Check the timer: systemctl --user status unitree-mowat-link.timer
-- Read updates: journalctl --user -u unitree-mowat-link.service -n 20
-- Check without publishing: python3 deploy/development/publish-mowat-link.py --dry-run
-- Publish now: systemctl --user start unitree-mowat-link.service
+```sh
+python3 deploy/development/publish-mowat-link.py --dry-run
+python3 deploy/development/publish-mowat-link.py --publish
+```
 
-User lingering keeps hosting and the timer independent of SSH, desktop and Codex
-sessions. deploy/development/start-services.sh installs the service templates.
-If Pages moves branches, update the publisher's BRANCH to match the Pages source. If the deploy key is revoked, replace the repository-specific key.
+Default/`--dry-run` lists staged hashes without network requests or publication.
+`--publish` first requires the canonical HTTPS HTML to match local Caddy. It then
+uses a temporary Git index and the latest remote tree, changing only the two
+mowat files. Normal push retries preserve concurrent unrelated website edits.
+It never resets the website checkout or force-pushes the branch.
 
-Git checks cover changing only the manifest, skipping unchanged URLs and preserving
-concurrent edits. Chrome checks cover fresh manifest lookup, query/fragment forwarding, unavailable
-manifests and invalid destinations. This entry point uses the existing
-app release and Quick Tunnel; it does not add an uptime guarantee.
+The existing website-only deploy key stays on the node at
+`~/.ssh/id_ed25519_unitree_website`. Host verification uses
+`~/.ssh/unitree-github-known_hosts`. The isolated publishing repository is
+`~/.local/share/unitree-dev/website-publisher.git`.
 
-References:
-[GitHub deploy keys](https://docs.github.com/en/rest/deploy-keys/deploy-keys),
-[Cloudflare Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/).
+## Cutover evidence, 2026-10-23
 
-## Verified on 2026-10-19
+The two files were published in commit
+`232647aac977e5216d8394bf7d88380dcbbf648a`; its immediate parent is
+`975dd70499de1ac343bce06f56e8482aa10ecb0d`. The actual public Pages response then
+contained the new fixed landing. Native Chrome then verified the actual public
+redirect, exact query/hash forwarding, history replacement and JavaScript-disabled
+fallback. The separate canonical application smoke verifies cycle 17 capture,
+saved-file reopening and storage permission; see [hosting status](hosting.md).
 
-A real public-tunnel restart was detected and committed automatically in 34.4
-seconds (commit 51850d7456c350f4cee88c6a2aca06b088563482). GitHub Pages
-successfully deployed the final page in commit
-515d82d4f516196b2503c37260f1572fdb00ce98. Public HTML and JSON matched
-the node, and Chrome followed gadmaj.org/mowat to the new tunnel address.
-The actual tunnel HTML also matched local Caddy. Destination rendering was
-intercepted during the redirect check; this task did not repeat full map-render
-tests or change the app release.
+Canonical TLS, isolation headers and policy ZIP byte ranges passed. The node's
+router still returned old Porkbun nameservers (86400-second TTL) and no A answer,
+while public resolvers returned the correct Cloudflare addresses. A live
+public-DNS DoH request fetched the exact local app HTML with normal TLS
+verification. After that real health proof, the owner used the existing
+`publish_redirect(...)` API to publish the files. Neither app nor publisher was
+patched; native Chrome's hostname pin is an explicit network qualification,
+not a claim that the router cache has updated.
+
+For rollback, retrieve the two mowat blobs from the immediate parent and publish
+them through `publish_redirect(...)`, preserving later unrelated remote edits.
+Do not reset or force-push `exp`. Restoring old polling would also require its
+matching original implementation and an explicit operational decision.

@@ -89,6 +89,10 @@ They are not cloud backups. Clearing site data can delete them, and another
 hostname cannot read them. If you used an older address, open it and download your
 takes and PNGs before moving. Take ZIPs can be reopened with **Open take**.
 
+On a return visit, **Keep files on this device** can ask the browser to protect
+saved site data from automatic cleanup. **Help → Browser storage** shows the
+result and lets you retry. This does not grant access to the Downloads folder.
+
 ## Local development
 
 Node 24 is used on the development machine. Chrome/Chromium is the tested browser.
