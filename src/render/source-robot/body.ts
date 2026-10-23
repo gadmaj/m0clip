@@ -1,15 +1,19 @@
 /** Native Dog skin fitted to R1. The physics model and recorded geom poses stay untouched. */
 import * as THREE from 'three';
+import type { GeometryTrack } from '../../core/geometry';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 import type { RenderModel } from '../../sim/protocol';
 import { DogRetarget, type NativeRig, type RigPose } from './retarget';
+import type { BodyVisual } from '../../characters/catalog';
+import type { CharacterAsset } from '../characters/types';
+import { readPartPaint } from '../paint-material';
+import type { PartPaint } from '../scene';
 
 export const DOG_URL='/assets/source-robots/halflife2-dog/dog.glb';
-export type BodyVisual='stock'|'dog';
 export interface BodyVisualState {choice:BodyVisual;applied:BodyVisual;available:boolean;loading:boolean;error:string|null}
-export interface DogAsset {create(model:RenderModel,paint:(part:string,material:THREE.MeshPhysicalMaterial)=>void):DogBody}
-interface MaterialEntry {part:string;source:THREE.MeshStandardMaterial;material:THREE.MeshPhysicalMaterial}
+export interface DogAsset extends CharacterAsset { create(model: RenderModel, paint: (part: string, material: THREE.MeshPhysicalMaterial) => void): DogBody }
+interface MaterialEntry {part:string;source:THREE.MeshStandardMaterial;material:THREE.MeshPhysicalMaterial;nativeCompile:THREE.Material['onBeforeCompile'];nativeKey:THREE.Material['customProgramCacheKey']}
 interface Detail {texture:THREE.Texture;scale:number;factor:number}
 
 export class DogBody {
@@ -65,7 +69,7 @@ export class DogBody {
             (detail?'#ifdef USE_MAP\n diffuseColor.rgb *= mix(vec3(1.0),2.0*texture2D(nativeRobotDetail,vMapUv*nativeRobotDetailScale).rgb,nativeRobotDetailFactor);\n#endif\n':''));
         };
         material.customProgramCacheKey=()=> `source-robot-native-map-v1-${opaque}-${!!detail}`;
-        this.materials.push({part,source:sourceMaterial,material});
+        this.materials.push({part,source:sourceMaterial,material,nativeCompile:material.onBeforeCompile,nativeKey:material.customProgramCacheKey});
         geometry.addGroup(indices.length,triangles.length,materials.length);indices.push(...triangles);
         materials.push(material);partNames.push(part);
       }
@@ -80,6 +84,10 @@ export class DogBody {
     this.apply(this.pose);
   }
   partNames(){return[...new Set(this.materials.map(m=>m.part))].sort()}
+  nativePaintFor(part: string): PartPaint | undefined {
+    const entry = this.materials.find(entry => entry.part === part);
+    return entry ? readPartPaint(entry.source) : undefined;
+  }
   updateMaterials() {
     for(const {part,source,material}of this.materials) {
       THREE.MeshStandardMaterial.prototype.copy.call(material,source);
@@ -90,6 +98,65 @@ export class DogBody {
     }
   }
   eachMaterial(visit:(material:THREE.Material)=>void){for(const entry of this.materials)visit(entry.material)}
+  /** Bake only the requested real skin triangles; never move or repaint the live rig. */
+  preview(part: string | null, paint: (part:string, material:THREE.MeshPhysicalMaterial)=>void) {
+    const root=new THREE.Group(),skinMatrix=new THREE.Matrix4(),vertex=new THREE.Vector4(),point=new THREE.Vector3();
+    for(const mesh of this.meshes) {
+      const names=mesh.userData.sourcePartNames as string[],source=mesh.geometry;
+      const geometry=new THREE.BufferGeometry(),indices:number[]=[],materials:THREE.MeshPhysicalMaterial[]=[];
+      const liveMaterials=Array.isArray(mesh.material)?mesh.material:[mesh.material];
+      for(const group of source.groups) {
+        const name=names[group.materialIndex??0];if(part&&name!==part)continue;
+        const entry=this.materials.find(entry=>entry.material===liveMaterials[group.materialIndex??0]);
+        if(!entry)continue;
+        const material=new THREE.MeshPhysicalMaterial();
+        THREE.MeshStandardMaterial.prototype.copy.call(material,entry.source);
+        Object.assign(material,{defines:{STANDARD:'',PHYSICAL:''}});
+        paint(name,material);
+        geometry.addGroup(indices.length,group.count,materials.length);
+        material.onBeforeCompile=entry.nativeCompile;material.customProgramCacheKey=entry.nativeKey;
+        for(let i=group.start;i<group.start+group.count;i++)indices.push(source.index!.getX(i));
+        materials.push(material);
+      }
+      if(!materials.length){geometry.dispose();continue;}
+      for(const name in source.attributes) {
+        if(name==='skinIndex'||name==='skinWeight')continue;
+        const attribute=source.getAttribute(name);
+        geometry.setAttribute(name,name==='position'||name==='normal'||name==='tangent'
+          ?new THREE.Float32BufferAttribute(attribute.count*attribute.itemSize,attribute.itemSize):attribute.clone());
+      }
+      const position=source.getAttribute('position'),normal=source.getAttribute('normal'),tangent=source.getAttribute('tangent');
+      const bakedPosition=geometry.getAttribute('position'),bakedNormal=geometry.getAttribute('normal'),bakedTangent=geometry.getAttribute('tangent');
+      const joints=source.getAttribute('skinIndex'),weights=source.getAttribute('skinWeight'),bones=mesh.skeleton.boneMatrices;
+      for(let i=0;i<position.count;i++) {
+        const elements=skinMatrix.elements;elements.fill(0);
+        for(let j=0;j<4;j++) {
+          const weight=weights.getComponent(i,j);if(!weight)continue;
+          const offset=16*joints.getComponent(i,j);
+          for(let k=0;k<16;k++)elements[k]+=weight*bones[offset+k];
+        }
+        // Match skinning_vertex/skinnormal_vertex, not an inverse-transpose or face-normal bake.
+        skinMatrix.premultiply(mesh.bindMatrixInverse).multiply(mesh.bindMatrix);
+        vertex.set(position.getX(i),position.getY(i),position.getZ(i),1).applyMatrix4(skinMatrix);
+        bakedPosition.setXYZ(i,vertex.x,vertex.y,vertex.z);
+        if(normal) {
+          vertex.set(normal.getX(i),normal.getY(i),normal.getZ(i),0).applyMatrix4(skinMatrix);
+          bakedNormal.setXYZ(i,vertex.x,vertex.y,vertex.z);
+        }
+        if(tangent) {
+          vertex.set(tangent.getX(i),tangent.getY(i),tangent.getZ(i),0).applyMatrix4(skinMatrix);
+          bakedTangent.setXYZW(i,vertex.x,vertex.y,vertex.z,tangent.getW(i));
+        }
+      }
+      geometry.setIndex(indices);
+      // Unreferenced skin vertices must not shrink a selected part's camera framing.
+      const bounds=new THREE.Box3();
+      for(const index of indices)bounds.expandByPoint(point.fromBufferAttribute(bakedPosition,index));
+      geometry.boundingBox=bounds;geometry.boundingSphere=bounds.getBoundingSphere(new THREE.Sphere());
+      const copy=new THREE.Mesh(geometry,materials);copy.applyMatrix4(mesh.matrixWorld);root.add(copy);
+    }
+    return root;
+  }
   private apply(pose:RigPose) {
     this.root.position.copy(pose.position);this.root.quaternion.copy(pose.quaternion);
     this.bones.forEach((bone,i)=>bone.quaternion.copy(pose.bones[i]));
@@ -107,7 +174,9 @@ export class DogBody {
     }
   }
   /** Clone for DCC; keys are computed from the take, without touching the live rig. */
-  export(poses:Float32Array,ngeom:number,times:Float32Array) {
+  export(geometry:GeometryTrack,times:Float32Array) {
+    if(geometry.ngeom!==this.retarget.model.ngeom||!times.length||geometry.frames!==times.length)
+      throw new Error('Incompatible or empty recorded Dog take.');
     const root=cloneSkeleton(this.root);root.visible=true;
     const bones:THREE.Bone[][]=[];
     root.traverse(object=>{if(object instanceof THREE.SkinnedMesh) {
@@ -123,7 +192,7 @@ export class DogBody {
       array.push(q.x*sign,q.y*sign,q.z*sign,q.w*sign);
     };
     for(let i=0;i<times.length;i++) {
-      this.retarget.fromRecorded(poses,i*ngeom*7,pose);positions.push(...pose.position.toArray());push(rotations,pose.quaternion);
+      this.retarget.fromRecorded(geometry,i,pose);positions.push(pose.position.x,pose.position.y,pose.position.z);push(rotations,pose.quaternion);
       pose.bones.forEach((q,j)=>push(local[j],q));
     }
     root.position.fromArray(positions);root.quaternion.fromArray(rotations);
@@ -150,5 +219,23 @@ export async function loadDog(url=DOG_URL):Promise<DogAsset> {
     texture.colorSpace=THREE.NoColorSpace;texture.needsUpdate=true;
     details.set(material,{texture,scale:meta.detailscale,factor:meta.detailblendfactor});
   }));
-  return{create:(model,paint)=>new DogBody(gltf.scene,metadata!,model,paint,details)};
+  return {
+    create: (model, paint) => new DogBody(gltf.scene, metadata!, model, paint, details),
+    dispose() {
+      const textures = new Set<THREE.Texture>(), geometries = new Set<THREE.BufferGeometry>();
+      gltf.scene.traverse(object => {
+        if (object instanceof THREE.Mesh) {
+          geometries.add(object.geometry);
+          if (object instanceof THREE.SkinnedMesh) object.skeleton.dispose();
+        }
+      });
+      for (const material of materials) {
+        for (const value of Object.values(material)) if (value instanceof THREE.Texture) textures.add(value);
+        material.dispose();
+      }
+      for (const { texture } of details.values()) textures.add(texture);
+      for (const geometry of geometries) geometry.dispose();
+      for (const texture of textures) texture.dispose();
+    },
+  };
 }

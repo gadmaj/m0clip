@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+printf -v command '%q' /home/g/.local/bin/m0clip-omp
+if (( $# )); then
+    printf -v arguments ' %q' "$@"
+    command+="$arguments"
+fi
+exec ssh -t m0clip "$command"

@@ -7,13 +7,13 @@ const fixture={asset:{version:'2.0'},scene:0,scenes:[{nodes:[0]}],nodes:[{mesh:0
  materials:[{pbrMetallicRoughness:{baseColorFactor:[1,0,0,1]},extras:{sourceVertexLighting:1,sourceUnlit:true}}]};
 (async()=>{const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});try{
  const page=await browser.newPage({deviceScaleFactor:.25}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
- const expose=source=>source.replace('new App();','window.__app=new App();').replace(/new ([A-Za-z_$][\w$]*);export\{/,'window.__app=new $1;export{').replaceAll('this.renderLoop()','void 0');
+ const expose=source=>require('./expose-app.cjs')(source).replaceAll('this.renderLoop()','void 0');
  for(const pattern of['**/src/main.ts*','**/assets/main-*.js'])await page.route(pattern,async route=>{const response=await route.fetch();await route.fulfill({response,body:expose(await response.text())})});
  const manifest=JSON.parse(fs.readFileSync('public/assets/maps/nt_ghost_ctg/manifest.json'));delete manifest.props;delete manifest.visibility;
  await page.route('**/nt_ghost_ctg/visual.glb',route=>route.fulfill({contentType:'model/gltf+json',body:JSON.stringify(fixture)}));
  await page.route('**/nt_ghost_ctg/manifest.json',route=>route.fulfill({json:manifest}));
  for(const file of ['lighting.json','lightstyles.json'])await page.route('**/nt_ghost_ctg/'+file,route=>route.fulfill({status:404,body:''}));
- await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&map=nt_ghost_ctg&body=stock');
+ await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&map=nt_ghost_ctg&body=stock').then(() => require('./launch-scene.cjs').launchScene(page));
  await page.waitForFunction(()=>window.__app?.lastFrame&&window.__app.view.terrainObject&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:180000});
  const proof=await page.evaluate(()=>{
   const a=window.__app,v=a.view,camera=v.camera;v.setDisplay({...v.display,robot:false});

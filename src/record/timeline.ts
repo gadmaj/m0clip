@@ -20,7 +20,10 @@ export interface TimelineHost {
   exportVideo(): void;
   exportData(): void;
   save(): void;
+  library(): void;
+  editLook(): void;
   viewMode(m: ViewMode): void;
+  rangeChanged(): void;
 }
 
 export const KIND_COLOR: Record<TakeEventKind, string> = {
@@ -49,6 +52,16 @@ const SCROLL_H = 10;           // bottom strip: scrollbar
 const SPEEDS = [0.1, 0.25, 0.5, 1, 1.5, 2];
 const DECK_KEY = "ume-deck-h";
 
+const TRANSPORT_PATH = {
+  start: "M4 3v10M12 3.5L6 8l6 4.5z",
+  previous: "M4 5L1 8l3 3 3-3zM14 3.5L8 8l6 4.5z",
+  play: "M5 3.5L12 8l-7 4.5z",
+  pause: "M4.5 3.5h2v9h-2zM9.5 3.5h2v9h-2z",
+  next: "M2 3.5L8 8l-6 4.5zM12 5L9 8l3 3 3-3z",
+  end: "M12 3v10M4 3.5L10 8l-6 4.5z",
+  loop: "M12.5 5A5 5 0 0 0 3 6M12.5 2v3h-3M3.5 11A5 5 0 0 0 13 10M3.5 14v-3h3",
+} satisfies Record<string, string>;
+
 export const fmtTime = (t: number, d = 2) => {
   if (Math.abs(t) < 60) return t.toFixed(d);
   const m = Math.floor(t / 60), s = t - 60 * m;
@@ -62,8 +75,15 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""): 
   if (text) e.textContent = text;
   return e;
 }
-function tbtn(label: string, title: string, onclick: () => void, cls = "tb"): HTMLButtonElement {
-  const b = h("button", cls, label);
+function tbtn(label: string, title: string, onclick: () => void, cls = "tb",
+              icon?: keyof typeof TRANSPORT_PATH): HTMLButtonElement {
+  const b = h("button", cls, icon ? "" : label);
+  if (icon) {
+    b.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" ` +
+      `stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
+      `<path d="${TRANSPORT_PATH[icon]}"/></svg>`;
+    b.setAttribute("aria-label", label);
+  }
   b.type = "button";
   b.title = title;
   b.onclick = onclick;
@@ -89,9 +109,11 @@ export class Timeline {
   private readonly clockEl: HTMLElement;
   private readonly frameEl: HTMLElement;
   private readonly playBtn: HTMLButtonElement;
+  private readonly playIcon: SVGPathElement;
   private readonly loopBtn: HTMLButtonElement;
   private readonly rangeEl: HTMLElement;
   private readonly clearBtn: HTMLButtonElement;
+  private readonly autosaveEl: HTMLElement;
   private readonly curveSel: HTMLSelectElement;
   private readonly modeBtns = new Map<ViewMode, HTMLButtonElement>();
   private view = { t0: 0, t1: 1 };
@@ -112,8 +134,11 @@ export class Timeline {
     this.wireResize(dragbar);
 
     const bar = h("div", "dk-bar");
-    this.playBtn = tbtn("▶", "Play / pause (Space)", () => this.setPlaying(!this.playing), "tb play");
-    this.loopBtn = tbtn("⟳", "Loop the range (L)", () => this.setLoop(!this.loop));
+    this.playBtn = tbtn("Play", "Play / pause (Space)", () => this.setPlaying(!this.playing), "tb play", "play");
+    this.playIcon = this.playBtn.querySelector("path")!;
+    this.playBtn.setAttribute("aria-pressed", "false");
+    this.loopBtn = tbtn("Loop the range", "Loop the range (L)", () => this.setLoop(!this.loop), "tb", "loop");
+    this.loopBtn.setAttribute("aria-pressed", String(this.loop));
     this.clockEl = h("span", "dk-clock");
     this.frameEl = h("span", "dk-frame");
     const speedSel = h("select", "dk-sel");
@@ -122,6 +147,10 @@ export class Timeline {
     speedSel.value = "1";
     speedSel.onchange = () => { this.speed = Number(speedSel.value); speedSel.blur(); };
     this.rangeEl = h("span", "dk-range");
+    this.autosaveEl = h("span", "dk-autosave");
+    this.autosaveEl.setAttribute("role", "status");
+    this.autosaveEl.setAttribute("aria-live", "polite");
+    this.autosaveEl.style.cssText = "font-size:11px;color:var(--text-2);overflow-wrap:anywhere;min-width:0";
     this.clearBtn = tbtn("×", "Clear the range (X)", () => this.clearRange());
     this.curveSel = h("select", "dk-sel");
     this.curveSel.title = "Curves lane";
@@ -139,21 +168,24 @@ export class Timeline {
     }
     const group = (...k: Node[]) => { const d = h("div", "dk-grp"); d.append(...k); return d; };
     bar.append(
-      group(tbtn("⏮", "Start of the range (Home)", () => this.seek(this.rangeIn)),
-            tbtn("◆◀", "Previous input (↑)", () => this.jumpEvent(-1)),
+      group(tbtn("Start of the range", "Start of the range (Home)", () => this.seek(this.rangeIn), "tb", "start"),
+            tbtn("Previous input", "Previous input (↑)", () => this.jumpEvent(-1), "tb", "previous"),
             this.playBtn,
-            tbtn("▶◆", "Next input (↓)", () => this.jumpEvent(1)),
-            tbtn("⏭", "End of the range (End)", () => this.seek(this.rangeOut)),
+            tbtn("Next input", "Next input (↓)", () => this.jumpEvent(1), "tb", "next"),
+            tbtn("End of the range", "End of the range (End)", () => this.seek(this.rangeOut), "tb", "end"),
             this.loopBtn),
       group(this.clockEl, this.frameEl),
+      group(this.autosaveEl),
       group(speedSel),
       group(tbtn("In", "Range start at the playhead (I)", () => this.setIn(this.time), "tb wide"),
             tbtn("Out", "Range end at the playhead (O)", () => this.setOut(this.time), "tb wide"),
             this.rangeEl, this.clearBtn),
       group(seg, this.curveSel),
       h("div", "dk-sp"),
-      group(tbtn("Export video…", "Render the range to MP4 / MOV / WebM / PNG", () => host.exportVideo(), "btn primary"),
+      group(tbtn("Edit look", "Edit this take's parts and lighting without changing the live scene", () => host.editLook(), "btn"),
+            tbtn("Export video…", "Render the range to MP4 / MOV / WebM / PNG", () => host.exportVideo(), "btn primary"),
             tbtn("Blender & data…", "glTF scene for Blender, motion CSV, take file", () => host.exportData(), "btn"),
+            tbtn("Shots", "Open shots stored in this browser", () => host.library(), "btn dk-shots"),
             tbtn("Save take", "Save this take to reopen it later (.take.zip)", () => host.save(), "btn"),
             tbtn("✕", "Close the timeline, back to the live sim (Esc)", () => host.close(), "btn ghost icon")),
     );
@@ -181,13 +213,20 @@ export class Timeline {
   get isOpen(): boolean { return !!this.take && !this.root.hidden; }
   get duration(): number { return this.take?.duration ?? 0; }
   get hasRange(): boolean { return this.rangeIn > 1e-9 || this.rangeOut < this.duration - 1e-9; }
+  setAutosaveState(text: string, error = false): void {
+    this.autosaveEl.textContent = text;
+    this.autosaveEl.hidden = !text;
+    this.autosaveEl.classList.toggle("err", error);
+    this.autosaveEl.style.color = error ? "var(--danger)" : "var(--text-2)";
+  }
+
 
   open(take: Take, title: string) {
     this.take = take;
     this.root.hidden = false;
-    this.rangeIn = 0;
-    this.rangeOut = take.duration;
-    this.time = 0;
+    this.rangeIn = take.range?.[0] ?? 0;
+    this.rangeOut = take.range?.[1] ?? take.duration;
+    this.time = this.rangeIn;
     this.hover = null;
     this.root.setAttribute("aria-label", `Take timeline: ${title}`);
     this.curveSel.replaceChildren();
@@ -217,7 +256,8 @@ export class Timeline {
   setPlaying(on: boolean) {
     if (on && this.time >= this.rangeOut - 1e-6) this.time = this.rangeIn;
     this.playing = on && !!this.take;
-    this.playBtn.textContent = this.playing ? "⏸" : "▶";
+    this.playIcon.setAttribute("d", this.playing ? TRANSPORT_PATH.pause : TRANSPORT_PATH.play);
+    this.playBtn.setAttribute("aria-label", this.playing ? "Pause" : "Play");
     this.playBtn.setAttribute("aria-pressed", String(this.playing));
     this.paint();
   }
@@ -249,16 +289,22 @@ export class Timeline {
   }
 
   setIn(t: number) {
-    this.rangeIn = clamp(t, 0, this.duration);
-    if (this.rangeOut <= this.rangeIn + 1e-3) this.rangeOut = this.duration;
-    this.paint();
+    const start = clamp(t, 0, Math.max(0, this.duration - Math.min(1e-3, this.duration)));
+    this.changeRange(start, this.rangeOut <= start + 1e-3 ? this.duration : this.rangeOut);
   }
   setOut(t: number) {
-    this.rangeOut = clamp(t, 0, this.duration);
-    if (this.rangeIn >= this.rangeOut - 1e-3) this.rangeIn = 0;
+    const end = clamp(t, Math.min(1e-3, this.duration), this.duration);
+    this.changeRange(this.rangeIn >= end - 1e-3 ? 0 : this.rangeIn, end);
+  }
+  clearRange() { this.changeRange(0, this.duration); }
+
+  private changeRange(start: number, end: number) {
+    if (start === this.rangeIn && end === this.rangeOut) return;
+    this.rangeIn = start;
+    this.rangeOut = end;
+    this.host.rangeChanged();
     this.paint();
   }
-  clearRange() { this.rangeIn = 0; this.rangeOut = this.duration; this.paint(); }
 
   private jumpEvent(dir: 1 | -1) {
     const ev = this.take?.events ?? [];

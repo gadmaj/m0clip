@@ -3,14 +3,14 @@ const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=requ
 const{fixture,png}=require('./source_material_fixture.cjs');
 (async()=>{const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});try{
  const page=await browser.newPage({deviceScaleFactor:.25}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
- const expose=source=>source.replace('new App();','window.__app=new App();').replace(/new ([A-Za-z_$][\w$]*);export\{/,'window.__app=new $1;export{').replaceAll('this.renderLoop()','void 0');
+ const expose=source=>require('./expose-app.cjs')(source).replaceAll('this.renderLoop()','void 0');
  for(const pattern of['**/src/main.ts*','**/assets/main-*.js'])await page.route(pattern,async route=>{const response=await route.fetch();await route.fulfill({response,body:expose(await response.text())})});
  await page.addInitScript(()=>localStorage.setItem('ume-prefs',JSON.stringify({robot:'r1',terrain:'flat'})));
  await page.route('**/assets/source/flashlight.png',route=>route.fulfill({contentType:'image/png',body:png([64,64,64,255])}));
  let mode='cutout-bare';await page.route('**/nt_ghost_ctg/visual.glb*',route=>route.fulfill({contentType:'model/gltf+json',body:JSON.stringify(fixture(mode))}));
  const manifest=JSON.parse(fs.readFileSync('public/assets/maps/nt_ghost_ctg/manifest.json'));delete manifest.props;delete manifest.visibility;
  await page.route('**/nt_ghost_ctg/manifest.json',route=>route.fulfill({json:manifest}));for(const file of['lighting.json','lightstyles.json'])await page.route('**/nt_ghost_ctg/'+file,route=>route.fulfill({status:404,body:''}));
- const base=process.env.BASE_URL||'http://127.0.0.1:5176';await page.goto(base+'/?plain&body=stock');await page.waitForFunction(()=>window.__app?.lastFrame&&window.__app.view.flashlight.ready,null,{timeout:120000});
+ const base=process.env.BASE_URL||'http://127.0.0.1:5176';await page.goto(base+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await page.waitForFunction(()=>window.__app?.lastFrame&&window.__app.view.flashlight.ready,null,{timeout:120000});
  const results={};
  for(mode of['cutout-bare','cutout-generic','animated','animated-cutout','reflect-detail','emissive-detail','phong-base-mask']){
   results[mode]=await page.evaluate(async mode=>{
@@ -31,7 +31,7 @@ const{fixture,png}=require('./source_material_fixture.cjs');
  close(results['reflect-detail'].gray[1],[32,16,8,255],'reflection mask');close(results['emissive-detail'].gray[1],[16,8,4,255],'glow mask');close(results['phong-base-mask'].lit[1],[40,20,10,255],'Phong mask');
  assert.ok(Object.values(results).every(r=>r.mapRetained&&r.sameVersion));
  // Drive the real checkbox, record a take in Ghost and export the diagnostic map.
- mode='cutout-bare';await page.goto(base+'/?plain&map=nt_ghost_ctg&body=stock');await page.waitForFunction(()=>window.__app?.lastFrame&&window.__app.view.terrainObject&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:180000});
+ mode='cutout-bare';await page.goto(base+'/?plain&map=nt_ghost_ctg&body=stock').then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await page.waitForFunction(()=>window.__app?.lastFrame&&window.__app.view.terrainObject&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:180000});
  await page.getByText('Render controls',{exact:true}).click();await page.getByLabel('Textures',{exact:true}).uncheck();
  await page.evaluate(()=>window.__app.startRecording());await page.waitForFunction(()=>window.__app.rec?.frames>=10);await page.evaluate(()=>window.__app.stopRecording());await page.waitForFunction(()=>window.__app.timeline.isOpen);
  const exported=await page.evaluate(async()=>{

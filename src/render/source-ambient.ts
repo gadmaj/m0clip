@@ -112,7 +112,7 @@ export class SourceAmbient {
   patch(material: THREE.Material) {
     if (!(material instanceof THREE.MeshStandardMaterial) || this.patched.has(material)) return;
     this.patched.add(material);
-    const original = material.onBeforeCompile.bind(material);
+    const original = material.onBeforeCompile.bind(material), key = material.customProgramCacheKey();
     material.onBeforeCompile = (shader, renderer) => {
       original(shader, renderer);
       shader.uniforms.sourceAmbientEnabled = this.enabled;
@@ -131,27 +131,21 @@ export class SourceAmbient {
         uniform float sourceLinearOutput;
         struct SourceWorldLight { vec4 position; vec4 color; vec4 attenuation; vec4 direction; };
         uniform SourceWorldLight sourceWorldLights[4];
-        vec3 sourceDirectLight(vec3 p, vec3 n) {
-          vec3 result = vec3(0.0);
-          for (int i = 0; i < 4; i++) {
-            SourceWorldLight l = sourceWorldLights[i];
-            if (l.position.w < 0.5) continue;
-            vec3 delta = l.position.xyz - p;
-            float distance = length(delta);
-            vec3 direction = l.position.w > 2.5 ? -l.direction.xyz : normalize(delta);
-            float attenuation = 1.0;
-            if (l.position.w < 2.5) {
-              attenuation = 1.0 / max(dot(l.attenuation.xyz, vec3(1.0, distance, distance * distance)), 1e-12);
-              if (l.position.w > 1.5) {
-                float angle = dot(l.direction.xyz, -direction);
-                float cone = l.attenuation.w - l.direction.w;
-                float t = cone == 0.0 ? (angle >= l.direction.w ? 1.0 : 0.01) : max((angle - l.direction.w) / cone, 0.01);
-                attenuation *= clamp(pow(t, l.color.w), 0.0, 1.0);
-              }
+        void sourceDirectLight(SourceWorldLight l, vec3 p, out vec3 direction, out vec3 color) {
+          vec3 delta = l.position.xyz - p;
+          float distance = length(delta);
+          direction = l.position.w > 2.5 ? -l.direction.xyz : normalize(delta);
+          float attenuation = 1.0;
+          if (l.position.w < 2.5) {
+            attenuation = 1.0 / max(dot(l.attenuation.xyz, vec3(1.0, distance, distance * distance)), 1e-12);
+            if (l.position.w > 1.5) {
+              float angle = dot(l.direction.xyz, -direction);
+              float cone = l.attenuation.w - l.direction.w;
+              float t = cone == 0.0 ? (angle >= l.direction.w ? 1.0 : 0.01) : max((angle - l.direction.w) / cone, 0.01);
+              attenuation *= clamp(pow(t, l.color.w), 0.0, 1.0);
             }
-            result += l.color.rgb * attenuation * max(dot(n, direction), 0.0);
           }
-          return result;
+          color = l.color.rgb * attenuation;
         }
         vec3 sourceAmbientLight(vec3 n) {
           vec3 w = n * n;
@@ -164,8 +158,21 @@ export class SourceAmbient {
           vec3 sourceNormal = sourceAmbientRotation * inverseTransformDirection(geometryNormal, viewMatrix);
           vec3 worldPoint = ((vec4(geometryPosition, 1.0) - viewMatrix[3]) * viewMatrix).xyz;
           vec3 sourcePoint = sourceAmbientRotation * worldPoint / 0.0254 + sourceOrigin;
-          irradiance = PI * (sourceAmbientLight(sourceNormal) + sourceDirectLight(sourcePoint, sourceNormal));
+          irradiance = PI * sourceAmbientLight(sourceNormal);
           iblIrradiance = vec3(0.0);
+          // Preserve Source's diffuse calibration while letting the physical finish
+          // reflect direct light; treating it as ambient loses metallic/clearcoat highlights.
+          for (int i = 0; i < 4; i++) {
+            SourceWorldLight light = sourceWorldLights[i];
+            if (light.position.w < 0.5) continue;
+            vec3 sourceDirection, sourceRadiance;
+            sourceDirectLight(light, sourcePoint, sourceDirection, sourceRadiance);
+            IncidentLight sourceLight;
+            sourceLight.color = PI * sourceRadiance;
+            sourceLight.direction = transformDirection(sourceDirection * sourceAmbientRotation, viewMatrix);
+            sourceLight.visible = true;
+            RE_Direct(sourceLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
+          }
         }
         #include <lights_fragment_maps>
       `).replace('#include <tonemapping_fragment>', `
@@ -181,7 +188,7 @@ export class SourceAmbient {
         }
       `);
     };
-    material.customProgramCacheKey = () => 'source-ambient-cube-v1';
+    material.customProgramCacheKey = () => key + '-source-ambient-cube-v2';
     material.needsUpdate = true;
   }
 }

@@ -33,3 +33,7 @@ MUJOCO_LOG*.TXT
 decrypted/
 workbench_configs/
 benchmark_results.json
+
+# local development environment and generated asset inspection
+/.venv/
+/.asset-analysis/

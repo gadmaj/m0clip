@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec ssh -t -o ConnectTimeout=8 m0clip \
+    'cd /home/g/website && git pull --ff-only origin exp && bash .github/unitree-access/connect-home-node.sh'

@@ -1,0 +1,27 @@
+{
+  "source": "Skeleton/skeleton.blend",
+  "output": "../../public/assets/characters/psx-low-poly-skeleton/psx-low-poly-skeleton-512.glb",
+  "preview": "../../public/assets/characters/psx-low-poly-skeleton/preview.png",
+  "analysis": "../../public/assets/characters/psx-low-poly-skeleton/analysis.json",
+  "redistributionApproved": true,
+  "sourceForward": "-Y (Blender); +Z (glTF), observed foot-toe/skull geometry",
+  "meshNames": ["Cube"],
+  "applyRigObjectScale": true,
+  "imageOverrides": {"base.png.001": "Skeleton/base.png"},
+  "sourceFiles": {
+    "Skeleton/skeleton.blend": "31624eb8cd67dc364d3c7a0d7d2db36ad90d6de8b854d5be45108941f01bbdf1",
+    "Skeleton/base.png": "d6dd5bb5c7cdcc0c54c77e3f04e2533848902fce97738867d9adb8811ce61336"
+  },
+  "sourceArchive": {"name": "Skeleton.zip", "bytes": 326730, "sha256": "d8798dd1839c7f4609ef419600579c92786f073d8b779a34c991431545d3fa3e", "uploadId": "14882337", "sourceUrl": "https://puszke.itch.io/psx-low-poly-skeleton"},
+  "attribution": {
+    "name": "PSX Low Poly Skeleton",
+    "creator": "Puck (puck_psx)",
+    "creatorUrl": "https://puszke.itch.io",
+    "copyright": "PSX Low Poly Skeleton by Puck; dedicated to the public domain under CC0.",
+    "license": "CC0",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "sourceUrl": "https://puszke.itch.io/psx-low-poly-skeleton",
+    "modifications": "Converted original Blender mesh and existing 21-bone weighted metarig to standard Y-up GLB; selected the original archive's default Skeleton/base.png texture instead of the GameBoyColor variant active in the saved Blender file. Normalized source skin-weight totals while retaining every influence and its relative ratio (including five influences on nine source vertices). Applied non-uniform armature and mesh object scales to the real geometry and rest rig, checking that evaluated bind shape was unchanged. Preserved rig proportions and authored materials; no replacement rig or animation was generated. Embedded source attribution and generated a rendered model preview.",
+    "licenseEvidence": {"url": "https://puszke.itch.io/psx-low-poly-skeleton", "quote": "CC0 Licence"}
+  }
+}

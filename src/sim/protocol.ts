@@ -7,12 +7,15 @@
  * the pthread pool boots fine.
  */
 import type { Command, RemoteActionGroup } from "../core/types";
+import type { TransferUpdate } from "../loading/transfers";
 import type { FsmState } from "./fsm";
 import type { TerrainName } from "./terrain";
+import type { FrameGeometryLayout } from './geometry-frames';
 
 // ---- main -> worker --------------------------------------------------
 export type ToWorker =
-  | { t: "init"; robot?: string; terrain?: TerrainName; policy?: string }  // restore saved session
+  | { t: "init"; robot?: string; robotExplicit?: boolean; terrain?: TerrainName; policy?: string; loadingId?: number }  // explicit robot selection must not fall back to another model
+  | { t: "loadingFinished"; generation: number }
   | { t: "policy"; name: string }
   | { t: "cycle"; step: 1 | -1 }
   | { t: "state"; state: FsmState }
@@ -119,12 +122,13 @@ export interface InspectMsg {
 }
 
 export type FromWorker =
+  | { t: "loading"; generation: number; updates: TransferUpdate[] }
   | {t:'viewReady';request:number;robot:string;terrain:TerrainName}
   | { t: 'robotPlaced' }
   | { t: 'robotPlacementFailed'; msg: string }
-  | { t: "model"; desc: RenderModel }
-  /** `clock` is the frame clock: simulated seconds, advanced by each posted frame's step (so a take
-   * recorded under load still plays back at true speed); `qpos` is a copy of the full state. */
+  | { t: "model"; desc: RenderModel; geometry: FrameGeometryLayout }
+  /** Geom rows are ascending original IDs excluding `model.geometry.fixedIds`; qpos is complete.
+   * `clock` advances by each posted simulation step, preserving recorded time under load. */
   | { t: "frame"; xpos: Float32Array; xmat: Float32Array; baseX: number; baseY: number;
       hoistAnchor?: [number, number, number] | null; clock: number; qpos: Float64Array }
   | StatusMsg

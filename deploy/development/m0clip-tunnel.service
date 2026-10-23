@@ -1,0 +1,13 @@
+[Unit]
+Description=m0clip.com Cloudflare Tunnel
+Requires=unitree-host.service
+After=unitree-host.service network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/cloudflared tunnel --no-autoupdate --protocol http2 --config %h/m0clip-ts/deploy/development/cloudflared.yml run
+Restart=always
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=default.target

@@ -12,15 +12,28 @@ import { defaultShot, ShotPath, type Shot } from "./record/shot";
 import { loadTake, motionCsv, saveTake, Take, TakeRecorder } from "./record/take";
 import { eventList, fmtTime, Timeline, type ViewMode } from "./record/timeline";
 import { download, capturePng, stamp } from "./render/recorder";
-import { SceneView } from "./render/scene";
+import { SceneView, type Appearance, type HeadVisual } from "./render/scene";
 import { SceneCamera } from './render/scene-camera';
 import type { FromWorker, InspectMsg, RenderModel, StatusMsg, ToWorker } from "./sim/protocol";
 import type { FsmState } from "./sim/fsm";
+import { FrameGeometryBuffer } from './sim/geometry-frames';
 import { isTerrain, listMaps, mapId, MAPS_DIR, type TerrainName } from "./sim/terrain";
 import { Panel, type StatusRow } from "./ui/panel";
-import { LookPanel, type MapLight } from "./ui/look";
+import { LookPanel, type MapLight, type LookState } from "./ui/look";
 import { ExplorePanel, sharedView, viewLink, type SavedView } from "./ui/explore";
 import { policyPresentation } from './ui/policy-names';
+import { FloatingWorkspace } from './ui/floating-workspace';
+import './ui/floating-workspace.css';
+import { launch } from './ui/launch';
+import { HelpDialog } from './ui/help';
+import { StorageConsent } from './ui/storage-consent';
+import { VisualPicker } from './ui/visual-picker';
+import { ShotLibrary, type SavedShot } from './record/library';
+import { ShotLibraryDialog } from './ui/shot-library';
+import { PhotoLibrary } from './record/photos';
+import { RecordingRecovery, type RecordingCheckpointWriter } from './record/recovery';
+import { storageErrorMessage } from './record/storage';
+import { characterOptions } from './ui/preview-catalog';
 
 /** Robot family: r1 + r1_air (EDU 24-DOF / Air 20-DOF) share one UI slot, g1 + g1_air (EDU 29-DOF / Air 23-DOF) one UI
  * slot; go2 is its own. */
@@ -102,7 +115,21 @@ function formatInspect(m: InspectMsg): string {
 interface ViewRestoreRequest {
   id:number;view:SavedView;navigating:boolean;resolve:()=>void;reject:(error:Error)=>void;
 }
+interface StoredTakeState {
+  id:string;name:string;model:RenderModel;created:boolean;writing:boolean;dirty:boolean;
+  failed:boolean;deleted:boolean;previewDirty:boolean;previewReady:boolean;previewFailed:boolean;
+  thumbnail?:Blob;previewTimer?:number;previewVersion:number;
+  recovery?:RecordingCheckpointWriter;
+}
 class App {
+  /** Modal surfaces own keyboard, pointer and gamepad input. */
+  private get inputBlocked() { return launch.active || !!this.help?.isOpen || !!this.shotLibrary?.isOpen || VisualPicker.active; }
+  private help!: HelpDialog;
+  private modalKeys = new Set<string>();
+  private initialViewRestore: Promise<void> = Promise.resolve();
+  private launchCharacterApplied = false;
+  private resolveFirstFrame: (() => void) | null = null;
+  private firstSimulationFrame = new Promise<void>(resolve => { this.resolveFirstFrame = resolve; });
   view = new SceneView(document.getElementById("viewport")!);
   panel: Panel;
   pad = new GamepadInput();
@@ -114,6 +141,7 @@ class App {
   private cmdMax: Command = [1, 1, 1];   // from the active policy's vel_range
   private velRangeKey = "";
   private lastFrame: { xpos: Float32Array; xmat: Float32Array } | null = null;
+  private liveGeometry: FrameGeometryBuffer | null = null;
   private baseXY: [number, number] = [0, 0];
   private baseZ = 0.7;
   private noclip = false;
@@ -139,19 +167,22 @@ class App {
   private leashCapable = false;         // active policy follows a leash pull
   private leashDrag: [number, number] | null = null;   // anchor while dragging
   private hoistOn = false;
+  private mapVisualTerrain: TerrainName | null = null;
+  private mapVisualGeneration = 0;
 
   // ---- recording / review ----
   private model: RenderModel | null = null;       // the live model (last "model" message)
   private viewBuildGeneration=0;
   private viewModel: RenderModel | null = null;   // the model the scene currently shows
   private rec: TakeRecorder | null = null;
+  private recCheckpoint:RecordingCheckpointWriter|null=null;
   private recordStarting = false;
   private screenshotPending=false;
   private screenshotRequest=0;
   private screenshotAbort:AbortController|null=null;
   private screenshotIsCurrent:(()=>boolean)|null=null;
-  private liveAppearance: ReturnType<SceneView["getAppearance"]> | null = null;
-  private liveSourceHead: 'stock' | 'ghost' | null = null;
+  private liveReview: { model: RenderModel | null; appearance: Appearance; head: HeadVisual; look: LookState } | null = null;
+  private reviewOriginal: { take: Take; appearance: Appearance; head: HeadVisual; look: LookState } | null = null;
   /** last value logged per input: a change the user makes is logged when they make it (at the frame
    * they were looking at), and the status that confirms it later is not logged again */
   private logged: { state?: FsmState; policy?: string; hoist?: boolean } = {};
@@ -162,6 +193,17 @@ class App {
   private recModel: RenderModel | null = null;
   private take: Take | null = null;
   private takeModel: RenderModel | null = null;
+  private readonly shotStore=new ShotLibrary();
+  private readonly photoStore=new PhotoLibrary();
+  private readonly recordingRecovery=new RecordingRecovery(this.shotStore);
+  private shotLibrary!:ShotLibraryDialog;
+  private readonly storedTakes=new WeakMap<Take,StoredTakeState>();
+  private readonly shotWrites=new Set<Promise<void>>();
+  private readonly warnPendingSave=(event:BeforeUnloadEvent)=>{
+    if(!this.screenshotPending&&!this.shotWrites.size)return;
+    event.preventDefault();event.returnValue='';
+  };
+  private openingShotLibrary=false;
   private takeTitle = "";
   private takeNo = 0;
   private timeline: Timeline;
@@ -171,8 +213,6 @@ class App {
   private readonly shotCam = new SceneCamera(40, 16 / 9, 0.05, 100);
   private readonly exportCam = new SceneCamera(40, 16 / 9, 0.05, 100);
   private exporting = false;
-  private reviewXpos = new Float32Array(0);
-  private reviewXmat = new Float32Array(0);
   private shotDrag: { az: number; el: number; d: number; off: THREE.Vector3 } | null = null;
   private viewBeforeDialog: ViewMode = "free";
   private look!: LookPanel;
@@ -253,6 +293,7 @@ class App {
       onScreenshot: () => {void this.takeScreenshot();},
       onRecordToggle: () => this.toggleRecording(),
       onOpenTimeline: () => this.openReview(),
+      onOpenShots:()=>{void this.openShots();},
       onLoadTake: (file) => void this.openTakeFile(file),
       onLoadCsv: (file, fps) => this.loadCsv(file, fps),
       onStopPlayback: () => this.send({ t: "stopPlayback" }),
@@ -269,6 +310,12 @@ class App {
       exportVideo: () => this.openExport("video"),
       exportData: () => this.openExport("data"),
       save: () => void this.saveTakeFile(),
+      library:()=>{void this.openShots();},
+      editLook: () => this.editTakeLook(),
+      rangeChanged:()=>{
+        if(!this.take||!this.timeline.isOpen||this.exporting)return;
+        this.take.range=[this.timeline.rangeIn,this.timeline.rangeOut];this.rebuildShot();
+      },
       viewMode: (m) => this.setViewMode(m),
     });
     const saved = loadExportPrefs();
@@ -281,12 +328,12 @@ class App {
       grabView: () => ShotPath.grab(this.take!, this.timeline.time, this.view.camera.position, this.view.controls.target),
       path: () => this.shotPath!,
       stage: () => this.stage(),
-      setExporting: (on) => { this.exporting = on; this.view.controls.enabled = !on; },
+      setExporting: (on) => this.setExporting(on),
       glb: (fps, camera, floor) => exportGlb(this.take!, this.view, this.takeModel!, {
-        fps, t0: this.timeline.rangeIn, t1: this.timeline.rangeOut, floor,
+        fps, t0: this.timeline.rangeIn, t1: this.timeline.rangeOut, floor, look: this.look.getState(),
         camera: camera ? { path: this.shotPath!, shot: this.shot, aspect: this.dialog.aspect } : null }),
       csv: (fps) => motionCsv(this.take!, fps, this.timeline.rangeIn, this.timeline.rangeOut),
-      saveTake: () => void this.saveTakeFile(),
+      saveTake: () => this.saveTakeFile(),
       save: (blob, ext) => download(blob, `${this.fileStem()}.${ext}`),
       onClose: () => this.setViewMode(this.viewBeforeDialog),
     });
@@ -298,51 +345,132 @@ class App {
     });
     window.addEventListener('hashchange', () => { const view = sharedView(); if (view) void this.explore.restoreView(view); });
     this.wirePartPicking();
-    this.worker.onmessage = (ev: MessageEvent<FromWorker>) => this.onWorker(ev.data);
+    this.worker.onmessage = (ev: MessageEvent<FromWorker>) => {
+      try { this.onWorker(ev.data); }
+      catch (error) { this.showOverlay(`Scene could not load: ${error instanceof Error ? error.message : error}`, 'error'); }
+    };
     this.worker.onerror = (e) =>
-      this.showOverlay(`sim worker crashed: ${e.message ?? e}`);
+      this.showOverlay(`sim worker crashed: ${e.message ?? e}`, 'error');
     this.flight = new NoclipFlight(this.view.camera, this.view.controls.target,
       this.view.renderer.domElement, () => this.send({ t: 'noclipMove', velocity: [0, 0, 0] }));
+    let controlsBeforeHelp = true;
+    const storageConsent = new StorageConsent(document.getElementById('viewport')!, () => this.stopAndRearm());
+    this.help = new HelpDialog({
+      storageConsent,
+      context: () => this.timeline.isOpen ? 'timeline' : this.noclip ? 'flight' : 'play',
+      onOpen: () => {
+        controlsBeforeHelp = this.view.controls.enabled;
+        this.stopAndRearm();
+        this.view.controls.enabled = false;
+      },
+      onClose: () => {
+        this.pad.rearm();
+        this.view.controls.enabled = controlsBeforeHelp && !launch.active && !this.exporting && !VisualPicker.active;
+      },
+    });
+    this.help.attachTo(document.getElementById('viewport-tools')!);
+    let controlsBeforeShots=true,openedStoredShot=false;
+    this.shotLibrary=new ShotLibraryDialog(document.body,{
+      library:this.shotStore,photos:this.photoStore,recoveries:this.recordingRecovery,
+      open:saved=>{this.openStoredShot(saved);openedStoredShot=true;},
+      deleted:id=>{
+        const state=this.take&&this.storedTakes.get(this.take);
+        if(state?.id===id){state.deleted=true;clearTimeout(state.previewTimer);this.updateShotSaveStatus(this.take!,state);}
+      },
+      blocked:()=>this.shotLibraryBlocked(),
+      modalChanged:open=>{
+        if(open){
+          openedStoredShot=false;
+          controlsBeforeShots=this.view.controls.enabled;
+          this.timeline.setPlaying(false);this.stopAndRearm();this.view.controls.enabled=false;
+        }else{
+          this.pad.rearm();
+          const enabled=openedStoredShot?this.timeline.mode!=='recorded'&&!this.noclip:controlsBeforeShots;
+          this.view.controls.enabled=enabled&&!launch.active&&!this.exporting&&!this.help.isOpen&&!VisualPicker.active;
+        }
+      },
+    });
+    new FloatingWorkspace();
+    let controlsBeforeGallery = true;
+    window.addEventListener('visual-picker-open', () => {
+      controlsBeforeGallery = this.view.controls.enabled;
+      this.stopAndRearm();
+      this.view.controls.enabled = false;
+    });
+    window.addEventListener('visual-picker-close', () => {
+      this.pad.rearm();
+      this.view.controls.enabled = controlsBeforeGallery && !launch.active && !this.exporting && !this.help.isOpen && !this.shotLibrary.isOpen;
+    });
     this.wireNavigation();
+    window.addEventListener('keydown', event => {
+      if (this.help.isOpen || this.shotLibrary.isOpen || VisualPicker.active) this.modalKeys.add(event.code);
+    }, true);
+    window.addEventListener('keyup', event => this.modalKeys.delete(event.code), true);
     window.addEventListener("keydown", (e) => this.onKey(e));
     window.addEventListener("keyup", (e) => this.onKeyUp(e));
     // Hand the keyboard back to the sim after using the panel: a dropdown keeps focus after a choice (so W/S would
     // scroll the policy list instead of driving) and a clicked button would turn Space into another click.
     document.addEventListener("change", (e) => {
+      if (this.inputBlocked) return;
       if (e.target instanceof HTMLSelectElement) e.target.blur();
     });
     document.addEventListener("click", (e) => {
+      if (this.inputBlocked) return;
+      if ((e.target as Element | null)?.closest?.('.help-dialog,.help-trigger,[data-visual-picker]')) return;
       const b = (e.target as Element | null)?.closest?.("button");
       if (b instanceof HTMLButtonElement) b.blur();
     });
     // a key released while the window is unfocused never sends keyup — stop instead of walking on
-    window.addEventListener("blur", () => { if (this.keysHeld.size) { this.keysHeld.clear(); this.applyKeys(false); } });
+    window.addEventListener("blur", () => {
+      this.modalKeys.clear();
+      if (this.keysHeld.size) { this.keysHeld.clear(); this.applyKeys(false); }
+    });
+    document.addEventListener('visibilitychange',()=>{if(document.hidden)this.recCheckpoint?.checkpoint();});
+    window.addEventListener('pagehide',()=>this.recCheckpoint?.checkpoint());
     this.wireLeash();
     // restore the previous session's robot / terrain / policy
     this.pad.scale = [...this.cmdMax] as Command;
-    void this.start();
+    launch.onEnter(() => {
+      this.keysHeld.clear(); this.flight.stop(); this.pad.rearm(); this.view.controls.enabled = !this.noclip;
+      this.send({ t: 'loadingFinished', generation: launch.loadingId });
+      storageConsent.sceneEntered();
+    });
+    void this.start().catch(error => this.showOverlay(`Scene could not start: ${error instanceof Error ? error.message : error}`, 'error'));
     this.renderLoop();
   }
 
-  /** Restore the previous session's robot / terrain / policy (a map terrain only while its bundle
-   * is still listed), then boot the sim. */
+  /** Consume the in-memory launch choice; no storage-based launch message bus. */
   private async start() {
-    const prefs = loadPrefs();
+    const prefs = loadPrefs(), selection = launch.selection;
     const maps = await listMaps();
-    this.panel.setMaps(maps);
-    const mapQuery = new URLSearchParams(location.search).get('map');
-    const requested = maps.some(map => map.id === mapQuery) ? `map:${mapQuery}` : undefined;
-    const shared = sharedView(), terrain = shared?.terrain ?? requested ?? prefs.terrain;
-    if (isTerrain(terrain) &&
-        (!terrain.startsWith("map:") || maps.some((m) => `map:${m.id}` === terrain))) {
-      this.panel.setTerrain(terrain);
-      if (shared) void this.explore.restoreView(shared,v=>this.restoreView(v,false));
+    if (selection.terrain.startsWith('map:') && !maps.some(map => `map:${map.id}` === selection.terrain)) {
+      maps.push({ id: selection.terrain.slice(4), name: selection.terrain.slice(4), game: 'Selected map' });
     }
-    const bodyRobot=new URLSearchParams(location.search).get('body')==='dog'&&!prefs.robot?.startsWith('r1')?'r1':prefs.robot;
-    this.send({ t: "init", robot: shared?.robot ?? bodyRobot, terrain: this.panel.terrain,
-      policy: bodyRobot===prefs.robot?prefs.policy:undefined });
-    if(this.pendingViewRestore)this.send({t:'viewReady',request:this.pendingViewRestore.id});
+    this.panel.setMaps(maps);
+    let shared = selection.preserveView ? sharedView() : null;
+    const navigation = new URL(location.href);
+    if (!selection.preserveView && navigation.hash.startsWith('#view=')) navigation.hash = '';
+    if (selection.terrain.startsWith('map:')) navigation.searchParams.set('map', selection.terrain.slice(4));
+    else navigation.searchParams.delete('map');
+    history.replaceState(null, '', navigation);
+    if (selection.character) {
+      // A deliberate preset choice replaces linked body/paint, never a default preselection.
+      const url = new URL(location.href);
+      url.searchParams.delete('body');
+      history.replaceState(null, '', url);
+      if (shared) shared = { ...shared, appearance: undefined, sourceHead: 'stock' };
+    }
+    this.panel.setTerrain(selection.terrain);
+    if (shared) {
+      this.initialViewRestore = this.restoreView(shared, false);
+      void this.initialViewRestore.catch(error => this.failLaunchVisuals(`Shared view could not load: ${error instanceof Error ? error.message : error}`));
+    }
+    this.send({ t: "init", robot: selection.robot, terrain: selection.terrain, loadingId: launch.loadingId,
+      robotExplicit:selection.robotChanged||selection.preserveView,
+      policy: selection.robotChanged || selection.robot !== prefs.robot ? undefined : prefs.policy });
+    if (this.pendingViewRestore) this.send({ t: 'viewReady', request: this.pendingViewRestore.id });
     this.send({ t: "inspect", on: true });   // left column always streams
+    if (mapId(selection.terrain)) this.prepareMapVisual(selection.terrain);
   }
 
   private send(m: ToWorker) { this.worker.postMessage(m); }
@@ -405,6 +533,11 @@ class App {
   }
 
   private showOverlay(msg: string, kind: "busy" | "notice" | "error" = "busy") {
+    if (launch.active) {
+      if (kind === 'error' || kind === 'notice') launch.fail(msg);
+      else launch.phase(msg);
+      return;
+    }
     this.overlayMsg.textContent = msg;
     this.overlayMsg.dataset.kind = kind;
     this.overlay.classList.remove("hidden");
@@ -484,7 +617,7 @@ class App {
     this.view.controls.enabled = !on;
     this.flight.setActive(on);
     document.getElementById('flight-hud')!.hidden = !on;
-    if (on) this.view.renderer.domElement.focus({ preventScroll: true });
+    if (on && !this.inputBlocked) this.view.renderer.domElement.focus({ preventScroll: true });
     // Flying owns the camera directly. Keep the final view when returning to physics.
     this.heldView = true;
     this.panel.setNoclip(on);
@@ -496,8 +629,8 @@ class App {
     const panels = document.getElementById('toggle-panels') as HTMLButtonElement;
     const inspector = document.getElementById('toggle-inspector') as HTMLButtonElement;
     const menu = document.getElementById('toggle-menu') as HTMLButtonElement;
-    let visible = { inspector: true, menu: true };
-    let restore = { ...visible };
+    let visible = { inspector: false, menu: false };
+    let restore = { inspector: false, menu: true };
     try {
       const saved = JSON.parse(localStorage.getItem('ume-panel-visibility') ?? 'null');
       if (typeof saved?.inspector === 'boolean' && typeof saved?.menu === 'boolean') {
@@ -506,12 +639,13 @@ class App {
             && (saved.restore.inspector || saved.restore.menu)) restore = saved.restore;
       }
     } catch { /* Keep the default layout when stored preferences are unavailable. */ }
+    menu.textContent = 'Controls';
     const update = (focus = true) => {
       const hidden = !visible.inspector && !visible.menu;
       document.body.classList.toggle('map-focus', hidden);
       document.body.classList.toggle('inspector-hidden', !visible.inspector);
       document.body.classList.toggle('menu-hidden', !visible.menu);
-      for (const [button, name, shown] of [[inspector, 'inspector', visible.inspector], [menu, 'menu', visible.menu]] as const) {
+      for (const [button, name, shown] of [[inspector, 'inspector', visible.inspector], [menu, 'controls', visible.menu]] as const) {
         button.setAttribute('aria-pressed', String(shown));
         button.setAttribute('aria-expanded', String(shown));
         button.title = `${shown ? 'Hide' : 'Show'} ${name}`;
@@ -536,8 +670,9 @@ class App {
       document.getElementById('viewport')!.style.setProperty('--viewport-tools-height', `${toolbar.offsetHeight}px`);
     }).observe(toolbar);
     window.addEventListener('keydown', e => {
-      if (e.code === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey
-          && (e.target === this.view.renderer.domElement || document.body.classList.contains('map-focus'))) {
+      if (this.inputBlocked) return;
+      if (e.code === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
+          && e.target === this.view.renderer.domElement) {
         e.preventDefault(); panels.click();
       }
     });
@@ -623,11 +758,11 @@ class App {
 
   private captureView(): SavedView {
     if(this.pendingViewRestore)throw new Error('Wait for the view to finish restoring before saving or sharing it.');
-    const p = this.view.camera.position, t = this.view.controls.target;
+    const p = this.view.camera.position, t = this.view.controls.target, appearance = this.view.getAppearance();
     return { version: 1, robot: this.viewModel?.robot ?? this.model?.robot ?? this.status?.robot ?? 'r1', terrain: this.viewModel?.terrain ?? this.panel.terrain,
       position: [p.x, p.y, p.z], target: [t.x, t.y, t.z], fov: this.view.camera.fov,
       display: this.explore.getDisplay(), flashlight: this.flashlight, look: this.look.getState(),
-      appearance:this.view.getAppearance(),sourceHead:this.view.getAppearance().sourceBody!=='dog'&&this.view.getHeadVisualState().available?this.view.getHeadVisual():'stock',
+      appearance,sourceHead:(appearance.sourceBody??'stock')==='stock'&&this.view.getHeadVisualState().available?this.view.getHeadVisual():'stock',
       orientation:this.view.camera.quaternion.toArray(),noclip:this.noclip,flight:{speed:this.flight.speed,hover:this.flight.hover} };
   }
 
@@ -678,8 +813,8 @@ class App {
       const view=request.view,family=(robot:string)=>robot.split('_')[0],model=this.viewModel;
       if(!model||message.terrain!==view.terrain||model.terrain!==view.terrain||family(message.robot)!==family(view.robot))throw new Error('The requested robot or map did not load.');
       if(view.appearance){
-        this.look.restoreAppearance(model.robot,view.appearance);
-        if(model.robot!==view.robot)this.look.restoreAppearance(view.robot,view.appearance);
+        this.look.restoreAppearance(model.robot,view.appearance,view.sourceHead);
+        if(model.robot!==view.robot)this.look.restoreAppearance(view.robot,view.appearance,view.sourceHead);
       }
       if(view.sourceHead!==undefined)await this.view.setSourceHead(view.sourceHead);
       await Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]);
@@ -763,14 +898,14 @@ class App {
 
   private beginRecording() {
     const m = this.model;
-    if (!m || this.exporting) return;
+    if (!m || !this.liveGeometry || this.exporting) return;
     if (this.timeline.isOpen) this.closeReview();
     const s = this.status;
     this.recModel = m;
     this.rec = new TakeRecorder({
-      robot: m.robot, model: s?.model, terrain: m.terrain??this.panel.terrain, sourceTime: this.view.getSourceTime(), appearance: this.view.getAppearance(), sourceHead: this.view.getSourceHead(), robotFade: this.view.getRobotFadeState(), policy: s?.policy ?? "-",
+      robot: m.robot, model: s?.model, terrain: m.terrain??this.panel.terrain, sourceTime: this.view.getSourceTime(), appearance: this.view.getAppearance(), sourceHead: this.view.getSourceHead(), look: this.look.getState(), robotFade: this.view.getRobotFadeState(), policy: s?.policy ?? "-",
       created: new Date().toISOString(), ngeom: m.ngeom, nq: m.nq, baseQadr: m.baseQadr, hinges: m.hinges,
-    });
+    }, this.liveGeometry.partition);
     this.logged = {};
     this.pending = {};
     if (s?.playback) this.rec.mark("clip", s.playback);
@@ -780,6 +915,25 @@ class App {
     this.panel.setRecording(true);
     this.recBadge.hidden = false;
     this.recTime.textContent = "REC 0.0 s";
+    this.recBadge.title='Preparing recording recovery…';
+    const rec=this.rec;
+    this.recCheckpoint=this.recordingRecovery.record(rec,m,
+      `#${this.takeNo+1} · ${s?.model??m.robot} · ${s?.policy??'-'}`,state=>{
+        if(this.rec!==rec)return;
+        this.recBadge.title=state.error?state.error:
+          state.saving?'Saving recording recovery…':state.frames?`Recovery saved through ${fmtTime(state.duration)} s`:'Preparing recording recovery…';
+        this.updateRecordingInfo(state.error);
+      });
+    this.updateRecordingInfo();
+  }
+
+  private updateRecordingInfo(error=this.recCheckpoint?.error) {
+    const rec=this.rec;if(!rec)return;
+    const time=fmtTime(rec.elapsed,1),text=`REC ${time} s${error?' · recovery failed':''}`;
+    if(this.recTime.textContent===text)return;
+    this.recTime.textContent=text;
+    this.panel.setRecordInfo(`Recording… ${time} s, ${rec.frames} frames.`+
+      (error?` ${error}`:''));
   }
 
   /** Stop and open the take on the timeline (`why` explains an automatic stop). */
@@ -787,11 +941,14 @@ class App {
     const rec = this.rec;
     if (!rec) return;
     this.rec = null;
+    const checkpoint=this.recCheckpoint;this.recCheckpoint=null;
+    void checkpoint?.stop();
     this.panel.setRecording(false);
     this.recBadge.hidden = true;
     const take = rec.finish();
     if (!take) {
       this.look.setHeadLocked(false);
+      checkpoint?.release();
       this.panel.setRecordInfo("Nothing recorded — the sim posted no frames (is it loading?).");
       return;
     }
@@ -803,6 +960,7 @@ class App {
     this.panel.setRecordInfo(`Take #${this.takeNo}: ${fmtTime(take.duration)} s, ${take.n} frames, ` +
                              `${take.events.length} inputs.` + (why ? ` ${why}` : ""));
     this.openReview();
+    this.rememberTake(take,this.takeModel!,this.takeTitle,checkpoint??undefined);
   }
 
   private camPose() {
@@ -814,28 +972,33 @@ class App {
   // ---- review (timeline) ----------------------------------------------------
   private openReview() {
     const take = this.take, tm = this.takeModel;
-    if (!take || !tm) return;
+    if (!take || !tm || this.exporting) return;
     this.cancelScreenshot();
     if (!this.timeline.isOpen) {
-      this.liveAppearance = this.view.getAppearance();
-      this.liveSourceHead = this.view.getHeadVisualState().available ? this.view.getHeadVisual() : 'stock';
+      this.liveReview = { model: this.viewModel, appearance: this.view.getAppearance(),
+        head: this.view.getHeadVisualState().available ? this.view.getHeadVisual() : 'stock', look: this.look.getState() };
     }
     if (this.noclip) this.setNoclip(false);
     if (this.viewModel !== tm) { this.buildView(tm); this.viewModel = tm; }
-    this.view.setAppearance(take.meta.appearance ?? {...this.view.getAppearance(),sourceBody:'stock'});
-    this.look.setHeadLocked(true);
-    void this.view.setSourceHead(take.meta.sourceHead === 'ghost' ? 'ghost' : 'stock')
-      .then(() => this.look.refreshHead())
-      .catch(error => { if (this.timeline.isOpen && this.take === take) this.showOverlay(`Recorded head visual could not load: ${error instanceof Error ? error.message : error}`, 'error'); });
+    this.reviewOriginal = { take,
+      appearance: take.meta.appearance ?? { ...(this.liveReview?.model === tm ? this.liveReview.appearance : { colorway: 'grey', parts: {} }), sourceBody: 'stock' },
+      head: take.meta.sourceHead === 'ghost' ? 'ghost' : 'stock',
+      look: take.meta.look ?? this.liveReview!.look };
+    this.applyTakeLook();
     this.send({ t: "pause", on: true });
     this.keysHeld.clear();
     if (this.command.some((v) => v !== 0)) this.setCommand([0, 0, 0]);
-    this.reviewXpos = new Float32Array(3 * tm.ngeom);
-    this.reviewXmat = new Float32Array(9 * tm.ngeom);
     this.followZ = tm.robot.startsWith("go2") ? 0.35 : 0.7;
-    if (this.shot.height <= 0) this.shot.height = this.followZ;
+    if (take.shot) Object.assign(this.shot,take.shot);
+    else {
+      if(this.shot.height<=0)this.shot.height=this.followZ;
+      take.shot={...this.shot};
+    }
     this.timeline.open(take, this.takeTitle);
-    this.rebuildShot();
+    this.rebuildShot(false);
+    const savedState=this.storedTakes.get(take);
+    this.timeline.setAutosaveState('');
+    if(savedState)this.updateShotSaveStatus(take,savedState);
     this.setViewMode(this.timeline.mode);
     this.lidarBox.box.style.display = "none";
     this.inspectorBody.replaceChildren(eventList(take, this.takeTitle, (t) => this.timeline.seek(t)));
@@ -844,26 +1007,83 @@ class App {
   private closeReview() {
     if (this.exporting) return;
     this.cancelScreenshot();
+    const stored=this.take&&this.storedTakes.get(this.take);
+    if(stored&&stored.previewDirty&&stored.previewReady)this.snapshotShotPreview(this.take!,stored);
     if (this.dialog.isOpen) this.dialog.close();
     this.timeline.close();
     this.view.setSourceTime(null);
     this.view.setRobotOpacityOverride(null);
     this.setViewMode("free");
+    const live=this.liveReview,sameRobot=!!live?.model&&live.model.robot===this.model?.robot;
+    this.look.endShotEdit();
+    this.look.setHeadLocked(false);
+    this.view.setShotLights([]);
     if (this.model && this.viewModel !== this.model) {
       this.buildView(this.model);
       this.viewModel = this.model;
       this.lastFrame = null;
     }
-    if (this.liveAppearance) this.view.setAppearance(this.liveAppearance);
-    this.liveAppearance = null;
-    const head = this.liveSourceHead ?? 'stock';
-    this.liveSourceHead = null;
-    this.look.setHeadLocked(false);
+    if (sameRobot) this.view.setAppearance(live!.appearance, live!.head);
+    else if (this.model) this.look.onModel(this.model.robot);
+    const head = sameRobot ? live!.head : this.view.getHeadVisual();
+    this.liveReview = null;
+    this.reviewOriginal = null;
     void this.view.setSourceHead(head).then(() => this.look.refreshHead())
       .catch(error => { if (!this.timeline.isOpen && this.view.getHeadVisual() === head) this.showOverlay(`Head visual could not load: ${error instanceof Error ? error.message : error}`, 'error'); });
     this.followZ = this.model?.robot.startsWith("go2") ? 0.35 : 0.7;
     this.send({ t: "pause", on: false });
     this.inspectorBody.innerHTML = `<span class="ins-empty">Back to the live sim…</span>`;
+  }
+
+  private applyTakeLook() {
+    const original = this.reviewOriginal, take = this.take;
+    if (!original || original.take !== take) return;
+    const edits = take!.meta.edits, head = edits?.sourceHead ?? original.head;
+    this.cancelScreenshot();
+    this.view.setAppearance(edits?.appearance ?? original.appearance, head);
+    this.view.setShotLights(edits?.lights ?? []);
+    this.look.setHeadLocked(false);
+    this.look.beginShotEdit(edits?.look ?? original.look, () => this.saveTakeEdits(take!), () => {
+      if (this.take !== take || this.exporting) return;
+      delete take!.meta.edits;
+      this.applyTakeLook();
+      this.queueShotUpdate(take!);
+    });
+    const generation = this.viewBuildGeneration;
+    void this.view.setSourceHead(head).then(() => {
+      if (this.take === take && this.viewBuildGeneration === generation) this.look.refreshHead();
+    }).catch(error => {
+      if (this.take === take && this.viewBuildGeneration === generation && this.timeline.isOpen)
+        this.showOverlay(`Shot head could not load: ${error instanceof Error ? error.message : error}`, 'error');
+    });
+  }
+
+  private saveTakeEdits(take: Take) {
+    if (this.take !== take || !this.timeline.isOpen || this.exporting) return;
+    this.cancelScreenshot();
+    take.meta.edits = { version: 1, appearance: this.view.getAppearance(), sourceHead: this.view.getHeadVisual(),
+      look: this.look.getState(), lights: this.view.getShotLights() };
+    this.queueShotUpdate(take);
+  }
+
+  private editTakeLook() {
+    if (!this.timeline.isOpen || this.exporting) return;
+    if (document.body.classList.contains('menu-hidden')) document.getElementById('toggle-menu')!.click();
+    document.querySelector<HTMLButtonElement>('#workspace-panels button[aria-controls="scene-window"]')!.click();
+    this.look.revealShotEdit();
+  }
+
+  private setExporting(on: boolean) {
+    this.exporting = on;
+    this.cancelScreenshot();
+    this.look.setReadOnly(on);
+    this.timeline.root.inert = on;
+    document.getElementById('panel')!.inert = on;
+    this.view.controls.enabled = !on && this.timeline.mode !== 'recorded';
+    if(!on&&this.take){
+      const state=this.storedTakes.get(this.take);
+      if(state?.previewDirty&&!state.deleted)this.scheduleShotPreview(this.take,state);
+    }
   }
 
   private setViewMode(m: ViewMode) {
@@ -875,12 +1095,13 @@ class App {
     this.view.controls.enabled = m !== "recorded" && !this.exporting;
   }
 
-  private rebuildShot() {
+  private rebuildShot(persist=true) {
     if (!this.take) return;
     this.shotPath = new ShotPath(this.take, this.shot, this.timeline.rangeIn);
     const s = this.shot;
     const [w, h] = this.dialog.outSize;
     this.shotFrame.querySelector("span")!.textContent = `${w} × ${h} · ${s.focal} mm · ${s.mode}`;
+    if(persist){this.take.shot={...this.shot};this.queueShotUpdate(this.take);}
   }
 
   private openExport(tab: "video" | "data") {
@@ -896,9 +1117,12 @@ class App {
     const take = this.take!;
     this.view.setSourceTime((take.meta.sourceTime ?? 0) + t);
     this.view.setRobotOpacityOverride(take.robotOpacityAt(t));
-    take.geomXformAt(t, this.reviewXpos, this.reviewXmat);
-    this.view.sync(this.reviewXpos, this.reviewXmat);
+    const pose = take.poseAt(t);
+    this.view.sync(pose.xpos, pose.xmat);
+    const base = take.basePosAt(t);
+    this.view.updateRobotLighting(base[0], base[1], base[2]);
     this.view.setHoist(take.hoistAt(t));
+    return base;
   }
 
   private stage(): Stage {
@@ -915,15 +1139,35 @@ class App {
   /** Build the scene for a model and re-apply the robot's paint (+ the map's own light). */
   private buildView(desc: RenderModel) {
     this.cancelScreenshot();
-    const generation=++this.viewBuildGeneration,current=()=>generation===this.viewBuildGeneration;
+    ++this.viewBuildGeneration;
     this.view.build(desc);
-    this.look.onModel(desc.robot);
+    const initialHead = launch.active && launch.selection.character ? 'stock' : this.pendingViewRestore?.view.sourceHead;
+    this.look.onModel(desc.robot, initialHead);
+    // Reuse the existing Character handler, including its Original paint semantics.
+    const character = launch.selection.character;
+    if (launch.active && character && !this.launchCharacterApplied) {
+      this.look.restoreAppearance(desc.robot, { ...this.view.getAppearance(), sourceBody: 'stock' });
+      const select = document.querySelector<HTMLSelectElement>('#panel select[aria-label="Character"]');
+      if (!select) throw new Error('The character menu is unavailable for the selected robot.');
+      characterOptions(select, character, desc.robot, true);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      this.launchCharacterApplied = true;
+    }
     const terrain=desc.terrain??(desc===this.takeModel&&isTerrain(this.take?.meta.terrain)?this.take!.meta.terrain:this.panel.terrain);
+    this.prepareMapVisual(terrain);
+  }
+
+  /** Map work survives same-map robot rebuilds; only a new map owns its callbacks. */
+  private prepareMapVisual(terrain: TerrainName) {
+    if (terrain === this.mapVisualTerrain) return;
+    this.mapVisualTerrain = terrain;
+    const generation = ++this.mapVisualGeneration, current = () => generation === this.mapVisualGeneration;
     const id = mapId(terrain);
     const loading = document.getElementById('map-loading')!;
     const message = loading.querySelector('span')!, retry = loading.querySelector('button')!;
     const loadVisual=()=>{
       if(!current())return;
+      let failed=false;
       this.look.setMapLight(null);
       if(id)void fetch(`${MAPS_DIR}/${id}/manifest.json`).then(r=>r.json())
         .then((m:{light?:MapLight})=>{if(current())this.look.setMapLight(m.light??null)})
@@ -931,16 +1175,20 @@ class App {
       loading.hidden = !id; retry.hidden = true;
       message.textContent = 'Loading map visuals…';
       void this.view.setTerrainVisual(id ? `${MAPS_DIR}/${id}/visual.glb` : null, (phase, loaded, total) => {
-        if (!current()) return;
-        const megabytes = (bytes: number) => Math.ceil(bytes / 1048576);
-        const size = loaded ? ` · ${megabytes(loaded)}${total ? ` / ${megabytes(total)}` : ''} MB` : '';
+        if (!current()||failed) return;
+        const size = loaded ? ` · ${Math.ceil(loaded / 1_000_000)}${total ? ` / ${Math.ceil(total / 1_000_000)}` : ''} MB` : '';
         const text = `${phase === 'preparing materials' ? 'Preparing map materials' : `Loading ${phase}`}…${size}`;
         if (message.textContent !== text) message.textContent = text;
-      }).then(() => { if (current()) loading.hidden = true; })
+        launch.mapProgress(phase === 'preparing materials' ? 'Preparing map materials…' : `Map assets · ${phase}`);
+      }).then(() => {
+        if (current()) { loading.hidden = true; launch.mapProgress(id ? 'Map visuals ready.' : 'Built-in terrain ready.'); }
+      })
         .catch((error) => {
           if (!current()) return;
+          failed=true;
           console.warn('Map visual failed to load', error);
           loading.hidden = false; message.textContent = 'Map visuals could not load. Try again.'; retry.hidden = false;
+          launch.fail(`Map visuals could not load: ${error instanceof Error ? error.message : error}`);
           // Retry only map assets: keep the current robot pose and recorded appearance.
           retry.onclick = () => { if(current())void this.view.setTerrainVisual(null).then(()=>{if(current())loadVisual()}); };
         });
@@ -952,9 +1200,10 @@ class App {
   private wirePartPicking() {
     const dom = this.view.renderer.domElement;
     let down: [number, number] | null = null;
-    dom.addEventListener("pointerdown", (e) => { down = this.look.picking ? [e.clientX, e.clientY] : null; });
+    dom.addEventListener("pointerdown", (e) => { down = !this.inputBlocked && this.look.picking ? [e.clientX, e.clientY] : null; });
     dom.addEventListener("pointerup", (e) => {
-      if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;
+      const start=down;down=null;
+      if (this.inputBlocked || !this.look.picking || !start || Math.hypot(e.clientX - start[0], e.clientY - start[1]) > 4) return;
       const part = this.view.pickPart(e);
       if (part) this.look.select(part);
     });
@@ -1000,13 +1249,16 @@ class App {
   }
 
   private async saveTakeFile() {
-    if (!this.take) return;
-    download(await saveTake(this.take), `${this.fileStem()}.take.zip`);
+    const take = this.take, filename = `${this.fileStem()}.take.zip`;
+    if (!take) return;
+    download(await saveTake(take), filename);
   }
 
   private async openTakeFile(file: File) {
+    if (this.exporting || this.recordStarting) return;
     try {
       const take = await loadTake(await file.arrayBuffer());
+      if (this.exporting || this.recordStarting) return;
       const m = this.model, meta = take.meta;
       if (!m || m.robot !== meta.robot || m.ngeom !== meta.ngeom || m.nq !== meta.nq || (m.terrain??this.panel.terrain) !== meta.terrain) {
         this.panel.showNotice("Different scene loaded",
@@ -1023,9 +1275,139 @@ class App {
       this.panel.setTakeAvailable(true);
       this.panel.setRecordInfo(`Opened ${file.name}: ${fmtTime(take.duration)} s, ${take.n} frames.`);
       this.openReview();
+      this.rememberTake(take,m,this.takeTitle);
     } catch (e) {
       this.panel.showNotice("Could not open the take", `${file.name}: ${e instanceof Error ? e.message : e}`);
     }
+  }
+
+  private shotLibraryBlocked():string|null {
+    if(this.rec||this.recordStarting)return 'Stop recording before opening Shots.';
+    if(this.exporting)return 'Wait for the export to finish.';
+    if(this.pendingViewRestore)return 'Wait for the saved view to finish restoring.';
+    return null;
+  }
+
+  private async openShots() {
+    if(this.openingShotLibrary)return;
+    this.openingShotLibrary=true;
+    this.timeline.setPlaying(false);this.stopAndRearm();
+    try{
+      // Flush coalesced writes before a gallery can reopen an older copy of the same take.
+      while(this.shotWrites.size)await Promise.all([...this.shotWrites]);
+      this.shotLibrary.open();
+    }finally{this.openingShotLibrary=false;}
+  }
+
+  private openStoredShot(saved:SavedShot) {
+    const blocked=this.shotLibraryBlocked();
+    if(blocked)throw new Error(blocked);
+    if(this.timeline.isOpen)this.closeReview();
+    this.take=saved.take;this.takeModel=saved.model;this.takeTitle=saved.info.name;
+    const state:StoredTakeState={id:saved.info.id,name:saved.info.name,model:saved.model,created:true,
+      writing:false,dirty:false,failed:false,deleted:false,previewDirty:!saved.info.thumbnail,previewReady:false,previewFailed:false,previewVersion:0};
+    this.storedTakes.set(saved.take,state);
+    this.panel.setTakeAvailable(true);
+    this.panel.setRecordInfo(`Opened ${saved.info.name}: ${fmtTime(saved.take.duration)} s, ${saved.take.n} frames.`);
+    this.openReview();
+    if(!saved.info.thumbnail)this.scheduleShotPreview(saved.take,state,0);
+  }
+
+  private rememberTake(take:Take,model:RenderModel,name:string,recovery?:RecordingCheckpointWriter) {
+    const state:StoredTakeState={id:recovery?.id??crypto.randomUUID(),name,model,created:false,writing:false,
+      dirty:true,failed:false,deleted:false,previewDirty:true,previewReady:false,previewFailed:false,previewVersion:0,recovery};
+    this.storedTakes.set(take,state);
+    this.writeStoredTake(take,state);
+    this.scheduleShotPreview(take,state,0);
+  }
+
+  private updateShotSaveStatus(take:Take,state:StoredTakeState) {
+    if(this.take!==take)return;
+    this.timeline.setAutosaveState(state.deleted?'Deleted':state.writing||state.dirty?'Saving…':
+      state.failed?'Not saved · Save ZIP':state.previewFailed?'Saved · Preview unavailable':state.created?'Saved':'Not saved · Save ZIP',
+      state.failed&&!state.deleted);
+  }
+
+  private queueShotUpdate(take:Take) {
+    const state=this.storedTakes.get(take);
+    if(!state||state.deleted)return;
+    state.dirty=true;state.previewDirty=true;state.previewFailed=false;
+    state.previewReady=state.previewReady&&!this.view.getBodyVisualState().loading&&!this.view.getHeadVisualState().loading;
+    this.writeStoredTake(take,state);this.scheduleShotPreview(take,state);
+  }
+
+  private writeStoredTake(take:Take,state:StoredTakeState) {
+    if(state.deleted||state.writing||state.failed&&!state.dirty
+      ||state.created&&!state.dirty&&state.thumbnail===undefined)return;
+    const metadataDirty=state.dirty||!state.created,thumbnail=state.thumbnail;
+    state.thumbnail=undefined;state.dirty=false;state.writing=true;
+    this.updateShotSaveStatus(take,state);
+    let committed=false;
+    const recovery=state.created?undefined:state.recovery;
+    const save=()=>this.shotStore.save({id:state.id,name:state.name,take,model:state.model,thumbnail:thumbnail??null});
+    const operation=state.created
+      ?this.shotStore.update(state.id,{meta:take.meta,shot:take.shot,range:take.range,...(thumbnail?{thumbnail}:{})})
+      :recovery?recovery.stop().then(save):save();
+    const pending=operation.then(()=>{
+      committed=true;state.created=true;state.failed=false;
+      this.shotLibrary.refresh();
+    }).catch(error=>{
+      // A failed full save leaves the old recovery available; later RAM-take saves use a new identity.
+      if(recovery)state.id=crypto.randomUUID();
+      state.failed=metadataDirty||state.dirty;state.dirty=false;
+      if(!state.failed)state.previewFailed=true;
+      if(this.take===take&&state.failed)this.panel.setRecordInfo(
+        `Shot not saved: ${storageErrorMessage(error)} Save a take ZIP before closing this page.`);
+    }).finally(()=>{
+      recovery?.release();if(state.recovery===recovery)state.recovery=undefined;
+      state.writing=false;this.shotWrites.delete(pending);
+      if(committed&&!state.deleted&&(state.dirty||state.thumbnail!==undefined))this.writeStoredTake(take,state);
+      this.updatePendingSaveGuard();
+      this.updateShotSaveStatus(take,state);
+    });
+    this.shotWrites.add(pending);
+    this.updatePendingSaveGuard();
+  }
+
+  private scheduleShotPreview(take:Take,state:StoredTakeState,delayMs=500) {
+    clearTimeout(state.previewTimer);
+    const version=++state.previewVersion;
+    state.previewTimer=window.setTimeout(()=>{
+      state.previewTimer=undefined;
+      const generation=this.viewBuildGeneration;
+      void Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]).then(()=>{
+        if(version!==state.previewVersion||generation!==this.viewBuildGeneration||this.take!==take||!this.timeline.isOpen||this.exporting)return;
+        state.previewReady=true;this.snapshotShotPreview(take,state);
+      }).catch(()=>{
+        if(version!==state.previewVersion||state.deleted)return;
+        state.previewFailed=true;this.updateShotSaveStatus(take,state);
+      });
+    },delayMs);
+  }
+
+  /** Copy a real, clean review frame now; asynchronous encoding owns only the small 2D bitmap. */
+  private snapshotShotPreview(take:Take,state:StoredTakeState) {
+    if(state.deleted||!state.previewDirty||this.take!==take||this.viewModel!==state.model
+      ||!this.timeline.isOpen||this.exporting)return;
+    clearTimeout(state.previewTimer);state.previewTimer=undefined;
+    const version=++state.previewVersion;
+    const restore=this.view.suspendHighlights();
+    try{
+      if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
+      this.reviewFrame(0);
+      const source=this.view.renderer.domElement,scale=Math.min(320/source.width,200/source.height);
+      const image=document.createElement('canvas');
+      image.width=Math.max(1,Math.round(source.width*scale));image.height=Math.max(1,Math.round(source.height*scale));
+      const context=image.getContext('2d');if(!context)throw new Error('Preview canvas unavailable.');
+      context.drawImage(source,0,0,image.width,image.height);state.previewDirty=false;
+      image.toBlob(blob=>{
+        if(version!==state.previewVersion||state.deleted)return;
+        if(!blob){state.previewFailed=true;this.updateShotSaveStatus(take,state);return;}
+        state.thumbnail=blob;this.writeStoredTake(take,state);
+      },'image/webp',.8);
+    }catch{
+      state.previewFailed=true;this.updateShotSaveStatus(take,state);
+    }finally{restore();}
   }
 
   /** Adopt the active policy's command maxima: they scale the gamepad sticks and the held keys, and
@@ -1060,6 +1442,7 @@ class App {
   }
 
   private onKeyUp(e: KeyboardEvent) {
+    if (this.inputBlocked) return;
     if (this.flight.key(e, false)) return;
     const k = e.key.toLowerCase();
     if (k === "shift") { if (this.keysHeld.size) this.applyKeys(false); return; }
@@ -1067,13 +1450,73 @@ class App {
     this.applyKeys(e.shiftKey);
   }
 
+  /** Gate entry on worker readiness, completed visuals and a genuinely rendered worker pose. */
+  private async prepareLaunch() {
+    try {
+      await this.initialViewRestore;
+      let generation: number;
+      do {
+        generation = this.viewBuildGeneration;
+        await Promise.all([this.view.waitForRobotVisuals(), this.view.waitForTerrainVisuals(), this.firstSimulationFrame]);
+      } while (generation !== this.viewBuildGeneration);
+      if (!this.lastFrame) throw new Error('The simulator did not provide a scene frame.');
+      if (this.view.renderer.getContext().isContextLost()) throw new Error('The viewport is unavailable.');
+      this.drawLiveFrame();
+      launch.firstFrame();
+      this.overlay.classList.add('hidden');
+      launch.visualsReady();
+    } catch (error) {
+      this.failLaunchVisuals(`Scene could not finish loading: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  private failLaunchVisuals(message: string) {
+    const body = this.view.getBodyVisualState(), head = this.view.getHeadVisualState();
+    const optional = (body.choice !== 'stock' && (!body.available || body.error !== null))
+      || (head.choice === 'ghost' && head.error !== null);
+    if (launch.active && optional) launch.fail(message, () => this.useOriginalLaunch());
+    else this.showOverlay(message, 'error');
+  }
+
+  /** A deliberate cosmetic opt-out changes the required scene, not its failure checks. */
+  private async useOriginalLaunch() {
+    const robot = this.model?.robot;
+    if (!robot) throw new Error('The robot is not ready to switch appearance.');
+    const linked = launch.selection.preserveView ? sharedView() : null;
+    this.look.restoreAppearance(robot, { ...this.view.getAppearance(), sourceBody: 'stock' }, 'stock');
+    const character = document.querySelector<HTMLSelectElement>('#panel select[aria-label="Character"]');
+    if (!character) throw new Error('The character menu is unavailable for the selected robot.');
+    character.value = 'stock';
+    character.dispatchEvent(new Event('change', { bubbles: true }));
+    launch.selection.character = 'stock';
+    this.launchCharacterApplied = true;
+    this.initialViewRestore = Promise.resolve();
+    if (linked) {
+      const original = { ...linked, appearance: this.view.getAppearance(), sourceHead: 'stock' as const };
+      this.initialViewRestore = this.restoreView(original);
+    } else {
+      const url = new URL(location.href);
+      if (robot.startsWith('r1')) url.searchParams.set('body', 'stock');
+      else url.searchParams.delete('body');
+      history.replaceState(null, '', url);
+    }
+    await this.prepareLaunch();
+  }
+
   // ---- worker messages ------------------------------------------------
   private onWorker(m: FromWorker) {
     switch (m.t) {
+      case 'loading': return launch.receiveTransfers(m.generation, m.updates);
       case "model":
         // a rebuild mid-recording ends the take there: its frames belong to the old model
         if (this.rec) this.stopRecording("Stopped when the scene was rebuilt.");
+        if (launch.active) {
+          this.resolveFirstFrame?.();
+          this.firstSimulationFrame = new Promise<void>(resolve => { this.resolveFirstFrame = resolve; });
+          launch.phase('Preparing robot and map visuals…');
+        }
         this.model = m.desc;
+        this.liveGeometry = new FrameGeometryBuffer(m.desc.ngeom, m.geometry);
         if (this.timeline.isOpen) return;          // the review keeps showing the take's model
         this.buildView(m.desc);
         this.viewModel = m.desc;
@@ -1084,18 +1527,19 @@ class App {
         return;
       case "frame":
         if (this.viewModel !== this.model) return;   // reviewing another model's take
-        this.lastFrame = { xpos: m.xpos, xmat: m.xmat };
+        if (!this.liveGeometry) throw new Error('A simulation frame arrived without its geometry layout.');
+        this.liveGeometry.apply(m.xpos, m.xmat);
+        this.lastFrame = this.liveGeometry;
+        this.resolveFirstFrame?.(); this.resolveFirstFrame = null;
         this.baseXY = [m.baseX, m.baseY];
         this.baseZ = this.model && this.model.baseQadr >= 0 ? m.qpos[this.model.baseQadr + 2] : this.followZ;
         if (!this.timeline.isOpen) this.view.setHoist(m.hoistAnchor ?? null);
         if (this.rec) {
+          // Recording consumes the original-ID view; compact transferred buffers are no longer needed.
+          m.xpos = this.liveGeometry.xpos; m.xmat = this.liveGeometry.xmat;
           this.rec.push(m, this.command, this.camPose());
+          this.recCheckpoint?.changed();this.updateRecordingInfo();
           const e = this.rec.elapsed;
-          const txt = `REC ${fmtTime(e, 1)} s`;
-          if (txt !== this.recTime.textContent) {
-            this.recTime.textContent = txt;
-            this.panel.setRecordInfo(`Recording… ${fmtTime(e, 1)} s, ${this.rec.frames} frames.`);
-          }
           if (e >= MAX_TAKE_S) this.stopRecording(`Stopped at the ${MAX_TAKE_S / 60} min limit.`);
         }
         return;
@@ -1109,7 +1553,13 @@ class App {
         return;
       case 'viewReady':void this.finishViewRestore(m);return;
       case "busy": return this.showOverlay(m.msg, "busy");
-      case "ready": return this.overlay.classList.add("hidden");
+      case "ready": {
+        if (launch.active) {
+          launch.simulationReady();
+          void this.prepareLaunch();
+        } else if (this.overlayMsg.dataset.kind !== 'error') this.overlay.classList.add('hidden');
+        return;
+      }
       case 'robotPlaced': {
         if (!this.placementPending) return;
         const point = this.placementPoint?.clone();
@@ -1218,7 +1668,16 @@ class App {
 
   // ---- input ----------------------------------------------------------
   private onKey(e: KeyboardEvent) {
+    if (e.defaultPrevented || this.inputBlocked || launch.ownsKey(e.code) || this.modalKeys.has(e.code)) return;
     if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target instanceof HTMLElement && e.target.isContentEditable)) return;
+    // Native buttons and details summaries own activation, including Workspace tools.
+    if ((e.target instanceof HTMLButtonElement || e.target instanceof HTMLElement && e.target.closest('summary'))
+        && (e.key === ' ' || e.key === 'Enter')) return;
+    if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      if (!e.repeat) this.help.open();
+      return;
+    }
     if (this.exporting || document.getElementById("policy-notice")) return;
     const flightModifier = this.noclip && !e.metaKey && !e.altKey
       && (e.code === 'Space' || e.code.startsWith('Control') || e.code.startsWith('Shift'));
@@ -1284,11 +1743,29 @@ class App {
   }
 
   // ---- render loop ----------------------------------------------------
+  private updatePendingSaveGuard(){
+    if(this.screenshotPending||this.shotWrites.size)window.addEventListener('beforeunload',this.warnPendingSave);
+    else window.removeEventListener('beforeunload',this.warnPendingSave);
+  }
+
   private cancelScreenshot(message='The scene changed. Take the screenshot again when it has loaded.'){
     if(!this.screenshotPending)return;
     ++this.screenshotRequest;this.screenshotPending=false;this.screenshotIsCurrent=null;
     this.screenshotAbort?.abort();this.screenshotAbort=null;
+    this.updatePendingSaveGuard();
     this.panel.setScreenshotState(false,message);
+  }
+
+  private retainScreenshot(png:Blob,name:string,created:string,robot:string,terrain:string,request:number) {
+    const pending=this.photoStore.save({id:crypto.randomUUID(),name,created,robot,terrain,png}).then(()=>{
+      this.shotLibrary.refresh();
+      if(request===this.screenshotRequest&&!this.screenshotPending)this.panel.setScreenshotState(false,'PNG downloaded · saved in Shots');
+    }).catch(error=>{
+      if(request===this.screenshotRequest&&!this.screenshotPending)this.panel.setScreenshotState(false,
+        `PNG downloaded; Shots could not save: ${storageErrorMessage(error)} Keep the PNG file.`);
+    }).finally(()=>{this.shotWrites.delete(pending);this.updatePendingSaveGuard()});
+    this.shotWrites.add(pending);
+    this.updatePendingSaveGuard();
   }
 
   private async takeScreenshot(){
@@ -1305,21 +1782,25 @@ class App {
       &&revision===this.view.getVisualRevision()&&!this.exporting&&!this.pendingViewRestore
       &&(review||model===this.model&&this.overlay.classList.contains('hidden')&&(model.terrain??this.panel.terrain)===this.panel.terrain);
     this.screenshotPending=true;this.screenshotAbort=controller;this.screenshotIsCurrent=current;
+    this.updatePendingSaveGuard();
     this.panel.setScreenshotState(true,'Preparing scene visuals…');
     const aborted=new Promise<never>((_,reject)=>controller.signal.addEventListener('abort',()=>reject(new DOMException('Screenshot cancelled.','AbortError')),{once:true}));
-    let phase:'prepare'|'capture'='prepare',message='';
+    let phase:'prepare'|'capture'='prepare',message='',restoreHighlights:(()=>void)|undefined;
     try{
       await Promise.race([Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]),aborted]);
       if(!current()){this.cancelScreenshot();return}
       phase='capture';
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
+      restoreHighlights=this.view.suspendHighlights();
       if(review&&this.take)this.reviewFrame(0);else this.drawLiveFrame();
       const terrain=model.terrain??(review&&isTerrain(take?.meta.terrain)?take!.meta.terrain:this.panel.terrain);
       const filename=`${mapId(terrain)??terrain}_${model.robot}_${stamp()}.png`;
+      const created=new Date().toISOString();
       const blob=await Promise.race([capturePng(this.view.renderer.domElement),aborted]);
       if(!current()){this.cancelScreenshot();return}
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
-      download(blob,filename);message=`Saved ${filename}`;
+      download(blob,filename);message='PNG downloaded · saving to Shots…';
+      this.retainScreenshot(blob,filename.slice(0,-4),created,model.robot,terrain,request);
     }catch{
       if(request!==this.screenshotRequest)return;
       message=!current()?'The scene changed. Take the screenshot again when it has loaded.'
@@ -1327,8 +1808,10 @@ class App {
         :phase==='prepare'?'Scene visuals could not load. Retry the map or robot model, then try Screenshot again.'
         :'The PNG could not be saved. Try Screenshot again.';
     }finally{
+      restoreHighlights?.();
       if(request===this.screenshotRequest){
         this.screenshotPending=false;this.screenshotAbort=null;this.screenshotIsCurrent=null;
+        this.updatePendingSaveGuard();
         this.panel.setScreenshotState(false,message);
       }
     }
@@ -1338,7 +1821,7 @@ class App {
   private drawLiveFrame(){
     if(this.lastFrame){
       if(!this.heldView&&!this.noclip)this.view.follow(this.baseXY[0],this.baseXY[1],this.baseZ);
-      else this.view.updateRobotLighting(this.baseXY[0],this.baseXY[1],this.baseZ);
+      this.view.updateRobotLighting(this.baseXY[0],this.baseXY[1],this.baseZ);
       this.view.sync(this.lastFrame.xpos,this.lastFrame.xmat);
     }
     if(this.leashDrag)this.view.setLeash([this.baseXY[0],this.baseXY[1],.3],[this.leashDrag[0],this.leashDrag[1],.12]);
@@ -1357,6 +1840,9 @@ class App {
         ?'An export started. Take another screenshot after it finishes.':undefined);
       if (this.exporting) return;                    // the export owns the canvas
       if (this.timeline.isOpen && this.take) return this.reviewFrame(dt);
+      // The loading game owns the screen; prepareLaunch renders one real ready frame.
+      if (launch.active) return;
+      if (this.inputBlocked) { this.drawLiveFrame(); return; }
       const padCmd = this.pad.poll((a) => this.onPadAction(a), this.status?.combos,
                                    (combo) => this.remote(combo));
       if (padCmd && !this.noclip) {
@@ -1384,10 +1870,8 @@ class App {
   private reviewFrame(dt: number) {
     const take = this.take!, tl = this.timeline;
     tl.tick(dt);
-    if (this.shotPath && this.shotPath.t0 !== tl.rangeIn) this.rebuildShot();   // range start anchors fixed / orbit
     const t = tl.time;
-    this.poseTake(t);
-    const b = take.basePosAt(t);
+    const b = this.poseTake(t);
     if (tl.mode === "recorded") {
       const c = take.camAt(t), cam = this.view.camera;
       cam.position.set(...c.pos);

@@ -1,0 +1,12 @@
+[Unit]
+Description=m0clip stable release
+After=network-online.target
+
+[Service]
+Environment=UNITREE_RELEASE_DIR=%h/m0clip-ts/dist
+ExecStart=%h/.local/share/unitree-dev/bin/caddy run --config %h/m0clip-ts/deploy/development/Caddyfile --adapter caddyfile
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

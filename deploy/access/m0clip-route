@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Carry native SSH over the private network, with the original LAN as fallback."""
+import ipaddress
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import threading
+
+HOME_HOST = "192.168.20.156"
+HOME_NAME = "gdev-kubu"
+CLI = Path.home() / ".local/share/unitree-private-network/bin/tailscale"
+SOCKET = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "unitree-private-network/tailscaled.sock"
+
+
+def peer_address(status):
+    if status.get("BackendState") != "Running":
+        return None
+    matches = []
+    for peer in (status.get("Peer") or {}).values():
+        if peer.get("HostName") != HOME_NAME or not peer.get("Online") or peer.get("Expired"):
+            continue
+        for value in peer.get("TailscaleIPs", []):
+            address = ipaddress.ip_address(value)
+            if address.version == 4 and address in ipaddress.ip_network("100.64.0.0/10"):
+                matches.append(str(address))
+    if len(matches) > 1:
+        raise RuntimeError("More than one private-network device is named gdev-kubu.")
+    return matches[0] if matches else None
+
+
+def private_status():
+    if not CLI.exists() or not SOCKET.exists():
+        return {"BackendState": "NotInstalled"}
+    result = subprocess.run(
+        [str(CLI), f"--socket={SOCKET}", "status", "--json"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5,
+    )
+    return json.loads(result.stdout) if result.returncode == 0 else {"BackendState": "Unavailable"}
+
+
+def relay(connection):
+    def outgoing():
+        try:
+            while data := os.read(0, 65536):
+                connection.sendall(data)
+        except OSError:
+            pass
+        finally:
+            try:
+                connection.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+    threading.Thread(target=outgoing, daemon=True).start()
+    while data := connection.recv(65536):
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+
+
+def main():
+    status = private_status()
+    address = peer_address(status)
+    if sys.argv[1:] == ["--diagnose"]:
+        print(json.dumps({"network_state": status.get("BackendState"), "home_peer": address}))
+        return
+    if sys.argv[1:] != [HOME_HOST, "22"]:
+        raise RuntimeError("This transport is reserved for the m0clip node's SSH connection.")
+    if address:
+        os.execv(str(CLI), [str(CLI), f"--socket={SOCKET}", "nc", address, "22"])
+    try:
+        connection = socket.create_connection((HOME_HOST, 22), timeout=3)
+    except OSError as error:
+        raise RuntimeError(
+            "The home node is unreachable. Connect it to the same Tailscale account "
+            "or reconnect this computer to your home network."
+        ) from error
+    with connection:
+        connection.settimeout(None)
+        connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        relay(connection)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"m0clip connection: {error}", file=sys.stderr)
+        sys.exit(1)

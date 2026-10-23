@@ -1,0 +1,47 @@
+#launch-screen { position: fixed; inset: 0; z-index: 5000; overflow: auto; overscroll-behavior: contain; display: grid; align-items: center; justify-items: center; background: var(--bg); color: var(--text); padding: 24px 20px; }
+#launch-screen[hidden], #launch-screen [hidden] { display: none; }
+.launch-shell { width: min(100%, 460px); min-width: 0; margin: auto; }
+.launch-shell header { margin-bottom: 28px; }
+.launch-shell h1 { margin: 0; color: var(--accent); font: 24px var(--sans); font-weight: 700; letter-spacing: -.5px; }
+.launch-shell h2 { font: 15px var(--sans); font-weight: 700; margin: 0 0 20px; }
+.launch-shell p { font-size: 12px; line-height: 1.5; }
+.launch-choices { min-width: 0; }
+.launch-choices label { display: block; margin: 16px 0 8px; color: var(--text-2); font-size: 12px; }
+.launch-shell .btn { min-height: 38px; white-space: normal; border-radius: 1px; }
+.launch-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 24px; }
+.launch-actions .primary { margin-left: auto; }
+#launch-catalog-status:empty, #launch-appearance-note:empty, #launch-map-progress:empty { display: none; }
+#launch-catalog-status, #launch-appearance-note, #launch-context, #launch-map-progress { color: var(--text-2); overflow-wrap: anywhere; }
+#launch-status { min-height: 18px; margin: 14px 0 0; overflow-wrap: anywhere; }
+#launch-status[data-kind="error"] { color: var(--danger); }
+.launch-transfer { margin: 8px 0 0; }
+.launch-load-stage { --court-height: min(262.857px, calc((100vw - 40px) * 4 / 7)); position: relative; width: 100%; height: 12px; margin: 28px 0 16px; }
+.launch-load-stage[data-game="morph"] { height: var(--court-height); animation: launch-court 1100ms steps(10, end) both; }
+.launch-load-stage[data-game="pong"] { height: var(--court-height); }
+@keyframes launch-court { from { height: 12px; } to { height: var(--court-height); } }
+.launch-transfer-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; font: 11px var(--mono); color: var(--text-2); }
+#launch-progress { position: absolute; top: 50%; transform: translateY(-50%); display: block; width: 100%; height: 12px; margin: 0; border: 0; border-radius: 0; overflow: hidden; appearance: none; background: var(--line); accent-color: var(--accent); }
+#launch-progress::-webkit-progress-bar { background: var(--line); }
+#launch-progress::-webkit-progress-value { background: repeating-linear-gradient(90deg, var(--accent) 0 6px, transparent 6px 8px); }
+#launch-progress::-moz-progress-bar { background: var(--accent); }
+#launch-progress:indeterminate::-webkit-progress-bar { background: repeating-linear-gradient(90deg, var(--accent-dim) 0 6px, var(--line) 6px 8px); }
+.launch-load-stage:not([data-game="waiting"]) #launch-progress { opacity: 0; }
+.launch-morph { display: none; position: absolute; inset: 0; pointer-events: none; }
+[data-game="morph"] .launch-morph { display: block; }
+.launch-morph i { position: absolute; top: 50%; transform: translateY(-50%); display: block; height: 12px; background: repeating-linear-gradient(90deg, var(--accent) 0 6px, transparent 6px 8px); }
+.morph-left { left: 0; width: calc(33.333% - 8px); animation: launch-left 1100ms steps(10, end) both; }
+.morph-middle { left: calc(33.333% + 4px); width: calc(33.333% - 8px); animation: launch-middle 1100ms steps(10, end) both; }
+.morph-right { right: 0; width: calc(33.333% - 8px); animation: launch-right 1100ms steps(10, end) both; }
+.launch-morph .morph-ball { left: calc(50% - 4px); width: 8px; height: 8px; background: var(--accent); animation: launch-dot 1100ms steps(4, end) both; }
+@keyframes launch-left { 0%, 18% { left: 0; } 36% { left: 0; width: calc(33.333% - 8px); height: 12px; } 100% { left: 3.333%; width: 1.905%; height: 20%; background: var(--text); } }
+@keyframes launch-right { 0%, 18% { right: 0; } 36% { right: 0; width: calc(33.333% - 8px); height: 12px; } 100% { right: 3.333%; width: 1.905%; height: 20%; background: var(--text); } }
+@keyframes launch-middle { 0%, 18% { left: calc(33.333% + 4px); } 36% { left: calc(33.333% + 4px); width: calc(33.333% - 8px); height: 12px; } 100% { left: 50%; width: 1px; height: 100%; background: repeating-linear-gradient(0deg, var(--line-hi) 0 5px, transparent 5px 12px); } }
+@keyframes launch-dot { 0%, 18% { opacity: 0; } 36%, 100% { opacity: 1; } }
+#launch-pong-controls { position: absolute; inset: 0; }
+#launch-pong { display: block; width: 100%; height: 100%; border: 0; border-radius: 0; touch-action: none; image-rendering: pixelated; }
+#launch-pong:focus-visible { outline: 1px solid var(--accent); outline-offset: 4px; }
+.launch-game-help { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+#launch-pong-pause { min-height: 38px; font-size: 12px; }
+@media (prefers-reduced-motion: reduce) { .launch-morph i, .launch-load-stage { animation: none; } }
+@media (max-width: 380px) { #launch-screen { padding: 20px 16px; } .launch-load-stage { --court-height: calc((100vw - 32px) * 4 / 7); } }
+@media (max-height: 600px) { .launch-shell header { margin-bottom: 18px; } .launch-shell h2 { margin-bottom: 12px; } .launch-load-stage { --court-height: min(180px, calc((100vw - 40px) * 4 / 7)); width: min(100%, 315px); margin-inline: auto; } }

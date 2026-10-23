@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""One-shot, fail-closed SSH-loss recovery; never adopts a live terminal."""
+import os
+from pathlib import Path
+import select
+import subprocess
+import sys
+
+
+def watch(omp_pid, shell_pid, ssh_pid, restore, validate=lambda: None):
+    # pidfds pin identities and report exit, including unreaped zombies.
+    descriptors = []
+    try:
+        for pid in (omp_pid, shell_pid, ssh_pid):
+            descriptors.append(os.pidfd_open(pid))
+        validate()
+        omp, shell, ssh = descriptors
+        ready, _, _ = select.select([omp, ssh], [], [])
+        if omp in ready and ssh not in ready:
+            print('OMP exited while SSH remained live; recovery disarmed.', flush=True)
+            return 0
+        print('SSH exited; waiting until original OMP has exited before recovery.', flush=True)
+        select.select([omp], [], [])
+        print('Original OMP exited; requesting one saved-session restore.', flush=True)
+        return restore()
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
+
+
+def main():
+    if len(sys.argv) != 5:
+        raise SystemExit('Usage: m0clip-omp-recovery OMP_PID SHELL_PID SSH_PID EXACT_SESSION_JSONL')
+    omp, shell, ssh = map(int, sys.argv[1:4])
+    session = Path(sys.argv[4])
+    if not session.is_absolute() or not session.is_file() or session.stat().st_uid != os.getuid():
+        raise SystemExit('Expected an existing absolute, current-user-owned session file.')
+    # Validate after opening pidfds; exit/reuse races then fail closed.
+    def validate():
+        for pid, parent in ((omp, shell), (shell, ssh)):
+            status = Path(f'/proc/{pid}/status').read_text()
+            fields = dict(line.split(':', 1) for line in status.splitlines() if ':' in line)
+            if int(fields['PPid']) != parent or int(fields['Uid'].split()[0]) != os.getuid():
+                raise SystemExit('Process ownership/ancestry changed; refusing to arm.')
+    def restore():
+        return subprocess.call([str(Path.home() / '.local/bin/m0clip-omp'), '--prepare', '--restore', str(session)], cwd=Path.home() / 'm0clip-ts')
+    return watch(omp, shell, ssh, restore, validate)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -1,0 +1,66 @@
+.visual-picker { min-width: 0; width: 100%; }
+.visual-picker-trigger.btn {
+  width: 100%; min-height: 44px; justify-content: flex-start; text-align: left;
+  padding: 10px 12px; white-space: normal; border-color: var(--line-hi);
+  border-radius: var(--r); background: var(--raised); color: var(--text);
+}
+.visual-picker-trigger.btn:hover:not(:disabled) { background: var(--raised-hi); border-color: var(--text-3); }
+.visual-picker-trigger.btn:active:not(:disabled) { box-shadow: inset 1px 1px 0 var(--shadow); }
+.visual-picker-trigger:disabled { opacity: .7; cursor: not-allowed; }
+.visual-picker-trigger img {
+  display: inline-block; width: 64px; height: 44px; object-fit: contain; background: var(--bg);
+  vertical-align: middle; margin-right: 10px; border-radius: var(--r);
+}
+.visual-picker-dialog {
+  box-sizing: border-box; width: min(960px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px); margin: auto; overflow: hidden; padding: 12px;
+  font: 13px/1.5 var(--sans); background: var(--panel); color: var(--text);
+  border: 1px solid var(--line-hi); border-radius: var(--r);
+  box-shadow: 2px 2px 0 var(--shadow), inset 1px 1px 0 var(--bevel);
+}
+.visual-picker-dialog[open] { display: flex; flex-direction: column; }
+.visual-picker-dialog::backdrop { background: var(--scrim); }
+.visual-picker-dialog header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line-hi); }
+.visual-picker-dialog h2 { margin: 0; font-size: 13px; font-weight: 700; }
+.visual-picker-dialog button, .visual-picker-dialog input { font: inherit; color: inherit; min-height: 44px; }
+.visual-picker-dialog header .btn { padding: 8px 16px; }
+.visual-picker-dialog input {
+  box-sizing: border-box; flex: 0 0 auto; width: 100%; margin: 0 0 12px; padding: 8px;
+  background: var(--bg); border: 1px solid var(--line-hi); border-radius: var(--r);
+}
+.visual-picker-dialog input::placeholder { color: var(--text-2); opacity: 1; }
+.visual-picker-grid {
+  display: grid; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); grid-auto-rows: max-content; align-content: start; gap: 8px;
+}
+.visual-picker-grid h3 { grid-column: 1/-1; margin: 8px 0 0; font-size: 12px; color: var(--text-2); }
+.visual-picker-card {
+  display: grid; align-content: start; gap: 6px; text-align: left; padding: 8px;
+  background: var(--raised); border: 2px solid var(--line-hi); border-radius: var(--r); cursor: pointer;
+}
+.visual-picker-card:hover:not(:disabled) { background: var(--raised-hi); }
+.visual-picker-card:active:not(:disabled) { box-shadow: inset 1px 1px 0 var(--shadow); }
+.visual-picker-card[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-dim); }
+.visual-picker-card[aria-pressed="true"]::after { content: "Selected"; font-weight: 600; color: var(--accent); }
+.visual-picker-card:disabled { opacity: .7; cursor: not-allowed; }
+.visual-picker-card small { color: var(--text-2); }
+.visual-picker-preview {
+  display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 16/10;
+  background: var(--bg); overflow: hidden; border-radius: var(--r); font-size: 12px;
+}
+.visual-picker-preview img, .visual-picker-preview canvas, .visual-picker-preview svg {
+  display: block; width: 100%; height: 100%; object-fit: contain;
+}
+.static-preview { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden; }
+.visual-picker-dialog [hidden], .visual-picker > select[hidden] { display: none !important; }
+.visual-picker-dialog :focus-visible, .visual-picker-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.visual-picker-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.visual-picker-actions .btn { padding: 6px 12px; }
+.visual-picker-actions [aria-pressed="true"] { border-color: var(--accent); background: var(--accent-dim); }
+.visual-picker-dialog > p { flex: 0 0 auto; margin: 8px 0; overflow-wrap: anywhere; }
+.visual-picker-card > span { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 450px) {
+  .visual-picker-dialog { padding: 12px; }
+  .visual-picker-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .visual-picker-card { padding: 6px; overflow-wrap: anywhere; }
+}

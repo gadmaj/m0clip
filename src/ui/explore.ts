@@ -3,6 +3,7 @@ import { isTerrain, type TerrainName } from '../sim/terrain';
 import type { SceneDisplay, Appearance, HeadVisual } from '../render/scene';
 import { validAppearance } from './view-appearance';
 import type { LookState } from './look';
+import { compatibleBody } from '../characters/catalog';
 
 export interface SavedView {
   version: 1; robot: string; terrain: TerrainName;
@@ -37,7 +38,8 @@ export function validView(v: unknown): v is SavedView {
       || !Number.isFinite(s.fov) || s.fov < 5 || s.fov > 150
       || !validDisplay(s.display) || typeof s.flashlight !== 'boolean' || !s.look
       || !['auto', 'studio', 'map', 'custom', 'daylight', 'overcast', 'night'].includes(s.look.preset)) return false;
-  if(s.appearance!==undefined&&(!validAppearance(s.appearance)||(s.appearance.sourceBody==='dog'&&!s.robot.startsWith('r1'))))return false;
+  if(s.look.antialiasing!==undefined&&!['fxaa','msaa4','none'].includes(s.look.antialiasing))return false;
+  if(s.appearance!==undefined&&(!validAppearance(s.appearance)||!compatibleBody(s.appearance.sourceBody,s.robot)))return false;
   if(s.sourceHead!==undefined&&(s.sourceHead!=='stock'&&s.sourceHead!=='ghost'||s.sourceHead==='ghost'&&!s.robot.startsWith('r1')))return false;
   if(s.noclip!==undefined&&typeof s.noclip!=='boolean')return false;
   if(s.orientation!==undefined&&(!Array.isArray(s.orientation)||s.orientation.length!==4||!s.orientation.every(Number.isFinite)
@@ -53,7 +55,7 @@ export function viewLink(view: SavedView, base = location.href): string {
   if(!validView(view))throw new Error('This view contains invalid settings.');
   const url = new URL(base);
   if(view.appearance) {
-    if(view.robot.startsWith('r1'))url.searchParams.set('body',view.appearance.sourceBody==='dog'?'dog':'stock');
+    if(view.robot.startsWith('r1'))url.searchParams.set('body',view.appearance.sourceBody??'stock');
     else url.searchParams.delete('body');
   }
   const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(view))))
@@ -199,7 +201,7 @@ export class ExplorePanel {
     this.results.textContent=tokens.length?`${matches.length} of ${this.bookmarks.length} saved views`:`${this.bookmarks.length} saved ${this.bookmarks.length===1?'view':'views'}`;
     this.results.hidden=!this.bookmarks.length&&!tokens.length;
     if (!this.bookmarks.length) {
-      const empty = document.createElement('p'); empty.className = 'saved-view-state'; empty.textContent = 'No saved views yet. Name this viewpoint and choose Save view.';
+      const empty = document.createElement('p'); empty.className = 'saved-view-state'; empty.textContent = 'No saved views. Enter a name and select Save view.';
       this.list.append(empty); return;
     }
     if(!matches.length){const empty=document.createElement('p');empty.className='saved-view-state';empty.textContent='No matching views. Try another name, map file or robot.';this.list.append(empty);return}

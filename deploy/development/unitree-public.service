@@ -1,0 +1,12 @@
+[Unit]
+Description=m0clip public preview tunnel
+Requires=unitree-host.service
+After=unitree-host.service network-online.target
+
+[Service]
+ExecStart=%h/.local/share/unitree-dev/bin/cloudflared tunnel --no-autoupdate --protocol http2 --url http://127.0.0.1:4173
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

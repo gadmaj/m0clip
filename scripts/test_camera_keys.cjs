@@ -4,12 +4,11 @@ const assert=require('node:assert/strict');
 (async()=>{
   const browser=await chromium.launch({headless:process.env.HEADLESS==='1',args:['--no-sandbox','--ozone-platform=x11']});
   try {
-    const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];
-    if(process.env.LOW_DPR)await page.addInitScript(()=>Object.defineProperty(window,'devicePixelRatio',{get:()=>.25}));
+    const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:process.env.LOW_DPR ? .25 : 1}),errors=[];
     page.on('pageerror',e=>errors.push(e.message));
-    await page.route('**/src/main.ts*',async route=>{const response=await route.fetch();await route.fulfill({response,body:(await response.text()).replace('new App();','window.__app = new App();')});});
-    await page.route('**/assets/main-*.js',async route=>{const response=await route.fetch(),original=await response.text();const body=original.replace(/new ([A-Za-z_$][\w$]*);export\{/, 'window.__app=new $1;export{');if(body===original)throw new Error('Production App entry was not found');await route.fulfill({response,body});});
-    await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain'+(process.env.TEST_MAP?'&map='+encodeURIComponent(process.env.TEST_MAP):''));
+    await page.route('**/{src/main.ts*,assets/main-*.js}',async route=>{const response=await route.fetch();await route.fulfill({response,body:require('./expose-app.cjs')(await response.text())});});
+    await page.route('**/assets/main-*.js',async route=>{const response=await route.fetch(),original=await response.text();const body=require('./expose-app.cjs')(original);await route.fulfill({response,body});});
+    await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain'+(process.env.TEST_MAP?'&map='+encodeURIComponent(process.env.TEST_MAP):'')).then(() => require('./launch-scene.cjs').launchScene(page,{terrain:process.env.TEST_MAP?undefined:'flat'}));
     await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});
     if(await page.locator('#policy-notice').count())await page.locator('#policy-notice button').first().click();
     const canvas=page.locator('#viewport canvas');await canvas.focus();
@@ -40,12 +39,12 @@ const assert=require('node:assert/strict');
     if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:'/tmp/camera-keys-desktop.png'});
     // Main-row digits keep the robot state shortcuts; editors keep arrow navigation.
     await page.keyboard.press('n');await page.keyboard.press('2');await page.waitForFunction(()=>window.__app.status.state==='lock');
-    const search=page.locator('#terrain-search');await search.focus();await page.keyboard.press('ArrowDown');await page.keyboard.press('Numpad2');assert.equal(await page.evaluate(()=>window.__app.noclip),false);assert.equal(await page.evaluate(()=>window.__app.status.state), 'lock');await page.keyboard.press('Escape');await canvas.focus();
+    await page.locator('#terrain-trigger').click();const gallery=page.locator('dialog[data-visual-picker="terrain"]'),search=gallery.getByRole('searchbox');await search.focus();await page.keyboard.press('ArrowDown');await page.keyboard.press('Numpad2');assert.equal(await page.evaluate(()=>window.__app.noclip),false);assert.equal(await page.evaluate(()=>window.__app.status.state), 'lock');assert.equal(await gallery.isVisible(),true);await page.keyboard.press('Escape');await canvas.focus();
     await page.keyboard.down('Shift');await page.keyboard.down('ArrowUp');await page.waitForFunction(()=>window.__app.flight.velocity.length()>5);await page.keyboard.up('ArrowUp');await page.keyboard.up('Shift');await page.keyboard.press('Numpad5');await page.keyboard.press('n');
     await page.keyboard.down('Numpad2');await page.waitForFunction(()=>window.__app.noclip);await page.keyboard.up('Numpad2');await page.keyboard.press('Numpad0');await page.keyboard.press('n');
     await page.keyboard.press('v');await page.waitForFunction(()=>window.__app.rec?.frames>=20);await page.keyboard.press('v');await page.waitForFunction(()=>window.__app.timeline.isOpen);
     await page.evaluate(()=>window.__app.timeline.seek(0));await page.keyboard.press('ArrowRight');assert.equal(await page.evaluate(()=>window.__app.noclip),false);assert.ok(await page.evaluate(()=>window.__app.timeline.time)>0);await page.evaluate(()=>window.__app.closeReview());
-    await canvas.focus();await page.keyboard.press('ArrowUp');await page.keyboard.press('Numpad5');await page.setViewportSize({width:390,height:844});await page.locator('#toggle-panels').click();if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:'/tmp/camera-keys-mobile.png'});
+    await canvas.focus();await page.keyboard.press('ArrowUp');await page.keyboard.press('Numpad5');await page.setViewportSize({width:390,height:844});if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:'/tmp/camera-keys-mobile.png'});
     const hud=await page.locator('#flight-hud').boundingBox();assert.ok(hud.x>=0&&hud.x+hud.width<=390&&hud.y>=0&&hud.y+hud.height<=844);assert.deepEqual(errors,[]);
     console.log(JSON.stringify({arrowsStartFlight:true,directions,numLockOff:true,noNumpadRobotStateChanges:true,stopRepeat:true,speedKeys:true,placementProtected:true,editorProtected:true,timelinePreserved:true,mainRowStates:true,browserShortcuts:true,heldShiftOnEntry:true,ctrlSpace:true,mobileHud:hud,errors}));
   } finally {await browser.close();}

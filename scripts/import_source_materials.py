@@ -2,7 +2,7 @@
 """Upgrade Ghost's world materials in place, preserving geometry, collision and lightmap UVs.
 
 Run after import_source_bsp.py: python scripts/import_source_materials.py --map nt_ghost_ctg
-Only Ghost is enabled while the visual fidelity pilot is reviewed.
+Supports the NeoTokyo map catalog after the Ghost fidelity pilot.
 """
 import argparse
 import json
@@ -82,14 +82,19 @@ def convert(directory, bsp, fs):
     annotate_world(glb, model, packing, bsp)
     from source_surface_frames import SurfaceFrames, apply_world_frames
     surface_frames = apply_world_frames(glb, SurfaceFrames(bsp, model), manifest)
+    from source_triangulation import restore_triangles
+    triangulation = restore_triangles(glb.json, glb.buffer, bsp, model)
     (directory/'visibility.json').write_text(json.dumps(visibility_data(bsp, model, manifest), separators=(',', ':')))
     manifest['visibility'] = 'visibility.json'
+    manifest['source_renderer'] = dict(version=1, color='ldr-gamma-lut', antialiasing='fxaa')
     (directory/'manifest.json').write_text(json.dumps(manifest, indent=2))
     glb.write(path)
+    from refresh_source_color import refresh as refresh_color
+    color_corrections = refresh_color(directory, model, fs)
     report = dict(materials=len(glb.json['materials']), textures=len(exporter.textures),
                   detail_materials=sum('detailIndex' in r.get('extras', {}).get('sourceMaterial', {}) for r in glb.json['materials']),
                   missing_effect_textures=sorted(set(exporter.missing)), directional_lightmap_layers=3, overlays=overlays,
-                  surface_frames=surface_frames)
+                  surface_frames=surface_frames, triangulation=triangulation, color_corrections=color_corrections)
     (directory/'materials-report.json').write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))
     return report
@@ -97,7 +102,8 @@ def convert(directory, bsp, fs):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--map', choices=['nt_ghost_ctg'], required=True)
+    from import_source_bsp import GAMES
+    parser.add_argument('--map', choices=GAMES['neotokyo'][2], required=True)
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent; cache = root/'assets/bsp-cache'
     bsp = BSP((cache/f'z.noclip.website_NeoTokyo_NeotokyoSource_maps_{args.map}.bsp').read_bytes())

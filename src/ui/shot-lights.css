@@ -1,0 +1,40 @@
+.shot-lights[hidden] { display: none; }
+.shot-lights .fold-body { min-width: 0; }
+.shot-light-create { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; margin-top: 8px; }
+.shot-lights .btn, .shot-lights input:not([type=checkbox]):not([type=color]) { min-height: 36px; }
+.shot-light-create .visual-picker-trigger { min-height: 44px; }
+.shot-light-list { display: grid; gap: 4px; margin-top: 8px; }
+.shot-light-entry.btn { display: grid; grid-template-columns: minmax(0, 1fr) auto; justify-content: stretch; width: 100%; }
+.shot-light-entry[aria-pressed=true] { border-color: var(--accent); background: var(--accent-dim); }
+.shot-light-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shot-light-kind { color: var(--text-2); font: 11px var(--mono); }
+.shot-light-editor { display: grid; gap: 8px; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+.shot-light-editor > .lk-check { margin-top: 0; }
+.shot-light-editor > .btn { justify-self: start; }
+.shot-light-field { display: grid; grid-template-columns: 88px minmax(0, 1fr); align-items: center; gap: 6px; min-width: 0; }
+.shot-light-field > label { font-size: 12px; color: var(--text-2); }
+.shot-light-field > input { box-sizing: border-box; width: 100%; min-width: 0; }
+.shot-light-field > input[type=color] { width: 44px; height: 32px; padding: 0 2px; border: 1px solid var(--line-hi); border-radius: var(--r); background: var(--raised); cursor: pointer; }
+.shot-light-vector { display: grid; gap: 6px; min-width: 0; margin: 0; padding: 8px; border: 1px solid var(--line); }
+.shot-light-vector > legend { padding-inline: 4px; color: var(--text-2); font-size: 12px; }
+.shot-light-vector > .btn { justify-self: start; }
+.shot-light-axes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.shot-light-axes .shot-light-field { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.shot-light-axes input { padding-inline: 4px; }
+.shot-light-status:empty { display: none; }
+.shot-light-status.error { color: var(--danger); }
+.shot-lights input[aria-invalid=true] { border-color: var(--danger); outline-color: var(--danger); }
+.shot-lights :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.shot-light-diagram { width: 100%; height: 100%; color: var(--accent); }
+.shot-light-diagram svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.shot-light-diagram .shot-light-cone { fill: var(--accent-dim); stroke: var(--text-3); }
+.shot-light-diagram .shot-light-guide { stroke: var(--text-3); stroke-dasharray: 4 4; }
+@media (pointer: coarse), (max-width: 450px) {
+  .shot-lights .btn, .shot-lights input:not([type=checkbox]), .shot-light-field > input[type=color] { min-height: 44px; }
+  .shot-lights .lk-check { min-height: 44px; }
+  .shot-lights input[type=checkbox] { width: 20px; height: 20px; }
+  .shot-light-field { grid-template-columns: 76px minmax(0, 1fr); }
+  .shot-light-axes { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .shot-light-axes .shot-light-field { grid-template-columns: minmax(0, 1fr); }
+  .shot-light-entry.btn { min-height: 44px; }
+}

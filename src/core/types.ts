@@ -175,7 +175,7 @@ export interface RobotSpec {
   foot_bodies: string[];
   num_act: number;
   joint_names: string[];
-  model_dir: string;                 // bundle path holding scene.xml + manifest.json
+  model_dir: string;                 // bundle path holding MJCF and per-scene asset indexes
   /** scene file in model_dir to compile (default "scene.xml"); variants sharing one bundle (G1 Air) */
   scene?: string;
   fall_height: number;

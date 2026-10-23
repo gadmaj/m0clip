@@ -1,0 +1,14 @@
+[Unit]
+Description=Private network transport for m0clip remote access
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/share/unitree-private-network/bin/tailscaled --tun=userspace-networking --state=%h/.local/state/unitree-private-network/tailscaled.state --socket=%t/unitree-private-network/tailscaled.sock --port=0
+RuntimeDirectory=unitree-private-network
+RuntimeDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

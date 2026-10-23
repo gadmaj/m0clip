@@ -1,0 +1,5 @@
+tunnel: a8e4f4f9-5031-4253-84d7-ee6886062361
+ingress:
+  - hostname: m0clip.com
+    service: http://127.0.0.1:4173
+  - service: http_status:404

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Node-local launcher; the client-side m0clip-omp uses SSH instead.
+project_root="${M0CLIP_PROJECT_ROOT:-$HOME/m0clip-ts}"
+session=m0clip-omp
+prepare=false
+case "${1:-}" in
+    --help|-h)
+        printf '%s\n' 'Usage: m0clip-omp [--prepare | OMP arguments...]' 'Starts or attaches to the background m0clip-omp tmux session.' 'New sessions run under systemd --user, outside the desktop and SSH client.' 'Detach without stopping OMP: Ctrl-b then d. Reattach: m0clip-omp.' 'For a new session: m0clip-omp --continue, --resume [ID], or --restore ID.' 'Resume/restore arguments are accepted only when no m0clip-omp session exists.' '--prepare starts detached; it does not attach or consume terminal input.'
+        printf '%s\n' 'New-session status: systemctl --user status m0clip-omp.service' 'A host reboot, OOM kill or deliberate OMP exit still requires saved-session recovery.'
+        exit 0 ;;
+    --prepare) prepare=true; shift ;;
+esac
+cd -- "$project_root"
+source deploy/development/env.sh
+runtime="${XDG_RUNTIME_DIR:-/run/user/$UID}/m0clip-omp"
+umask 077
+mkdir -p -- "$runtime"
+# Serialize desktop/SSH launches, but never hold the lock while attached.
+exec {launch_lock}>"$runtime/launch.lock"
+flock -x "$launch_lock"
+socket="$runtime/tmux.sock"
+if [[ -f "$runtime/active-socket" ]]; then
+    IFS= read -r socket < "$runtime/active-socket"
+fi
+if ! tmux -S "$socket" has-session -t "=$session" 2>/dev/null; then
+    printf -v command 'cd -- %q && source deploy/development/env.sh && exec %q --cwd %q' "$project_root" "$HOME/.local/bin/omp" "$project_root"
+    if (( $# )); then
+        printf -v arguments ' %q' "$@"
+        command+="$arguments"
+    fi
+    # Explicit Bash keeps env.sh and quoted OMP arguments independent of login shell.
+    printf -v command 'exec /bin/bash -c %q' "$command"
+    socket="$runtime/tmux.sock"
+    # Type=forking tracks the real tmux server, not a detached launcher.
+    # Do not fall back to a desktop-owned server if the user manager fails.
+    systemd-run --user --unit=m0clip-omp --collect \
+        --description='Persistent m0clip OMP terminal' --service-type=forking \
+        --working-directory="$project_root" \
+        /usr/bin/tmux -S "$socket" new-session -d -s "$session" -n omp \
+        -c "$project_root" "$command"
+    printf '%s\n' "$socket" > "$runtime/active-socket"
+elif (( $# )); then
+    printf 'Session %s already exists; attach without arguments, or detach/exit it before selecting a saved session.\n' "$session" >&2
+    exit 2
+fi
+flock -u "$launch_lock"
+exec {launch_lock}>&-
+if "$prepare"; then
+    printf 'OMP ready. Reattach: m0clip-omp\n'
+else
+    exec tmux -S "$socket" attach-session -t "=$session"
+fi

@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Open the node's existing console through a private socket and key-only SSH."""
+import os
+from pathlib import Path
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+REMOTE = "/home/g/m0clip-ts/deploy/access/share-console.py"
+
+
+def stop(proc):
+    if proc is not None and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=4)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
+def interrupted(_signal, _frame):
+    raise KeyboardInterrupt
+
+
+def main():
+    os.umask(0o077)
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+    state = Path.home() / ".local/state/m0clip-access-client"
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    logfile = state / "existing-desktop.log"
+    fd = os.open(logfile, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.fchmod(fd, 0o600)
+    viewer = ssh = None
+    with os.fdopen(fd, "ab", buffering=0) as log:
+        try:
+            runtime = os.environ.get("XDG_RUNTIME_DIR") or None
+            with tempfile.TemporaryDirectory(prefix="m0clip-console-", dir=runtime) as work:
+                endpoint = str(Path(work) / "desktop.sock")
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+                    listener.bind(endpoint)
+                    os.chmod(endpoint, 0o600)
+                    listener.listen(1)
+                    listener.settimeout(0.25)
+                    viewer = subprocess.Popen(
+                        ["/usr/bin/vncviewer", "-Shared", "-RemoteResize=0",
+                         "-SecurityTypes=None", endpoint],
+                        stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                    )
+                    deadline = time.monotonic() + 20
+                    while True:
+                        try:
+                            connection, _ = listener.accept()
+                            break
+                        except socket.timeout:
+                            if viewer.poll() is not None:
+                                raise RuntimeError("The desktop viewer closed before connecting.")
+                            if time.monotonic() > deadline:
+                                raise RuntimeError("The desktop viewer did not connect.")
+                    with connection:
+                        ssh = subprocess.Popen(
+                            ["ssh", "-T", "-o", "BatchMode=yes",
+                             "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
+                             "-o", "ServerAliveCountMax=3", "m0clip", REMOTE],
+                            stdin=connection, stdout=connection, stderr=log,
+                        )
+                while viewer.poll() is None and ssh.poll() is None:
+                    time.sleep(0.2)
+                if ssh.poll() not in (None, 0):
+                    raise RuntimeError("The SSH desktop connection ended unexpectedly.")
+                if viewer.poll() not in (None, 0):
+                    raise RuntimeError("The desktop viewer reported a connection error.")
+        except KeyboardInterrupt:
+            return 130
+        except (OSError, RuntimeError) as error:
+            message = f"{error}\n\nConnection log: {logfile}"
+            print(message, file=sys.stderr)
+            subprocess.run(
+                ["/usr/bin/zenity", "--error", "--title=m0clip existing desktop",
+                 f"--text={message}"], check=False,
+            )
+            return 1
+        finally:
+            stop(viewer)
+            stop(ssh)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

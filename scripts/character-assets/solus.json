@@ -1,0 +1,44 @@
+{
+  "source": "Solus_the_knight.gltf",
+  "sourceRoot": "/dev/shm/m0clip-solus-source",
+  "output": "../../public/assets/characters/solus/solus.glb",
+  "preview": "../../public/assets/characters/solus/preview.png",
+  "analysis": "../../.asset-analysis/solus.json",
+  "redistributionApproved": true,
+  "textureMaxDimension": 2048,
+  "sourceForward": "+Z (glTF); -Y (Blender)",
+  "nativeGltfPacking": true,
+  "sourceFiles": {
+    "Solus_the_knight.gltf": "1666fbe334f88bf513a0f3f902571376ef337252b938705cdb08431704169072"
+  },
+  "sourceArchive": {
+    "name": "Solus_the_knight Khronos_Group glTF.7z",
+    "bytes": 18482864,
+    "sha256": "a78c76a2d1c882d8d713ab1d33892099e3d605953dec7570ab0976541ad6c3b3",
+    "uploadId": "1472295",
+    "sourceUrl": "https://manneko.itch.io/solustheknight"
+  },
+  "attribution": {
+    "name": "Solus the Knight",
+    "creator": "Manoel de Oliveira / ManNeko / manoeldarochadeoliveira",
+    "creatorUrl": "https://manneko.itch.io",
+    "copyright": "Solus the Knight by Manoel de Oliveira (ManNeko), licensed under Creative Commons Attribution 4.0 International: https://creativecommons.org/licenses/by/4.0/.",
+    "license": "CC-BY-4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "sourceUrl": "https://sketchfab.com/3d-models/solus-the-knight-566d1224b48e4765acad9593bd9637b8",
+    "downloadSourceUrl": "https://manneko.itch.io/solustheknight",
+    "modifications": "Packed the creator's embedded-texture glTF directly into GLB. Retained original surface geometry, indices, normals, tangents, UVs, native 75-joint hierarchy, node rest transforms, inverse binds and all 21 animation clips and their original keys. Normalized WEIGHTS_0 and WEIGHTS_1 together to unit totals while retaining every nonzero influence and relative ratio to float32 precision. Retained all three original 2048 by 2048 PNG PBR maps byte-for-byte, including shared occlusion/roughness/metallic channels and authored material factors. Embedded attribution, added an R1 skeletal calibration descriptor, and rendered the final asset's native pose for the gallery preview. Native animation clips are retained as source data, not claimed as independent app controllers.",
+    "licenseEvidence": {
+      "work": "https://api.sketchfab.com/v3/models/566d1224b48e4765acad9593bd9637b8",
+      "creatorWorkLinks": [
+        "https://manneko.itch.io/solustheknight",
+        "https://manneko.blogspot.com/2019/06/free-3d-character-solus-knight.html",
+        "https://universoviral.blogspot.com/2019/06/solus-knight-low-poly-character-free.html"
+      ],
+      "originalGltfUpload": "https://manneko.itch.io/solustheknight/devlog/84438/added-new-model-solus-the-knight",
+      "creatorStatement": "https://itch.io/post/8485914",
+      "basis": "The creator links the exact CC-BY-4.0 Sketchfab work and offers its original animated glTF on itch. The creator blog and linked UniversoViral article identify the Sketchfab, itch and CGTrader offerings as the same Solus work. This attribution applies to that identified work, not every creator package.",
+      "archiveContainsLicense": false
+    }
+  }
+}

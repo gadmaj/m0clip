@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex">
+  <link rel="canonical" href="https://m0clip.com/">
+  <title>m0clip has moved</title>
+</head>
+<body>
+  <main>
+    <h1>m0clip has moved</h1>
+    <p><a id="launch" href="https://m0clip.com/">Open m0clip.com</a></p>
+  </main>
+  <script>
+    const target = new URL("https://m0clip.com/");
+    target.search = location.search;
+    target.hash = location.hash;
+    document.getElementById("launch").href = target.href;
+    location.replace(target.href);
+  </script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+{
+  "source": "MonsterPSX.fbx",
+  "output": "../../public/assets/characters/the-wrapped/the-wrapped-512.glb",
+  "preview": "../../public/assets/characters/the-wrapped/preview.png",
+  "analysis": "../../public/assets/characters/the-wrapped/analysis.json",
+  "redistributionApproved": true,
+  "sourceForward": "-Y (Blender); +Z (glTF)",
+  "meshNames": ["MonsterPSX"],
+  "exportDeformOnly": true,
+  "sourceFiles": {
+    "MonsterPSX.fbx": "0bc97a344a55c5849e70f957deb1f433eefb2fcd1cfff34ceb7d0b7ccc551194",
+    "MonsterPSX_Diffuse.png": "41cd6eed09e4315ea1b61eaba27bd26666e54878ba583e63424117799f8de1d8"
+  },
+  "sourceArchive": {"name": "TheWrapper V2.zip", "bytes": 1171604, "sha256": "ae8e0203e6b887dcc072521ca5a04c96858280a25e4b4559f1fc1e3669c4ca92", "uploadId": "18754921", "sourceUrl": "https://codyanka.itch.io/the-wrapped"},
+  "attribution": {
+    "name": "THE WRAPPED — PSX Horror Character (Rigged, Animated)",
+    "creator": "Codyanka",
+    "creatorUrl": "https://codyanka.itch.io",
+    "copyright": "The Wrapped by Codyanka; dedicated to the public domain under CC0.",
+    "license": "CC0",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "sourceUrl": "https://codyanka.itch.io/the-wrapped",
+    "modifications": "Converted original FBX to standard Y-up GLB; retained authored mesh, UVs, 256px diffuse map, every skin influence and relative ratio, full imported bone hierarchy and six animation actions. Normalized skin-weight totals for glTF. Omitted non-surface control-shape meshes and FBX end-marker bones from runtime export; 31 authored bones including IK controls remain. Embedded source attribution and generated a rendered model preview.",
+    "licenseEvidence": {"url": "https://codyanka.itch.io/the-wrapped", "quote": "CC0 — public domain. Commercial use, modification and redistribution allowed. No credit required."}
+  }
+}

@@ -25,9 +25,13 @@ const output=v=>Math.round(lut(Math.max(0,v)**(1/2.2))*255);
     renderer.setRenderTarget(null);renderer.autoClear=true;renderer.setScissorTest(false);renderer.setViewport(0,0,64,64);renderer.setClearColor(0xff00ff,1);renderer.clear();renderer.setViewport(8,6,32,40);renderer.setScissor(10,8,24,32);renderer.setScissorTest(true);renderer.setClearColor(0,0);render(false);
     const canvas=document.createElement('canvas');canvas.width=128;canvas.height=128;const ctx=canvas.getContext('2d');ctx.drawImage(renderer.domElement,0,0);const bar=Array.from(ctx.getImageData(1,1,1,1).data),inside=Array.from(ctx.getImageData(64,64,1,1).data);
     const lut=sourceIdentityLut();let exact=true;for(let z=0;z<32;z++)for(let y=0;y<32;y++)for(let x=0;x<32;x++){const i=((z*32+y)*32+x)*4;if(lut[i]!==Math.floor(x*255/31)||lut[i+1]!==Math.floor(y*255/31)||lut[i+2]!==Math.floor(z*255/31)||lut[i+3]!==255)exact=false;}
-    post.dispose();target.dispose();renderer.dispose();return{blend,opaque,transparent,empty,additive,before,after,failed,caught,bar,inside,lutExact:exact};
+    const grading=new Uint8Array(32*32*32*3);for(let i=0;i<grading.length;i+=3)grading[i]=255;
+    target.viewport.set(0,0,64,64);target.scissorTest=false;renderer.setRenderTarget(target);
+    post.setColorCorrections([{origin:[0,0,0],enabled:true,minfalloff:-1,maxfalloff:-1,data:grading}]);render(false);const graded=read();
+    post.setColorCorrections([]);render(false);const gradingReset=read();
+    post.dispose();target.dispose();renderer.dispose();return{blend,opaque,transparent,empty,additive,before,after,failed,caught,bar,inside,lutExact:exact,graded,gradingReset};
   });
   const baseColor=[.2,.4,.6],front=[.8,.1,.05];const expected={opaque:baseColor.map(v=>output(quantize(v))),blend:baseColor.map((v,i)=>output(quantize(quantize(v)*.5+front[i]*.5))),additive:baseColor.map((v,i)=>output(quantize(quantize(v)+front[i]*.5))),transparent:front.map(v=>Math.round(output(quantize(v*.5)/(.5))*128/255))};
   for(const key of ['opaque','blend','additive','transparent'])for(let i=0;i<3;i++)assert.ok(Math.abs(proof[key][i]-expected[key][i])<=2,`${key}: ${proof[key]} != ${expected[key]}`);
-  assert.equal(proof.transparent[3],128);assert.deepEqual(proof.empty,[0,0,0,0]);assert.deepEqual(proof.before,proof.after);assert.deepEqual(proof.before,proof.failed);assert.ok(proof.caught&&proof.lutExact);assert.deepEqual(proof.bar,[255,0,255,255]);assert.ok(proof.inside[1]>0);assert.deepEqual(errors,[]);console.log(JSON.stringify({...proof,expected,errors}));
+  assert.equal(proof.transparent[3],128);assert.deepEqual(proof.empty,[0,0,0,0]);assert.deepEqual(proof.before,proof.after);assert.deepEqual(proof.before,proof.failed);assert.ok(proof.caught&&proof.lutExact);assert.deepEqual(proof.bar,[255,0,255,255]);assert.ok(proof.inside[1]>0);assert.deepEqual(proof.graded,[255,0,0,255]);assert.deepEqual(proof.gradingReset,proof.blend);assert.deepEqual(errors,[]);console.log(JSON.stringify({...proof,expected,errors}));
 }finally{await browser.close()}})().catch(e=>{console.error(e);process.exitCode=1});

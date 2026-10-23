@@ -12,6 +12,7 @@ import { CODEC_LABEL, CODECS, CONTAINER_LABEL, canAlpha, encodableCodecs, frameC
 import { FOCALS, PRESETS, SENSORS, hfov, vfov, type Shot, type ShotMode, type ShotPath } from "./shot";
 import { csvJointNames, type Take } from "./take";
 import { fmtTime } from "./timeline";
+import { VisualPicker } from "../ui/visual-picker";
 
 export interface ExportHost {
   take(): Take;
@@ -26,7 +27,7 @@ export interface ExportHost {
   setExporting(on: boolean): void;
   glb(fps: number, camera: boolean, floor: boolean): Promise<Blob>;
   csv(fps: number): string;
-  saveTake(): void;
+  saveTake(): Promise<void>;
   save(blob: Blob, ext: string): void;
   onClose(): void;
 }
@@ -88,6 +89,52 @@ function field(label: string, ...kids: Node[]): HTMLElement {
   return row;
 }
 
+/** A dimensioned frame, not a photograph or a claim about a sensor's physical aspect.
+ * The optional reference keeps sensor gates on the same millimetre scale. */
+function frameDiagram(width: number, height: number, unit: string, caption: string,
+                      reference?: [number, number]): HTMLElement {
+  const wrap = h("div");
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 280 190");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `${width} × ${height} ${unit}. ${caption}`);
+  svg.style.cssText = "display:block;width:100%;height:auto";
+  const add = (tag: "rect" | "line" | "text", attrs: Record<string, string | number>, text = "") => {
+    const el = document.createElementNS(ns, tag);
+    for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, String(value));
+    el.textContent = text;
+    svg.append(el);
+    return el;
+  };
+  add("rect", { x: 0, y: 0, width: 280, height: 190, rx: 10, fill: "none", stroke: "var(--line-hi)" });
+  const text = (x: number, y: number, value: string, size = 12) =>
+    add("text", { x, y, fill: "currentColor", "font-size": size, "font-family": "var(--sans)", "text-anchor": "middle" }, value);
+  const dimensions = [width, height].map((n) => Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, "").replace(/\.$/, ""));
+  text(140, 21, `${dimensions.join(" × ")} ${unit}`, 14);
+  if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+    const [rw, rh] = reference ?? [width, height];
+    const scale = Math.min(210 / rw, 100 / rh);
+    const w = width * scale, hh = height * scale;
+    const x = 140 - w / 2, y = 88 - hh / 2;
+    if (reference)
+      add("rect", { x: 140 - rw * scale / 2, y: 88 - rh * scale / 2, width: rw * scale, height: rh * scale,
+        fill: "none", stroke: "var(--text-2)", "stroke-dasharray": "4 3" });
+    add("rect", { x, y, width: w, height: hh, fill: "var(--accent-dim)", stroke: "var(--accent)", "stroke-width": 2 });
+    add("line", { x1: 140, y1: y, x2: 140, y2: y + hh, stroke: "var(--accent)", "stroke-opacity": 0.4 });
+    add("line", { x1: x, y1: 88, x2: x + w, y2: 88, stroke: "var(--accent)", "stroke-opacity": 0.4 });
+    add("line", { x1: x, y1: 149, x2: x + w, y2: 149, stroke: "var(--text-2)" });
+    for (const xx of [x, x + w])
+      add("line", { x1: xx, y1: 145, x2: xx, y2: 153, stroke: "var(--text-2)" });
+    text(140, 169, caption);
+  } else {
+    text(140, 94, "No drawable frame");
+    text(140, 169, caption);
+  }
+  wrap.append(svg);
+  return wrap;
+}
+
 export class ExportDialog {
   private body: HTMLElement;
   private tabs = new Map<string, HTMLButtonElement>();
@@ -97,6 +144,7 @@ export class ExportDialog {
   private probedKey = "";
   private busy: AbortController | null = null;
   private status!: HTMLElement;
+  private pickers: { picker: VisualPicker; select: HTMLSelectElement }[] = [];
 
   constructor(readonly root: HTMLElement, readonly host: ExportHost) {
     this.out = loadPrefs().out;
@@ -124,6 +172,7 @@ export class ExportDialog {
   get isOpen(): boolean { return !this.root.hidden; }
 
   open(tab: "video" | "data") {
+    if (this.busy) return;
     this.root.hidden = false;
     document.body.classList.add("x-open");
     this.show(tab);
@@ -131,6 +180,8 @@ export class ExportDialog {
 
   close() {
     if (this.busy) return;
+    for (const { picker } of this.pickers) picker.dispose();
+    this.pickers = [];
     this.root.hidden = true;
     document.body.classList.remove("x-open");
     this.host.onClose();
@@ -150,16 +201,30 @@ export class ExportDialog {
   }
 
   private show(tab: "video" | "data") {
+    if (this.busy) return;
     this.tab = tab;
     for (const [k, b] of this.tabs) b.classList.toggle("on", k === tab);
     this.render();
   }
 
   private render() {
+    for (const { picker } of this.pickers) picker.dispose();
+    this.pickers = [];
     this.body.replaceChildren();
     this.status = h("div", "x-status");
     if (this.tab === "video") this.renderVideo(); else this.renderData();
     this.body.append(this.status);
+  }
+
+  private visualField(id: string, label: string, select: HTMLSelectElement,
+                      preview: (value: string) => HTMLElement, description: (value: string) => string): HTMLElement {
+    select.id = id;
+    select.disabled = !!this.busy;
+    const picker = new VisualPicker(select, { id, label, preview, description, search: false });
+    this.pickers.push({ picker, select });
+    const row = field(label, picker.root);
+    row.querySelector("label")!.htmlFor = picker.button.id;
+    return row;
   }
 
   private section(title: string, meta = ""): HTMLElement {
@@ -202,10 +267,10 @@ export class ExportDialog {
     const cam = this.section("Camera");
     const seg = h("div", "seg");
     for (const [m, label, title] of [
-      ["viewport", "Viewport", "The camera you drove while recording"],
-      ["follow", "Follow", "A fixed offset from the robot, tracking it"],
-      ["orbit", "Orbit", "Follow while circling the robot"],
-      ["fixed", "Fixed", "Locked off where the robot stood at the range start"]] as [ShotMode, string, string][]) {
+      ["viewport", "Viewport", "Camera movement recorded in the take"],
+      ["follow", "Follow", "Track the robot from a fixed offset"],
+      ["orbit", "Orbit", "Track and circle the robot"],
+      ["fixed", "Fixed", "Camera fixed at the robot's position at range start"]] as [ShotMode, string, string][]) {
       const b = btn(label, shot.mode === m ? "active" : "", () => this.shotEdit({ mode: m }, true), title);
       seg.append(b);
     }
@@ -215,8 +280,8 @@ export class ExportDialog {
       for (const p of PRESETS)
         pre.append(btn(p.label, "chip", () => this.shotEdit({ azimuth: p.azimuth, elevation: p.elevation }, true),
                        `azimuth ${p.azimuth}°, elevation ${p.elevation}°`));
-      pre.append(btn("Grab view", "chip accent", () => this.shotEdit(this.host.grabView(), true),
-                     "Take the framing of the free viewport camera (switch the view to Free, orbit, then grab)"));
+      pre.append(btn("Use current view", "chip accent", () => this.shotEdit(this.host.grabView(), true),
+                     "Copy viewport framing: switch to Free, orbit, then select Use current view"));
       cam.append(pre,
         this.slider("Distance", "distance", 0.5, 12, 0.05, "m"),
         this.slider("Azimuth", "azimuth", -180, 180, 1, "°"),
@@ -244,10 +309,20 @@ export class ExportDialog {
     const chips = h("div", "x-chips");
     for (const f of FOCALS)
       chips.append(btn(`${f}`, "chip" + (shot.focal === f ? " on" : ""), () => this.shotEdit({ focal: f }, true), `${f} mm`));
+    const sensor = select(SENSORS.map((s) => [s.mm, s.label] as [number, string]),
+      SENSORS.find((s) => Math.abs(s.mm - shot.sensor) < 0.01)?.mm ?? 36,
+      (v) => { this.shotEdit({ sensor: v }); updFov(); });
     lens.append(field("Focal length", focal, h("span", "u", "mm")), chips,
-      field("Sensor", select(SENSORS.map((s) => [s.mm, s.label] as [number, string]),
-                             SENSORS.find((s) => Math.abs(s.mm - shot.sensor) < 0.01)?.mm ?? 36,
-                             (v) => { this.shotEdit({ sensor: v }); updFov(); })),
+      this.visualField("export-sensor", "Sensor", sensor, (value) => {
+        const mm = Number(value), aspect = this.aspect;
+        const width = aspect >= 1 ? mm : mm * aspect;
+        const height = aspect >= 1 ? mm / aspect : mm;
+        const largest = Math.max(...SENSORS.map((s) => s.mm));
+        return frameDiagram(width, height, "mm", `Auto-fit gate · ${shot.focal} mm lens`,
+          aspect >= 1 ? [largest, largest / aspect] : [largest * aspect, largest]);
+      }, (value) => `${hfov(shot.focal, Number(value), this.aspect).toFixed(1)}° × ` +
+        `${vfov(shot.focal, Number(value), this.aspect).toFixed(1)}° field of view (h × v). ` +
+        "Effective gate at the current output aspect; dashed outline: largest sensor, same scale."),
       fovEl);
     updFov();
 
@@ -263,13 +338,22 @@ export class ExportDialog {
     }
     const dims = h("div", "x-dims");
     dims.append(w, h("span", "u", "×"), hh, h("span", "u", "px"));
+    const resolution = select(RESOLUTIONS.map(([k, l]) => [k, l] as [string, string]), o.res, (v) => {
+      o.res = v;
+      const r = RESOLUTIONS.find(([k]) => k === v)!;
+      if (r[2]) { o.width = r[2]; o.height = r[3]; }
+      this.changed(true);
+    });
     outS.append(
-      field("Resolution", select(RESOLUTIONS.map(([k, l]) => [k, l] as [string, string]), o.res, (v) => {
-        o.res = v;
-        const r = RESOLUTIONS.find(([k]) => k === v)!;
-        if (r[2]) { o.width = r[2]; o.height = r[3]; }
-        this.changed(true);
-      })),
+      this.visualField("export-resolution", "Resolution", resolution, (value) => {
+        const r = RESOLUTIONS.find(([k]) => k === value)!;
+        const width = r[2] || o.width, height = r[3] || o.height;
+        return frameDiagram(width, height, "px", `${(width / height).toFixed(3)}:1 output aspect`);
+      }, (value) => {
+        const r = RESOLUTIONS.find(([k]) => k === value)!;
+        return value === "custom" ? `Current dimensions: ${o.width} × ${o.height} px. Edit width and height after choosing Custom.` :
+          `${r[2]} × ${r[3]} pixels. Diagram shows frame proportions, not relative pixel count.`;
+      }),
       field("", dims),
       field("Frame rate", select(FPS.map((f) => [f, `${f} fps`] as [number, string]), o.fps, (v) => { o.fps = v; this.changed(true); })),
       field("Speed", select(SPEEDS.map((s) => [s, s === 1 ? "1× real time" : `${s}×`] as [number, string]), o.speed,
@@ -359,6 +443,10 @@ export class ExportDialog {
       return this.say(`${CODEC_LABEL[job.codec]} at ${job.width} × ${job.height} is not available in this browser.`, true);
     const ac = new AbortController();
     this.busy = ac;
+    for (const { picker, select } of this.pickers) {
+      select.disabled = true;
+      picker.sync();
+    }
     this.root.classList.add("busy");
     const foot = this.body.querySelector(".x-foot")!;
     const bar = h("div", "x-progress"), fill = h("i"), txt = h("span");
@@ -431,9 +519,9 @@ export class ExportDialog {
       }));
 
     const tk = this.section("Take file", ".take.zip");
-    tk.append(h("p", "x-note", "The whole recording — motion, inputs, camera — to reopen in this timeline later " +
-      "(Recording › Open take). Needs the same robot model and terrain loaded."),
-      this.action("Save take", async () => { this.host.saveTake(); return "Saved."; }));
+    tk.append(h("p", "x-note", "Save the whole recording: motion, inputs and camera. Reopen with Recording › Open take. " +
+      "Requires the same robot model and terrain loaded."),
+      this.action("Save take", async () => { await this.host.saveTake(); return "Saved."; }));
     this.body.append(h("div", "x-range", `Range ${fmtTime(t0)} → ${fmtTime(t1)} s (set In / Out on the timeline)`));
   }
 
@@ -446,10 +534,28 @@ export class ExportDialog {
   private action(label: string, run: () => Promise<string>): HTMLElement {
     const row = h("div", "x-act");
     const b = btn(label, "btn primary", async () => {
-      b.disabled = true;
+      if (this.busy) return;
+      this.busy = new AbortController();
+      this.root.classList.add("busy");
+      const controls = [...this.root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button")]
+        .map(control => ({ control, disabled: control.disabled }));
+      for (const { control } of controls) control.disabled = true;
+      for (const { picker } of this.pickers) picker.sync();
+      let message = "", failed = false;
       this.say("Working…");
-      try { this.say(await run()); } catch (e) { this.say(`Export failed: ${e}`, true); }
-      b.disabled = false;
+      try {
+        this.host.setExporting(true);
+        message = await run();
+      } catch (e) {
+        message = `Export failed: ${e}`; failed = true;
+      } finally {
+        this.busy = null;
+        this.root.classList.remove("busy");
+        this.host.setExporting(false);
+        this.render();
+        for (const { control, disabled } of controls) control.disabled = disabled;
+        this.say(message, failed);
+      }
     });
     row.append(b);
     return row;

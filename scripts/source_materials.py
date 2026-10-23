@@ -4,7 +4,10 @@ Reference: noclip.website SourceEngine/VTF.ts and Materials/Material_Generic.ts 
 """
 from __future__ import annotations
 import io
+import hashlib
+from pathlib import Path
 import struct
+import tempfile
 import zlib
 import numpy as np
 from PIL import Image
@@ -18,6 +21,18 @@ class MaterialExport:
         self.missing = []
         self.cubemaps = []
         self.vtf_views = {}
+        self.payload_cache = getattr(fs, 'source_texture_cache', None)
+        if self.payload_cache: Path(self.payload_cache).mkdir(parents=True, exist_ok=True)
+
+    def cached_payload(self, key, build):
+        if not self.payload_cache: return build()
+        path = Path(self.payload_cache)/key
+        if path.exists(): return path.read_bytes()
+        data = build()
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as file:
+            temporary = Path(file.name); file.write(data)
+        temporary.replace(path)
+        return data
 
     def texture(self, path, frame=0, face=0):
         path = path.replace('\\', '/').lower().strip('/').removesuffix('.vtf').removesuffix('.vmt')
@@ -26,18 +41,26 @@ class MaterialExport:
         key = (path, frame, face)
         if key in self.textures: return self.textures[key]
         raw = self.fs.read('materials/' + path + '.vtf')
-        pixels = decode_vtf(raw, frame, face) if raw else None
-        if pixels is None:
+        if raw is None:
             self.missing.append(path); return None
-        output = io.BytesIO(); Image.fromarray(pixels).save(output, 'PNG', optimize=True)
+        digest = hashlib.sha256(raw).hexdigest()
+        def png():
+            pixels = decode_vtf(raw, frame, face)
+            if pixels is None: return b''
+            output = io.BytesIO(); Image.fromarray(pixels).save(output, 'PNG', optimize=True)
+            return output.getvalue()
+        image_bytes = self.cached_payload(f'v1-{digest}-{frame}-{face}.png', png)
+        if not image_bytes:
+            self.missing.append(path); return None
         js = self.glb.json
-        image = len(js['images']); js['images'].append(dict(bufferView=self.glb.view(output.getvalue()), mimeType='image/png'))
+        image = len(js['images']); js['images'].append(dict(bufferView=self.glb.view(image_bytes), mimeType='image/png'))
         flags = struct.unpack_from('<I', raw, 20)[0]
         sampler = dict(wrapS=33071 if flags & 4 else 10497, wrapT=33071 if flags & 8 else 10497,
                        magFilter=9728 if flags & 1 else 9729,
                        minFilter=(9728 if flags & 1 else 9729) if flags & 256 else (9984 if flags & 1 else 9987))
         if sampler not in js['samplers']: js['samplers'].append(sampler)
-        if path not in self.vtf_views: self.vtf_views[path] = self.glb.view(zlib.compress(raw, 9))
+        if path not in self.vtf_views:
+            self.vtf_views[path] = self.glb.view(self.cached_payload(f'v1-{digest}.vtf.zlib', lambda: zlib.compress(raw, 9)))
         index = len(js['textures']); js['textures'].append(dict(sampler=js['samplers'].index(sampler), source=image,
             extras=dict(sourceVtf=dict(path=path, bufferView=self.vtf_views[path], frame=frame, face=face, compression='zlib'))))
         self.textures[key] = index
@@ -54,7 +77,7 @@ class MaterialExport:
                 images[textures[previous]['source']] = dict(images[textures[base]['source']])
             record['pbrMetallicRoughness']['baseColorTexture'] = dict(index=base)
         record['pbrMetallicRoughness']['baseColorFactor'] = [*meta['color'], 1]
-        if meta['nocull']: record['doubleSided'] = True
+        record['doubleSided'] = meta['nocull']
         if meta.get('envmap') and meta['envmap'] != 'env_cubemap':
             faces = [self.texture(meta['envmap'], face=i) for i in range(6)]
             if all(i is not None for i in faces): meta['envmapFaces'] = faces

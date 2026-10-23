@@ -1,6 +1,6 @@
 /** Install the hosted R1 catalog once per browser. Existing imports win; an
  * explicit deletion stays deleted on subsequent visits. Manual import remains available. */
-import { storePack, type StoredPack } from './index';
+import { storePack, type PackMetadata, type StoredPack } from './index';
 
 function settings(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -11,7 +11,7 @@ function settings(): Promise<IDBDatabase> {
   });
 }
 
-export async function installDefaultPacks(existing: StoredPack[], progress: (message: string) => void): Promise<StoredPack[]> {
+export async function installDefaultPacks(existing: PackMetadata[], progress: (message: string) => void): Promise<PackMetadata[]> {
   const db = await settings();
   const key = 'r1-default-v1';
   try {
@@ -34,8 +34,8 @@ export async function installDefaultPacks(existing: StoredPack[], progress: (mes
           !pack.downloadUrl?.startsWith('/assets/packs/r1/')) throw new Error('Invalid default policy entry');
       if (ids.has(pack.id)) continue;
       pack.files = {};
-      await storePack(pack);
-      result.push(pack);
+      const metadata = await storePack(pack);
+      result.push(metadata);
       ids.add(pack.id);
     }
     await new Promise<void>((resolve, reject) => {

@@ -1,0 +1,33 @@
+.storage-consent {
+  position: absolute;
+  z-index: 180;
+  left: 12px;
+  top: var(--workspace-top, 84px);
+  width: min(340px, calc(100% - 24px));
+  max-height: calc(100% - var(--workspace-top, 84px) - var(--scene-actions-height, 0px) - 24px);
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid var(--line-hi);
+  border-radius: var(--r);
+  background: var(--panel);
+  color: var(--text);
+  font: 12px/1.5 var(--sans);
+  box-shadow: 2px 2px 0 var(--shadow), inset 1px 1px 0 var(--bevel);
+}
+.storage-consent[hidden] { display: none; }
+.storage-consent h3 { margin: 0 0 6px; font-size: 12px; color: var(--accent); }
+.storage-consent p { margin: 0 0 10px; color: var(--text-2); overflow-wrap: anywhere; }
+.storage-consent-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.storage-consent .btn, .storage-consent-help .btn { min-height: 44px; }
+.storage-consent .btn:focus-visible, .storage-consent-help .btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.storage-consent[data-state="requesting"] .storage-consent-status,
+.storage-consent-help[data-state="requesting"] .storage-consent-status,
+.storage-consent[data-state="granted"] .storage-consent-status,
+.storage-consent-help[data-state="granted"] .storage-consent-status { color: var(--accent); }
+.storage-consent[data-state="check-error"] .storage-consent-status,
+.storage-consent-help[data-state="check-error"] .storage-consent-status,
+.storage-consent[data-state="error"] .storage-consent-status,
+.storage-consent-help[data-state="error"] .storage-consent-status { color: var(--danger); }

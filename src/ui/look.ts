@@ -1,17 +1,21 @@
-/** Look of the scene: lighting (presets + every knob, shadows) and the robot's paint (colourway +
- * per-part colour / finish, picked from a list or by clicking the robot). Both persist per browser;
- * paint is kept per robot model. */
+/** Shared live and take appearance controls. Temporary take edits never update live preferences. */
 import { robotLightSettings, type RobotLight } from "../render/robot-light";
 import type { Finish } from "../render/paint";
 import { FINISH } from "../render/paint";
-import type { PartPaint } from "../render/scene";
-import { GREY, STUDIO, type Appearance, type Colorway, type Lighting, type SceneView, type HeadVisual } from "../render/scene";
+import type { PartOverride } from "../render/scene";
+import type { SourceAntialiasing } from '../render/source-color';
+import { KIT_REGIONS, KIT_STYLES, KIT_LABELS, kitRegion, type KitStyle, type RobotModules } from '../render/robot-kit-data';
+import { STUDIO, type Appearance, type Colorway, type Lighting, type SceneView, type HeadVisual } from "../render/scene";
+import { VisualPicker, type VisualPickerConfig } from './visual-picker';
+import { previewImage, characterOptions, characterDescription, sourceModelCatalog } from './preview-catalog';
+import { characterPhysics, compatibleBody, isBodyVisual, isCharacter } from '../characters/catalog';
+import { ShotLightsPanel } from './shot-lights';
 
 /** Sun / ambient a map ships (Source light_environment), from its bundle manifest. */
 export interface MapLight { azimuth: number; elevation: number; color: number; intensity: number; ambient: number; ambientColor: number }
 
 export type Preset = "auto" | "studio" | "daylight" | "overcast" | "night" | "map" | "custom";
-export interface LookState { preset: Preset; custom: Lighting }
+export interface LookState { preset: Preset; custom: Lighting; antialiasing?: SourceAntialiasing }
 const PRESETS: Record<Exclude<Preset, "auto" | "map" | "custom">, Lighting> = {
   studio: STUDIO,
   daylight: { sunAzimuth: 135, sunElevation: 50, sunIntensity: 2.6, sunColor: 0xfff1dc, ambient: 0.9,
@@ -28,7 +32,7 @@ const PRESET_LABEL: Record<Preset, string> = {
   auto: "Auto (noclip.website lighting on maps)", studio: "Studio", daylight: "Daylight", overcast: "Overcast",
   night: "Night", map: "Map (noclip.website lighting)", custom: "Custom",
 };
-const LIGHT_KEY = "ume-lighting", PAINT_KEY = "ume-appearance";
+const LIGHT_KEY = "ume-lighting", PAINT_KEY = "ume-appearance", HEAD_KEY = "ume-head-visuals";
 const FINISH_LABEL: Record<Finish, string> = {
   gloss: "Gloss", satin: "Satin", matte: "Matte", rubber: "Rubber", metal: "Brushed metal",
   gunmetal: "Gunmetal", mirror: "Mirror (iridescent)",
@@ -61,20 +65,34 @@ function fold(title: string): { root: HTMLDetailsElement; body: HTMLElement } {
 export class LookPanel {
   private preset: Preset;
   private custom: Lighting;
+  private antialiasing: SourceAntialiasing;
   private mapLight: MapLight | null = null;
+  private mapLightPending = false;
   private lightBody: HTMLElement;
   private paintBody: HTMLElement;
+  private paintFold: HTMLDetailsElement;
+  private shotLights: ShotLightsPanel | null = null;
+  private liveLook: LookState | null = null;
+  private shotChanged: (() => void) | null = null;
+  private shotReset: (() => void) | null = null;
+  private readOnly = false;
   private robot = "";
   private paints: Record<string, Appearance>;
+  private heads: Record<string, HeadVisual>;
   private selected = "";
   private linked = true;
   private headLocked = false;
   private sourceBodyLinkApplied = false;
-  /** clicking the robot picks a part while on */
-  picking = false;
+  private modulesOpen = false;
+  private lightPickers: VisualPicker[] = [];
+  private paintPickers: VisualPicker[] = [];
+  /** Keep the requested Pick state while export temporarily blocks pointer editing. */
+  private pickEnabled = false;
+  get picking(): boolean { return this.pickEnabled && !this.readOnly; }
 
   constructor(parent: HTMLElement, readonly view: SceneView) {
-    const saved = load(LIGHT_KEY, { preset: "auto" as Preset, custom: STUDIO });
+    const saved = load(LIGHT_KEY, { preset: "auto" as Preset, custom: STUDIO, antialiasing: 'fxaa' as SourceAntialiasing });
+    this.antialiasing=['fxaa','msaa4','none'].includes(saved.antialiasing)?saved.antialiasing:'fxaa';
     // Upgrade pre-Source lighting preferences once; future explicit choices still persist.
     if (!localStorage.getItem('ume-source-lighting-default-v3')) {
       saved.preset = 'auto';
@@ -83,18 +101,11 @@ export class LookPanel {
     this.preset = saved.preset;
     this.custom = { ...STUDIO, ...saved.custom };
     this.paints = (() => { try { return JSON.parse(localStorage.getItem(PAINT_KEY) ?? "{}"); } catch { return {}; } })();
-    // Return an earlier Dog preview to the neutral R1 shell once. Explicit model
-    // selections, body links and saved views still retain the optional Dog model.
-    if(!localStorage.getItem('ume-stock-body-default-v1')) {
-      for(const [robot,paint] of Object.entries(this.paints)) {
-        if(robot.startsWith('r1')&&paint?.sourceBody==='dog')this.paints[robot]={...paint,sourceBody:'stock'};
-      }
-      localStorage.setItem(PAINT_KEY,JSON.stringify(this.paints));
-      localStorage.setItem('ume-stock-body-default-v1','1');
-    }
+    this.heads = load(HEAD_KEY, {});
     const L = fold("Lighting"), P = fold("Robot appearance");
     this.lightBody = L.body;
     this.paintBody = P.body;
+    this.paintFold = P.root;
     parent.append(L.root, P.root);
     this.view.onHeadVisualChange = () => this.renderPaint();
     this.applyLighting();
@@ -102,18 +113,75 @@ export class LookPanel {
   }
 
   // ---- lighting ----------------------------------------------------------------
-  getState(): LookState { return { preset: this.preset, custom: { ...this.custom } }; }
+  getState(): LookState { return { preset: this.preset, custom: { ...this.custom }, antialiasing: this.antialiasing }; }
 
   setState(state: LookState) {
+    if (this.readOnly) return;
     this.preset = state.preset;
     this.custom = { ...STUDIO, ...state.custom };
+    this.antialiasing=state.antialiasing??'fxaa';
     this.applyLighting();
     this.renderLighting();
+  }
+
+  /** Keep the first live snapshot when switching directly between reviewed takes. */
+  beginShotEdit(look: LookState, changed: () => void, reset: () => void): void {
+    if (this.readOnly) return;
+    this.liveLook ??= this.getState();
+    this.shotChanged = changed;
+    this.shotReset = reset;
+    this.setState(look);
+    this.renderPaint();
+    if (!this.shotLights) {
+      this.shotLights = new ShotLightsPanel(this.view, () => this.shotChanged?.(), () => this.shotReset?.());
+      this.paintFold.after(this.shotLights.root);
+    }
+    this.shotLights.show(this.readOnly || this.headLocked);
+  }
+
+  endShotEdit(): void {
+    if (this.readOnly) return;
+    const live = this.liveLook;
+    if (live) this.setState(live);
+    this.liveLook = null;
+    this.shotChanged = null;
+    this.shotReset = null;
+    this.shotLights?.hide();
+    this.renderPaint();
+  }
+
+  /** Export/recording lock; rebuilding also disposes galleries attached to document.body. */
+  setReadOnly(on: boolean): void {
+    this.readOnly = on;
+    if (!on && this.mapLightPending) {
+      this.mapLightPending = false;
+      this.applyLighting();
+    }
+    this.renderLighting();
+    this.renderPaint();
+    this.shotLights?.setReadOnly(on || this.headLocked);
+  }
+
+  revealShotEdit(): void {
+    if (!this.liveLook) return;
+    this.paintFold.open = true;
+    this.shotLights?.reveal();
+    const summary = this.paintFold.querySelector('summary');
+    summary?.focus({ preventScroll: true });
+    summary?.scrollIntoView({ block: 'nearest' });
+  }
+
+  private get appearanceLocked(): boolean { return this.readOnly || this.headLocked; }
+
+  private lockControls(body: HTMLElement): void {
+    for (const control of body.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input, select, button'))
+      control.disabled = true;
   }
 
   /** The terrain's own light (null off a map), available through the Map preset. */
   setMapLight(l: MapLight | null) {
     this.mapLight = l;
+    if (this.readOnly) { this.mapLightPending = true; return; }
     this.applyLighting();
     this.renderLighting();
   }
@@ -131,14 +199,27 @@ export class LookPanel {
     return PRESETS[p];
   }
 
-  private applyLighting() {
+  private applyLighting(deliberate = false) {
+    if (deliberate && this.readOnly) return;
     this.view.setSourceLighting(this.preset === "auto" || this.preset === "map");
+    this.view.setSourceAntialiasing(this.antialiasing);
     this.view.setLighting(this.current());
-    localStorage.setItem(LIGHT_KEY, JSON.stringify({ preset: this.preset, custom: this.custom }));
+    if (deliberate) {
+      if (this.liveLook) this.shotChanged?.();
+      else localStorage.setItem(LIGHT_KEY, JSON.stringify(this.getState()));
+    }
   }
+  private choice(select: HTMLSelectElement, config: VisualPickerConfig, pickers: VisualPicker[]): HTMLElement {
+    const picker = new VisualPicker(select, config);
+    pickers.push(picker);
+    return picker.root;
+  }
+
 
   private renderLighting() {
     const b = this.lightBody, l = this.current();
+    for (const picker of this.lightPickers) picker.dispose();
+    this.lightPickers = [];
     b.replaceChildren();
     const presetSel = el("select");
     for (const p of Object.keys(PRESET_LABEL) as Preset[]) {
@@ -147,18 +228,50 @@ export class LookPanel {
       presetSel.add(o);
     }
     presetSel.value = this.preset;
-    presetSel.onchange = () => { this.preset = presetSel.value as Preset; this.applyLighting(); this.renderLighting(); };
-    b.append(row("Preset", presetSel));
+    presetSel.disabled = this.readOnly;
+    presetSel.onchange = () => {
+      if (this.readOnly) return;
+      this.preset = presetSel.value as Preset; this.applyLighting(true); this.renderLighting();
+    };
+    const presetPicker = new VisualPicker(presetSel, {
+      id: 'lighting-preset', label: 'Lighting preset', search: false,
+      preview: value => {
+        const preset = value as Preset;
+        const lighting = preset === 'custom' ? this.custom : preset === 'auto' || preset === 'map'
+          ? this.mapLight ? this.fromMap(this.mapLight) : STUDIO : PRESETS[preset];
+        return this.view.previewChoice({ kind: 'lighting', value, lighting });
+      },
+      description: value => value === 'auto' || value === 'map'
+        ? 'Uses authored map lighting when available. Preview swatch, not a map screenshot.'
+        : 'Lighting preview swatch.',
+    });
+    this.lightPickers.push(presetPicker);
+    b.append(row("Preset", presetPicker.root));
+    if(this.mapLight&&(this.preset==='auto'||this.preset==='map')) {
+      const aa=el('select');aa.setAttribute('aria-label','Map antialiasing');
+      for(const [value,label] of [['fxaa','FXAA (noclip.website default)'],['msaa4','MSAA 4×'],['none','Off']])aa.add(new Option(label,value));
+      aa.value=this.antialiasing;
+      aa.disabled = this.readOnly;
+      aa.onchange=()=>{if(this.readOnly)return;this.antialiasing=aa.value as SourceAntialiasing;this.applyLighting(true);};
+      b.append(row('Antialiasing', this.choice(aa, {
+        id: 'map-antialiasing', label: 'Map antialiasing', search: false,
+        preview: value => this.view.previewChoice({ kind: 'antialiasing', value: value as SourceAntialiasing }),
+        description: () => 'Edge preview; map materials are unchanged.',
+      }, this.lightPickers)));
+    }
     if (this.mapLight && (this.preset === 'auto' || this.preset === 'map')) {
-      b.append(el('div', 'sub', "Original Source lightmaps, model lighting and reflections, using noclip.website's shader equations. No added fill light or tone mapping. Choose another preset to re-light the map."));
+      b.append(el('div', 'sub', "Source lightmaps, model lighting and reflections use noclip.website's shader equations. No fill light or tone mapping. Select another preset to re-light the map."));
+      if (this.readOnly) this.lockControls(b);
       return;
     }
     // any edit turns the current look into the Custom preset
     const edit = (patch: Partial<Lighting>) => {
+      if (this.readOnly) return;
       this.custom = { ...this.current(), ...patch };
       this.preset = "custom";
       presetSel.value = "custom";
-      this.applyLighting();
+      presetPicker.sync();
+      this.applyLighting(true);
     };
     const slider = (label: string, k: keyof Lighting, min: number, max: number, step: number, unit = "") => {
       const r = el("input"), v = el("span", "lk-val");
@@ -192,46 +305,76 @@ export class LookPanel {
     const shl = el("label", "lk-check"); shl.append(sh, " Shadows (sun)");
     b.append(shl);
     if (this.mapLight) b.append(el("div", "sub", "Auto and Map use the map's baked Source lighting. Other presets re-light it."));
+    if (this.readOnly) this.lockControls(b);
   }
 
   // ---- robot paint -------------------------------------------------------------
   /** A model was (re)built: re-list its parts and re-apply its saved paint. */
-  onModel(robot: string) {
+  onModel(robot: string, initialHead?: HeadVisual) {
+    if (this.readOnly) return;
+    const changed = this.robot !== robot;
     this.robot = robot;
     const requested=new URL(location.href).searchParams.get('body');
-    if(!this.sourceBodyLinkApplied&&robot.startsWith('r1')&&(requested==='dog'||requested==='stock')){
+    if(!this.liveLook&&!this.sourceBodyLinkApplied&&isBodyVisual(requested)&&compatibleBody(requested,robot)){
       this.sourceBodyLinkApplied=true;this.paints[robot]={...this.app(),sourceBody:requested};
       localStorage.setItem(PAINT_KEY,JSON.stringify(this.paints));
     }
     if (!this.view.partNames().includes(this.selected)) this.selected = "";
-    this.view.setAppearance(this.app());
+    if (!this.liveLook) {
+      const head = initialHead ?? (changed ? this.heads[robot] === 'ghost' ? 'ghost' : 'stock' : this.view.getHeadVisual());
+      this.view.setAppearance(this.app(), this.headLocked ? undefined : head);
+    }
     this.view.highlight(this.picking && this.selected ? this.selected : null);
     this.renderPaint();
   }
 
-  restoreAppearance(robot:string,appearance:Appearance) {
-    this.sourceBodyLinkApplied=true;
-    this.paints[robot]=structuredClone(appearance);
-    localStorage.setItem(PAINT_KEY,JSON.stringify(this.paints));
-    if(this.robot===robot){this.view.setAppearance(this.paints[robot]);this.renderPaint();}
+  restoreAppearance(robot:string,appearance:Appearance,head?:HeadVisual) {
+    if (this.readOnly) return;
+    if (!this.liveLook) {
+      this.sourceBodyLinkApplied=true;
+      this.paints[robot]=structuredClone(appearance);
+      localStorage.setItem(PAINT_KEY,JSON.stringify(this.paints));
+    }
+    if(this.robot===robot){this.view.setAppearance(appearance,head);this.renderPaint();}
   }
 
-  /** A take records one fixed robot shell; changes resume after recording/review. */
-  setHeadLocked(locked: boolean) { this.headLocked = locked; this.renderPaint(); }
+  /** A recording fixes the robot shell; reviewed takes remain editable. */
+  setHeadLocked(locked: boolean) {
+    this.headLocked = locked;
+    this.renderPaint();
+    this.shotLights?.setReadOnly(locked || this.readOnly);
+  }
   refreshHead() { this.renderPaint(); }
 
+  /** Only deliberate identity choices update the preference; review/rendering never do. */
+  private chooseHead(head: HeadVisual, notify = true) {
+    if (this.appearanceLocked) return;
+    if (!this.liveLook) {
+      this.heads[this.robot] = head;
+      localStorage.setItem(HEAD_KEY, JSON.stringify(this.heads));
+    }
+    void this.view.setHeadVisual(head);
+    if (notify && this.liveLook) this.shotChanged?.();
+  }
+
   private app(): Appearance {
+    if (this.liveLook) return this.view.getAppearance();
     return this.paints[this.robot] ?? { colorway: "grey", parts: {} };
   }
 
   private savePaint(a: Appearance) {
-    this.paints[this.robot] = a;
-    localStorage.setItem(PAINT_KEY, JSON.stringify(this.paints));
+    if (this.appearanceLocked) return;
+    if (!this.liveLook) {
+      this.paints[this.robot] = a;
+      localStorage.setItem(PAINT_KEY, JSON.stringify(this.paints));
+    }
     this.view.setAppearance(a);
+    if (this.liveLook) this.shotChanged?.();
   }
 
   /** Select a part (from the list or a click on the robot). */
   select(name: string) {
+    if (this.readOnly) return;
     this.selected = name;
     this.view.highlight(name || null);
     this.renderPaint();
@@ -239,160 +382,281 @@ export class LookPanel {
 
   private renderPaint() {
     const b = this.paintBody, a = this.headLocked ? this.view.getAppearance() : this.app();
+    for (const picker of this.paintPickers) picker.dispose();
+    this.paintPickers = [];
     b.replaceChildren();
-    if (this.headLocked) b.append(el("div", "sub", "Robot appearance is fixed while recording or reviewing a take."));
+    if (this.headLocked) b.append(el("div", "sub", "Robot appearance is fixed while recording."));
+    else if (this.readOnly) b.append(el("div", "sub", "Appearance is locked during export."));
+    else if (this.liveLook) b.append(el("div", "sub", "Changes apply to this take only."));
     const bodyState=this.view.getBodyVisualState();
-    if(bodyState.available){
-      const select=el('select');select.id='source-body-visual';
-      select.add(new Option('Stock R1','stock'));select.add(new Option('Dog · Half-Life 2 (dog.mdl)','dog'));
-      select.value=bodyState.choice;select.disabled=this.headLocked;
-      select.onchange=()=>{
-        const choice=select.value as 'stock'|'dog',url=new URL(location.href);
-        url.searchParams.set('body',choice);history.replaceState(null,'',url);
-        this.savePaint({...a,sourceBody:choice});
-      };
-      const bodyRow=row('Robot model',select);(bodyRow.firstElementChild as HTMLLabelElement).htmlFor=select.id;b.append(bodyRow);
+    const stockBody=bodyState.choice==='stock';
+    const modules=a.modules??{},styles=KIT_REGIONS.map(r=>modules[r]??'stock');
+    const uniform=styles.every(s=>s===styles[0]);
+    const character=el('select');character.id='character';character.setAttribute('aria-label','Character');character.disabled=this.appearanceLocked;
+    characterOptions(character,stockBody?(uniform?styles[0]:'custom'):bodyState.choice,this.robot,true);
+    const paint:Record<Exclude<KitStyle,'stock'>,number[]>={
+      boxy:[0xd8bd74,0xe1c991,0xa59776,0x665a47,0xa59776,0x665a47],
+      round:[0xc9eef1,0x78c5cf,0x9ed5db,0x426b80,0x9ed5db,0x426b80],
+      prism:[0xebc4f8,0x9b7bc4,0xb99cdd,0x51416d,0xb99cdd,0x51416d],
+    };
+    character.onchange=()=>{
+      if(this.appearanceLocked||!isCharacter(character.value))return;
+      const value=character.value;
+      const body=isBodyVisual(value)?value:'stock';
+      if(!compatibleBody(body,this.robot))return;
+      if(!this.liveLook){const url=new URL(location.href);url.searchParams.set('body',body);history.replaceState(null,'',url);}
+      if(body!=='stock')this.savePaint({...this.app(),sourceBody:body});
+      else{
+        const style=value as KitStyle,parts={...this.app().parts};
+        if(style!=='stock')for(const name of this.view.partNames()){
+          const region=kitRegion(name);if(region)parts[name]={color:paint[style][KIT_REGIONS.indexOf(region)],finish:'satin'};
+        }
+        this.chooseHead('stock',false);
+        this.savePaint({...this.app(),sourceBody:'stock',parts,modules:Object.fromEntries(KIT_REGIONS.map(r=>[r,style])) as RobotModules});
+      }
+      this.renderPaint();
+    };
+    const characterRow=row('Character',this.choice(character,{
+      id:'character',label:'Character',preview:value=>value==='custom'
+        ?this.view.previewChoice({kind:'colorway',value:a.colorway}):previewImage('character',value,this.robot),
+      description:characterDescription,catalog:sourceModelCatalog(this.robot.startsWith('r1')),
+    },this.paintPickers));
+    (characterRow.firstElementChild as HTMLLabelElement).htmlFor='character-trigger';b.append(characterRow);
+    if(bodyState.available||!stockBody){
       const note=el('div','sub');note.setAttribute('role','status');note.setAttribute('aria-live','polite');
-      note.textContent=bodyState.loading?'Loading Dog and its original textures…':bodyState.error?`Could not load Dog: ${bodyState.error}`:
-        bodyState.choice==='dog'?'Original Dog mesh and skeleton, following R1’s movement. Native proportions are retained; robot physics stay R1.':
-        'Choose the original R1 shell or an articulated Source robot model.';
+      const label=character.selectedOptions[0]?.label??bodyState.choice;
+      note.textContent=bodyState.loading?`Loading ${label} and textures…`:bodyState.error?`Could not load ${label}: ${bodyState.error}`:
+        stockBody?'':`Uses ${characterPhysics(bodyState.choice)==='go2'?'Go2':'R1'} physics.`;
       b.append(note);
-      if(bodyState.error){const retry=el('button','btn','Retry robot download');retry.type='button';retry.disabled=this.headLocked;
-        retry.onclick=()=>this.view.retrySourceBody();b.append(retry);}
+      if(bodyState.error){const retry=el('button','btn','Retry character download');retry.type='button';retry.disabled=this.appearanceLocked;
+        retry.onclick=()=>{if(!this.appearanceLocked)this.view.retrySourceBody();};b.append(retry);}
     }
-    if (bodyState.choice!=='dog' && this.robot.startsWith("r1") && this.view.getHeadVisualState().available) {
+    if(stockBody) {
+      const modular=fold('Mix robot parts');
+      modular.root.open=this.modulesOpen;modular.root.ontoggle=()=>{this.modulesOpen=modular.root.open;};
+      const available=new Set(this.view.partNames().map(kitRegion));
+      for(const region of KIT_REGIONS) {
+        if(!available.has(region))continue;
+        const select=el('select');select.setAttribute('aria-label',`${region[0].toUpperCase()+region.slice(1)} module`);
+        select.disabled=this.appearanceLocked;
+        for(const style of KIT_STYLES)select.add(new Option(KIT_LABELS[style],style));
+        select.value=modules[region]??'stock';
+        select.onchange=()=>{
+          if (this.appearanceLocked) return;
+          this.modulesOpen=modular.root.open;
+          if(region==='head')this.chooseHead('stock', false);
+          this.savePaint({...this.app(),modules:{...this.app().modules,[region]:select.value as KitStyle}});this.renderPaint();
+        };
+        modular.body.append(row(region[0].toUpperCase()+region.slice(1),this.choice(select,{
+          id:`module-${region}`,label:`${region[0].toUpperCase()+region.slice(1)} module`,search:false,
+          preview:value=>this.view.previewChoice({kind:'module',value:value as KitStyle,region}),
+          description:()=>`Changes the ${region} visual style, not collision or joint physics.`,
+        },this.paintPickers)));
+      }
+      modular.body.append(el('div','sub','Mix heads, shells and limbs without changing robot movement or controls. No extra model download.'));
+      b.append(modular.root);
+    }
+    if (stockBody && this.robot.startsWith("r1") && this.view.getHeadVisualState().available) {
       const state = this.view.getHeadVisualState();
       const head = el("select"); head.id = "source-head-visual";
       head.add(new Option("Stock R1", "stock"));
       head.add(new Option("Ghost girlbot (girlbot_head.mdl)", "ghost"));
-      head.value = state.choice; head.disabled = !state.available || this.headLocked;
-      head.onchange = () => { void this.view.setHeadVisual(head.value as HeadVisual); };
-      const headRow = row("Head visual", head);
-      (headRow.firstElementChild as HTMLLabelElement).htmlFor = head.id;
+      head.value = state.choice; head.disabled = !state.available || this.appearanceLocked;
+      head.onchange = () => this.chooseHead(head.value as HeadVisual);
+      const headRow = row("Head visual", this.choice(head,{
+        id:'source-head-visual',label:'Head visual',search:false,
+        preview:value=>previewImage('head',value),
+        description:value=>value==='ghost'?'Original Ghost girlbot head on a compatible R1.':'Original R1 head geometry.',
+      },this.paintPickers));
+      (headRow.firstElementChild as HTMLLabelElement).htmlFor = 'source-head-visual-trigger';
       b.append(headRow);
       const note = el("div", "sub");
       note.style.fontSize = "12px"; note.style.color = "var(--text-2)";
       note.setAttribute("role", "status"); note.setAttribute("aria-live", "polite");
-      note.textContent = this.headLocked ? "Head visual is fixed while recording or reviewing a take."
-        : state.loading ? "Loading the original Ghost head and textures…"
+      note.textContent = this.headLocked ? "Head visual is fixed while recording."
+        : this.readOnly ? "Head visual is locked during export."
+        : state.loading ? "Loading Ghost head and textures…"
         : state.error ? `Could not load the Ghost head: ${state.error}`
-        : state.choice === "ghost" ? "Original Ghost head, fitted uniformly to R1. Physics and controls stay the same. Part paint tints its native texture."
-        : "Optional original Source head. The connected Ghost body and arms need rigging before they can replace moving R1 parts.";
+        : state.choice === "ghost" ? "Ghost head fitted uniformly to R1. Physics and controls are unchanged. Part paint tints its native texture."
+        : "Source head only. Ghost body and arms need rigging to replace moving R1 parts.";
       b.append(note);
       if (state.error) {
         const retry = el("button", "btn", "Retry head download"); retry.type = "button";
-        retry.disabled = this.headLocked;
-        retry.onclick = () => { void this.view.setHeadVisual("ghost"); };
+        retry.disabled = this.appearanceLocked;
+        retry.onclick = () => this.chooseHead("ghost");
         b.append(retry);
       }
     }
     const light = robotLightSettings(a.robotLight);
     const editLight = (patch: Partial<RobotLight>) => {
-      a.robotLight = robotLightSettings({ ...light, ...patch });
-      this.savePaint({ ...a, robotLight: a.robotLight });
+      if (this.appearanceLocked) return;
+      const current = this.app();
+      this.savePaint({ ...current, robotLight: robotLightSettings({ ...robotLightSettings(current.robotLight), ...patch }) });
     };
     const dull = el("input"); dull.type = "checkbox"; dull.id = "robot-dull"; dull.checked = light.dull;
     dull.onchange = () => { editLight({ dull: dull.checked }); this.renderPaint(); };
-    const dullLabel = el("label", "lk-check"); dullLabel.append(dull, " Completely dull (no shine or glow)");
+    const dullLabel = el("label", "lk-check"); dullLabel.append(dull, " Dull (no shine or glow)");
     b.append(dullLabel);
     const slider = (label: string, key: "brightness" | "range", min: number, max: number, step: number, suffix = "") => {
       const input = el("input"), output = el("span", "lk-val");
       input.type = "range"; input.id = `robot-light-${key}`;
       input.min = String(min); input.max = String(max); input.step = String(step); input.value = String(light[key]);
       input.disabled = light.dull; output.textContent = `${light[key]}${suffix}`;
-      input.oninput = () => { light[key] = Number(input.value); output.textContent = `${input.value}${suffix}`; editLight({ [key]: light[key] }); };
+      input.oninput = () => { if(this.appearanceLocked)return;light[key] = Number(input.value); output.textContent = `${input.value}${suffix}`; editLight({ [key]: light[key] }); };
       const r = row(label, input, output); (r.firstElementChild as HTMLLabelElement).htmlFor = input.id; b.append(r);
     };
     slider("Robot brightness", "brightness", 0, 100, 0.5);
     const color = el("input"); color.type = "color"; color.id = "robot-light-color"; color.value = hex(light.color); color.disabled = light.dull;
-    color.oninput = () => { light.color = num(color.value); editLight({ color: light.color }); };
+    color.oninput = () => { if(this.appearanceLocked)return;light.color = num(color.value); editLight({ color: light.color }); };
     const cr = row("Light colour", color); (cr.firstElementChild as HTMLLabelElement).htmlFor = color.id; b.append(cr);
     slider("Light reach", "range", 1, 30, 0.5, " m");
     b.append(el("div", "sub", "Brightness 0 turns off the robot light. Higher values make the shell glow and illuminate nearby surfaces."));
     const cw = el("select");
-    for (const [v, t] of (bodyState.choice==='dog'
-      ? [["model","Source colours"],["grey","Grey tint"],["product","R1 product tint"]]
+    for (const [v, t] of (!stockBody
+      ? [["model","Model colours"],["grey","Grey tint"],["product","Product tint"]]
       : [["grey", "Grey (plain)"], ["product", "Product colours"], ["model", "Model colours"]]) as [Colorway,string][])
       cw.add(new Option(t, v));
-    cw.value = bodyState.choice==='dog'?(a.sourceBodyColorway??'model'):a.colorway;
-    cw.onchange = () => this.savePaint(bodyState.choice==='dog'?{...a,sourceBodyColorway:cw.value as Colorway}:{ ...a, colorway: cw.value as Colorway });
-    b.append(row("Colourway", cw));
+    cw.value = !stockBody?(a.sourceBodyColorway??'model'):a.colorway;
+    cw.onchange = () => {
+      this.savePaint(!stockBody?{...this.app(),sourceBodyColorway:cw.value as Colorway}:{ ...this.app(), colorway: cw.value as Colorway });
+      this.renderPaint();
+    };
+    b.append(row("Colourway", this.choice(cw,{
+      id:'robot-colorway',label:'Colourway',search:false,
+      preview:value=>this.view.previewChoice({kind:'colorway',value:value as Colorway}),
+    },this.paintPickers)));
 
     const names = this.view.partNames();
     if(this.selected&&!names.includes(this.selected)){this.selected='';this.view.highlight(null);}
     const part = el("select");
-    part.add(new Option(names.length ? "— choose a part —" : "no robot loaded", ""));
-    for (const n of names) part.add(new Option(n + (a.parts[n] ? " •" : ""), n));
+    part.add(new Option(names.length ? "Select part" : "No robot loaded", ""));
+    for (const n of names) {
+      const label=n.replace(/_link$/,'').replaceAll('_',' ');
+      const option=new Option(label.charAt(0).toUpperCase()+label.slice(1)+(a.parts[n]?" •":""),n);
+      option.title=n;part.add(option);
+    }
     part.value = this.selected;
     part.onchange = () => this.select(part.value);
-    const pick = el("button", "btn" + (this.picking ? " on" : ""), "Pick");
+    const pick = el("button", "btn" + (this.pickEnabled ? " on" : ""), "Pick");
     pick.type = "button";
     pick.title = "Click a part of the robot in the viewport to select it";
-    pick.onclick = () => { this.picking = !this.picking; this.view.highlight(this.picking && this.selected ? this.selected : null); this.renderPaint(); };
-    const prow = el("div", "lk-inline"); prow.append(part, pick);
+    pick.onclick = () => { if(this.readOnly)return;this.pickEnabled = !this.pickEnabled; this.view.highlight(this.picking && this.selected ? this.selected : null); this.renderPaint(); };
+    const prow = el("div", "lk-inline"); prow.append(this.choice(part,{
+      id:'robot-part',label:'Part',
+      preview:value=>value
+        ?this.view.previewChoice({kind:'part',value})
+        :this.view.previewChoice({kind:'colorway',value:!stockBody?(a.sourceBodyColorway??'model'):a.colorway}),
+      description:value=>value?'Select this mesh for paint and finish edits.':'No part selected.',
+    },this.paintPickers), pick);
     b.append(row("Part", prow));
 
     if (this.selected) {
-      const cur = a.parts[this.selected] ?? GREY;
-      const c = el("input"); c.type = "color"; c.value = hex(cur.color);
+      const cur = this.view.partPaint(this.selected);
+      const c = el("input"); c.type = "color"; c.id = "robot-part-color"; c.value = hex(cur.color);
       const fin = el("select");
+      fin.add(new Option("Original finish", "original"));
       for (const f of Object.keys(FINISH) as Finish[]) fin.add(new Option(FINISH_LABEL[f], f));
-      fin.value = cur.finish;
-      const base = FINISH[cur.finish];
-      const knob = (label: string, k: "roughness" | "metalness" | "clearcoat", left: string, right: string) => {
-        const r = el("input"), v = el("span", "lk-val");
-        r.type = "range"; r.min = "0"; r.max = "1"; r.step = "0.01";
-        r.value = String(cur[k] ?? base[k]);
-        v.textContent = Number(r.value).toFixed(2);
-        r.title = `${left} ← → ${right}`;
-        r.oninput = () => { v.textContent = Number(r.value).toFixed(2); set(); };
-        b.append(row(label, r, v));
-        return r;
+      const numericAxes = ["roughness", "metalness", "clearcoat"] as const;
+      const custom = new Option("Custom", "custom"); custom.disabled = true; custom.title = "Current values";
+      const syncFinish = () => {
+        const override = this.app().parts[this.selected] ?? {};
+        const preset = override.finish ? FINISH[override.finish] : undefined;
+        const isCustom = numericAxes.some(key => override[key] !== undefined &&
+          (!preset || override[key] !== preset[key]));
+        if (isCustom) {
+          if (!fin.contains(custom)) fin.add(custom);
+          fin.value = "custom";
+        } else {
+          custom.remove();
+          fin.value = override.finish ?? "original";
+        }
       };
-      const read = (): PartPaint => ({ color: num(c.value), finish: fin.value as Finish,
-        roughness: Number(rough.value), metalness: Number(metal.value), clearcoat: Number(coat.value) });
-      const set = () => {
-        const p = read();
-        const parts = { ...a.parts, [this.selected]: p };
-        const m = this.linked ? mirrorOf(this.selected) : null;
-        if (m && names.includes(m)) parts[m] = p;
-        this.savePaint({ ...a, parts });
+      syncFinish();
+      const applyDelta = (patch: PartOverride, resetFinish = false) => {
+        if (this.appearanceLocked) return;
+        const current = this.app(), parts = { ...current.parts };
+        const mirrored = this.linked ? mirrorOf(this.selected) : null;
+        const targets = [this.selected];
+        if (mirrored && names.includes(mirrored)) targets.push(mirrored);
+        for (const name of targets) {
+          const next = { ...parts[name] };
+          if (resetFinish) {
+            delete next.finish;
+            for (const key of numericAxes) delete next[key];
+          }
+          Object.assign(next, patch);
+          for (const key of ["color", "finish", ...numericAxes] as const)
+            if (next[key] === undefined) delete next[key];
+          if (Object.keys(next).length) parts[name] = next;
+          else delete parts[name];
+        }
+        this.savePaint({ ...current, parts });
         this.view.highlight(this.selected);
       };
-      c.oninput = set;
-      b.append(row("Colour", c), row("Finish", fin));
-      const rough = knob("Dullness", "roughness", "shiny", "matte");
-      const metal = knob("Metalness", "metalness", "plastic", "metal");
-      const coat = knob("Shine coat", "clearcoat", "none", "lacquered");
-      // a finish preset resets the three knobs to its own values
+      c.oninput = () => applyDelta({ color: num(c.value) });
+      const finishPicker = new VisualPicker(fin, {
+        id:'robot-finish',label:'Finish',search:false,
+        preview:value=>value === 'original'
+          ?this.view.previewChoice({kind:'part',value:this.selected,originalFinish:true})
+          :value === 'custom'
+            ?this.view.previewChoice({kind:'part',value:this.selected})
+            :this.view.previewChoice({kind:'finish',value:value as Finish}),
+      });
+      this.paintPickers.push(finishPicker);
+      const colourRow = row("Colour", c);
+      (colourRow.firstElementChild as HTMLLabelElement).htmlFor = c.id;
+      b.append(colourRow, row("Finish", finishPicker.root));
+      const knob = (label: string, key: typeof numericAxes[number], left: string, right: string) => {
+        const input = el("input"), output = el("span", "lk-val");
+        input.type = "range"; input.id = `robot-part-${key}`;
+        input.min = "0"; input.max = "1"; input.step = "0.01";
+        input.value = String(cur[key]!);
+        output.textContent = cur[key]!.toFixed(2);
+        input.title = `${left} ← → ${right}`;
+        input.oninput = () => {
+          if (this.appearanceLocked) return;
+          output.textContent = Number(input.value).toFixed(2);
+          applyDelta({ [key]: Number(input.value) });
+          syncFinish();
+          finishPicker.sync();
+        };
+        const r = row(label, input, output);
+        (r.firstElementChild as HTMLLabelElement).htmlFor = input.id;
+        b.append(r);
+      };
+      knob("Dullness", "roughness", "shiny", "matte");
+      knob("Metalness", "metalness", "plastic", "metal");
+      knob("Shine coat", "clearcoat", "none", "lacquered");
       fin.onchange = () => {
-        const f = FINISH[fin.value as Finish];
-        rough.value = String(f.roughness); metal.value = String(f.metalness); coat.value = String(f.clearcoat);
-        set();
+        if (this.appearanceLocked || fin.value === "custom") return;
+        // Presets supply their own numeric values; Original restores each side's own base.
+        applyDelta(fin.value === "original" ? {} : { finish: fin.value as Finish }, true);
         this.renderPaint();
       };
       const toAll = el("button", "btn", "Apply to whole robot");
       toAll.type = "button";
       toAll.title = "Give every part this colour and finish";
       toAll.onclick = () => {
-        const p = read();
-        this.savePaint({ ...a, parts: Object.fromEntries(names.map((n) => [n, p])) });
+        if (this.appearanceLocked) return;
+        const p = this.view.partPaint(this.selected);
+        this.savePaint({ ...this.app(), parts: Object.fromEntries(names.map((n) => [n, { ...p }])) });
         this.view.highlight(this.selected);
         this.renderPaint();
       };
       const tr = el("div", "row"); tr.append(toAll); b.append(tr);
       const link = el("input"); link.type = "checkbox"; link.checked = this.linked;
-      link.onchange = () => { this.linked = link.checked; };
+      link.onchange = () => { if(!this.readOnly)this.linked = link.checked; };
       const ll = el("label", "lk-check"); ll.append(link, " Same on both sides (left / right)");
       b.append(ll);
       const reset = el("button", "btn", "Reset part");
       reset.type = "button";
       reset.onclick = () => {
-        const parts = { ...a.parts };
+        if (this.appearanceLocked) return;
+        const parts = { ...this.app().parts };
         delete parts[this.selected];
         const m = this.linked ? mirrorOf(this.selected) : null;
         if (m) delete parts[m];
-        this.savePaint({ ...a, parts });
+        this.savePaint({ ...this.app(), parts });
         this.view.highlight(this.selected);
         this.renderPaint();
       };
@@ -400,10 +664,10 @@ export class LookPanel {
     }
     const all = el("button", "btn ghost danger", "Reset all colours");
     all.type = "button";
-    all.onclick = () => { this.savePaint({ colorway: "grey", parts: {} }); this.renderPaint(); };
+    all.onclick = () => { this.savePaint({ ...this.app(), colorway: "grey", parts: {} }); this.renderPaint(); };
     const n = Object.keys(a.parts).length;
     b.append(el("div", "sub", n ? `${n} part${n > 1 ? "s" : ""} recoloured on this robot.` :
       "Pick a part (list or click), then set its colour and finish."), all);
-    if (this.headLocked) for (const control of b.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button")) control.disabled = true;
+    if (this.appearanceLocked) this.lockControls(b);
   }
 }

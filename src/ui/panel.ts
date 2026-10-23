@@ -9,6 +9,8 @@ import { TERRAINS, type MapEntry, type TerrainName } from "../sim/terrain";
 import { policyPresentation } from './policy-names';
 import { TerrainPicker } from './terrain-picker';
 import { SearchPicker } from './search-picker';
+import { VisualPicker } from './visual-picker';
+import { previewImage, staticPreviewOptions } from './preview-catalog';
 
 export interface PanelCallbacks {
   onRobot(robot: string): void;
@@ -21,6 +23,7 @@ export interface PanelCallbacks {
   onScreenshot(): void;
   onRecordToggle(): void;
   onOpenTimeline(): void;
+  onOpenShots(): void;
   onLoadTake(file: File): void;
   onLoadCsv(file: File, fps: number): void;
   onStopPlayback(): void;
@@ -98,6 +101,7 @@ function block(root: HTMLElement, title: string, meta?: Node | string): HTMLElem
 
 export class Panel {
   private robotSel!: HTMLSelectElement;
+  private robotPicker!: VisualPicker;
   private terrainSel!: HTMLSelectElement;
   private terrainPicker!: TerrainPicker;
   private policySel!: HTMLSelectElement;
@@ -136,11 +140,11 @@ export class Panel {
     this.buildManager(mgrRoot);
 
     // header: title + policy-pack manager toggle
-    this.mgrToggleBtn = button("", { cls: "ghost", icon: "box", title: "Policy packs: import, list, remove",
+    this.mgrToggleBtn = button("", { cls: "ghost", icon: "box", title: "Policy packs: import, list, delete",
                                      onclick: () => this.toggleManager() });
     this.mgrToggleBtn.setAttribute("aria-controls", "policy-manager");
     root.append(el("header.p-head", null,
-      el("h1", null, "Unitree MuJoCo ", el("span", null, "web")), this.mgrToggleBtn));
+      el("h1", null, "Play"), this.mgrToggleBtn));
     this.updateMgrToggle();
 
     // setup: robot → terrain → policy
@@ -154,10 +158,13 @@ export class Panel {
       return sel;
     };
     this.robotSel = field("robot", "Robot", robots, (v) => cb.onRobot(v));
+    staticPreviewOptions(this.robotSel,'robot');
+    this.robotPicker = new VisualPicker(this.robotSel,{id:'robot',label:'Robot',preview:value=>previewImage('robot',value)});
+    form.querySelector('label[for="sel-robot"]')!.setAttribute('for','robot-trigger');
     this.terrainSel = field("terrain", "Map", TERRAINS, (v) => cb.onTerrain(v as TerrainName));
     this.terrainPicker = new TerrainPicker(this.terrainSel);
     form.append(this.terrainPicker.root);
-    form.querySelector('label[for="sel-terrain"]')!.setAttribute('for', 'terrain-search');
+    form.querySelector('label[for="sel-terrain"]')!.setAttribute('for', 'terrain-trigger');
     this.policySel = field("policy", "Policy", [], (v) => cb.onPolicy(v));
     this.policySel.setAttribute('aria-describedby', 'policy-description');
     this.policyPicker=new SearchPicker(this.policySel,{id:'policy',label:'Policy',listLabel:'Policies',
@@ -211,6 +218,7 @@ export class Panel {
 
     // recording: motion + inputs into a take → timeline → video / Blender export
     const rec = block(root, "Recording", el("kbd", null, "V"));
+    rec.dataset.workspace = 'capture';
     this.recBtn = button("Record", { key: "V", title: "Record the robot's motion and your inputs (V)",
                                      onclick: cb.onRecordToggle });
     this.recBtn.prepend(el("span.dot"));
@@ -223,10 +231,12 @@ export class Panel {
       if (f) cb.onLoadTake(f);
       takeInput.value = "";
     };
-    this.recInfo = el("div.sub", null, "Records the motion and your inputs; stop to scrub it on a timeline and " +
-                                       "export video or a Blender scene.");
-    rec.append(el("div.row", null, this.recBtn, this.timelineBtn,
-                  button("Open…", { icon: "file", title: "Open a saved take (.take.zip)", onclick: () => takeInput.click() })),
+    this.recInfo = el("div.sub", { id: "record-status", role: "status" }, "Recording and playback shortcuts: Help.");
+    const shotsButton = button("Shots", { title: "Open shots stored in this browser", onclick: cb.onOpenShots });
+    shotsButton.id = "open-shots";
+    shotsButton.setAttribute("aria-haspopup", "dialog");
+    rec.append(el("div.row", null, this.recBtn, this.timelineBtn, shotsButton,
+                  button("Open take", { icon: "file", title: "Open a saved take (.take.zip)", onclick: () => takeInput.click() })),
                takeInput, this.recInfo);
 
     // remote-controller moves of the active policy (505 / 805 fight modes, 801/802 speed levels); hidden
@@ -236,6 +246,7 @@ export class Panel {
 
     // kinematic reference clip (mimic)
     const clip = block(root, "Reference clip", "kinematic, no physics");
+    clip.dataset.workspace = 'capture';
     const fileInput = el("input", { type: "file", accept: ".csv,.txt", style: "display:none" });
     const fpsInput = el("input", { type: "number", value: "30", min: "1", title: "Clip frame rate",
                                    "aria-label": "Clip frame rate (fps)" });
@@ -256,17 +267,20 @@ export class Panel {
 
     // status
     const st = block(root, "Status");
+    st.dataset.workspace = 'inspector';
     this.statusEl = el("div", { id: "status" });
     st.append(this.statusEl);
 
     // gamepad debug + key reference (collapsed)
     const dbg = el("details.fold", null, el("summary", null, "Gamepad debug"));
+    dbg.dataset.workspace = 'inspector';
     this.padDebugEl = el("div.pad-debug");
     dbg.append(el("div.fold-body", null, this.padDebugEl));
     root.append(dbg);
     this.padDebugOpen = () => dbg.open;
 
     const keys = el("details.fold", null, el("summary", null, "Keys and gamepad"));
+    keys.dataset.workspace = 'inspector';
     const k = (...ks: string[]) => {
       const dt = el("dt");
       ks.forEach((x, i) => { if (i) dt.append(" "); dt.append(x === "/" ? "/" : el("kbd", null, x)); });
@@ -294,6 +308,32 @@ export class Panel {
         "RT+Left / Right switch policy. LB / RB / LT / RT act as the robot remote's L1 / R1 / L2 / R2; " +
         "a policy's own move combos take precedence over the app combo they shadow.")));
     root.append(keys);
+
+    // Keep the canonical gallery roots, inputs and capture state outside the advanced panels.
+    const actions = el("section", { id: "scene-actions", "aria-label": "Scene actions" });
+    const choices = el("div.scene-choices");
+    for (const picker of [this.terrainPicker, this.robotPicker]) {
+      const label = form.querySelector<HTMLLabelElement>(`label[for="${picker.button.id}"]`)!;
+      // Each root includes its original hidden select and all gallery listeners.
+      choices.append(el("div.scene-choice", null, label, picker.root));
+    }
+    rec.querySelector(".blk-h")!.remove();
+    rec.className = "scene-capture";
+    rec.removeAttribute("data-workspace");
+    rec.querySelector(".row")!.append(this.screenshotBtn);
+    rec.append(this.screenshotInfo);
+    this.recBtn.setAttribute("aria-describedby", "record-status");
+    actions.append(choices, rec);
+    document.getElementById("viewport")!.after(actions);
+
+    // Move the existing navigation buttons, retaining ids and wireNavigation's handlers.
+    const tools = el("details.fold", null, el("summary", null, "Workspace tools"));
+    const toolsBody = el("div.fold-body.workspace-tools");
+    for (const id of ["reset-workspace", "toggle-inspector", "toggle-panels", "fullscreen"]) {
+      toolsBody.append(document.getElementById(id)!);
+    }
+    tools.append(toolsBody);
+    root.append(tools);
   }
 
   /** Buttons for the active policy's remote actions, grouped and named (status.actions); each shows
@@ -323,7 +363,7 @@ export class Panel {
   showNotice(title: string, text: string) {
     document.getElementById("policy-notice")?.remove();
     const prevFocus = document.activeElement as HTMLElement | null;
-    const ok = button("Got it", { cls: "primary" });
+    const ok = button("Close", { cls: "primary" });
     const dlg = el("div.dlg", { role: "dialog", "aria-modal": "true", "aria-labelledby": "policy-notice-title" },
       el("h3", { id: "policy-notice-title" }, title),
       el("div.dlg-body", null, text),
@@ -353,12 +393,12 @@ export class Panel {
       zipInput.value = "";
     };
     const importBtn = button("Import .zip…", { cls: "primary", icon: "upload",
-      title: "A policy pack, or a bundle of packs (.zip); several files at once are fine",
+      title: "Import policy packs or pack bundles (.zip); supports multiple files",
       onclick: () => zipInput.click() });
     importBtn.style.width = "100%";
 
     this.delAllBtn = button("Delete all packs", { cls: "ghost danger", icon: "trash",
-      title: "Remove every imported pack from this browser",
+      title: "Delete every imported pack from this browser",
       onclick: () => {
         if (confirm("Delete all imported policy packs? This cannot be undone.")) this.cb.onDeleteAllPacks();
       } });
@@ -393,6 +433,8 @@ export class Panel {
     this.robotSel.innerHTML = "";
     for (const r of robots) this.robotSel.add(new Option(r, r));
     this.robotSel.value = active;
+    staticPreviewOptions(this.robotSel,'robot');
+    this.robotPicker.sync();
   }
 
   setPolicies(entries: PolicyInfo[], active: string, robot = "") {
@@ -471,13 +513,13 @@ export class Panel {
   private packCard(p: PackInfo): HTMLElement {
     const meta = el("div.pack-meta", { title: p.checkpoints.join(", ") },
       policyPresentation(p.id).description + (p.checkpoints.length > 1 ? ` · ${p.checkpoints.length} checkpoints` : ""));
-    const del = button("", { cls: "ghost icon pack-del", icon: "trash", title: `Remove ${p.id}`,
+    const del = button("", { cls: "ghost icon pack-del", icon: "trash", title: `Delete ${p.id}`,
       onclick: () => {
         const many = p.checkpoints.length > 1
           ? ` and its ${p.checkpoints.length} checkpoints (${p.checkpoints.join(", ")})` : "";
-        if (confirm(`Remove "${p.id}"${many}?`)) this.cb.onDeletePack(p.id);
+        if (confirm(`Delete "${p.id}"${many}?`)) this.cb.onDeletePack(p.id);
       } });
-    del.setAttribute("aria-label", `Remove ${p.id}`);
+    del.setAttribute("aria-label", `Delete ${p.id}`);
     return el("div.pack-card", null,
       el("div.pack-info", null, el("div.pack-name", { title: p.id }, policyPresentation(p.id).label), meta), del);
   }
@@ -499,7 +541,7 @@ export class Panel {
       this.terrainSel.appendChild(g);
     }
     this.terrainSel.value = cur;
-    this.terrainPicker.sync();
+    this.terrainPicker.sync(true);
   }
 
   setState(s: FsmState) {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Embed Ghost's native VTF files without changing existing geometry or image payloads."""
+"""Embed a Source map's native VTF files, preserving geometry and image payloads."""
 import argparse,hashlib,io,json,struct,zlib
 from pathlib import Path
 from PIL import Image
@@ -43,7 +43,7 @@ def refresh(path,fs,bsp,initial_prop_textures=None):
     if initial_prop_textures is not None:
         index=initial_prop_textures
         for x,y,z,_ in struct.iter_unpack('<iiiI',bsp.lump(42)):
-            name=f'maps/nt_ghost_ctg/c{x}_{y}_{z}';raw=fs.read('materials/'+name+'.vtf')
+            name=f'maps/{path.parent.name}/c{x}_{y}_{z}';raw=fs.read('materials/'+name+'.vtf')
             if raw is None or decode_vtf(raw) is None:continue
             for face in range(6):bind(index+face,name,face=face)
             index+=6
@@ -81,7 +81,8 @@ def refresh(path,fs,bsp,initial_prop_textures=None):
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--map',choices=['nt_ghost_ctg'],required=True);args=parser.parse_args()
+    from import_source_bsp import GAMES
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--map',choices=GAMES['neotokyo'][2],required=True);args=parser.parse_args()
     root=Path(__file__).resolve().parent.parent;cache=root/'assets/bsp-cache';directory=root/'public/assets/maps'/args.map
     bsp=BSP((cache/f'z.noclip.website_NeoTokyo_NeotokyoSource_maps_{args.map}.bsp').read_bytes())
     loose,archives=MOUNTS['neotokyo'];fs=FileSystem(bsp.lump(40),f'{STORAGE}/{loose}',[VPK(f'{STORAGE}/{v}',str(cache)) for v in archives],str(cache))

@@ -21,17 +21,18 @@ function fixture(id){
  const browser=await chromium.launch({headless:false,executablePath:process.env.CHROMIUM_PATH||undefined,args:['--no-sandbox','--ozone-platform=x11']});
  try{
   const page=await browser.newPage({deviceScaleFactor:.25}),errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.route('**/src/main.ts*',async route=>{const response=await route.fetch();await route.fulfill({response,body:(await response.text()).replace('new App();','window.__app=new App();').replace('this.renderLoop()','void 0')})});
-  await page.route('**/assets/main-*.js',async route=>{const response=await route.fetch(),original=await response.text(),body=original.replace(/new ([A-Za-z_$][\w$]*);export\{/,'window.__app=new $1;export{').replaceAll('this.renderLoop()','void 0');assert.notEqual(original,body);await route.fulfill({response,body})});
+  for(const pattern of ['**/src/main.ts*','**/assets/main-*.js'])await page.route(pattern,async route=>{
+   const response=await route.fetch();await route.fulfill({response,body:require('./expose-app.cjs')(await response.text())});
+  });
   await page.addInitScript(()=>localStorage.setItem('ume-prefs',JSON.stringify({robot:'r1',terrain:'flat'})));
   if(process.env.DIRECT_SCENE){
    await page.route('**/__map-race-test',route=>route.fulfill({contentType:'text/html',body:'<style>html,body,#view{width:100%;height:100%;margin:0}</style><div id="view"></div><script type="module">import {SceneView} from "/src/render/scene.ts";window.__app={view:new SceneView(document.querySelector("#view"))};</script>'}));
    await page.goto(base+'/__map-race-test');await page.waitForFunction(()=>window.__app?.view);
   }else{
    await page.goto(base+'/?plain&body=stock');
+   await require('./launch-scene.cjs').launchScene(page);
    await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});
   }
-  console.log('Ready: flat scene, render loop paused');
   let request=0,holdWorld=false,holdFrame=false,fail=false,rejectCurrent=false,held,notifyHeld;
   let waiting=new Promise(resolve=>notifyHeld=resolve);
   await page.route('**/nt_ghost_ctg/**',async route=>{
