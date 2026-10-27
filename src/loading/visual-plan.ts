@@ -3,6 +3,7 @@ import { decodePmodelId } from '../characters/pmodels';
 import { preparePmodelCharacter } from '../characters/prepared-pmodel';
 import { DOG_URL } from '../render/source-robot/body';
 import { GHOST_HEAD_URL } from '../render/source-robot/head';
+import { FLASHLIGHT_URL, prepareFlashlightAsset } from '../render/source-flashlight';
 import { catalogueAssetKey, expandAssetUrls } from './catalogue';
 import type { StartupAssetCatalogue, VisualAssetPlan, VisualAssetSelection } from './asset-plan';
 
@@ -29,8 +30,7 @@ function requireVisualSizes(catalogue: StartupAssetCatalogue, urls: readonly str
 
 /** Load-only module. Do not import from the selection shell: native preparation uses Three. */
 export async function planVisualAssets(selection: VisualAssetSelection, catalogue: StartupAssetCatalogue): Promise<VisualAssetPlan> {
-  // SourceFlashlight currently loads its cookie in its constructor, even when off.
-  const roots = ['/assets/source/flashlight.png'];
+  const roots = [FLASHLIGHT_URL];
   if (selection.terrain.startsWith('map:')) {
     const id = selection.terrain.slice(4);
     const map = catalogue.mapVisuals[id];
@@ -39,6 +39,7 @@ export async function planVisualAssets(selection: VisualAssetSelection, catalogu
   }
   const common = expandAssetUrls(catalogue, roots);
   requireVisualSizes(catalogue, common, []);
+  const cookie = await prepareFlashlightAsset();
   const characterRoots: string[] = [];
   let prepared: VisualAssetPlan['prepared'] = [];
   let characterUrls: string[];
@@ -66,5 +67,5 @@ export async function planVisualAssets(selection: VisualAssetSelection, catalogu
     throw new OptionalVisualAssetError(error);
   }
   const urls = [...new Set([...common, ...characterUrls])];
-  return { urls, prepared };
+  return { urls, prepared: [cookie, ...prepared] };
 }

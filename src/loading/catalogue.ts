@@ -43,7 +43,12 @@ export function loadStartupCatalogue(): Promise<StartupAssetCatalogue> {
 /** Unknown selected external bodies must already have been retained by their planner. */
 export function plannedAssets(catalogue: StartupAssetCatalogue, roots: readonly string[], prepared: readonly PlannedAsset[]): PlannedAsset[] {
   const sizes = new Map<string, number>();
-  for (const asset of prepared) sizes.set(catalogueAssetKey(asset.url), asset.bytes);
+  for (const asset of prepared) {
+    const key = catalogueAssetKey(asset.url), expected = catalogue.sizes[key], previous = sizes.get(key);
+    if ((expected !== undefined && expected !== asset.bytes) || (previous !== undefined && previous !== asset.bytes))
+      throw new Error(`Prepared asset payload does not match this release's catalogue: ${key}`);
+    sizes.set(key, asset.bytes);
+  }
   return expandAssetUrls(catalogue, roots).map(url => {
     const bytes = sizes.get(url) ?? catalogue.sizes[url];
     if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error(`The selected asset has no exact payload size: ${url}`);

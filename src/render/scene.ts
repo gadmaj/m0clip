@@ -1324,6 +1324,7 @@ export class SceneView {
   private terrainGeneration=0;
 
   waitForTerrainVisuals(): Promise<void> { return this.terrainRequest; }
+  waitForFlashlight(): Promise<void> { return this.flashlight.waitForTexture(); }
 
   /** Show a converted map's textured scene (null removes it). Its positions are already in the
    * MuJoCo frame, so it goes in as-is; the map's collision lives in MuJoCo, not here. */

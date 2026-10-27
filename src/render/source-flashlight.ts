@@ -3,6 +3,25 @@
 import * as THREE from 'three';
 import { copyDetailBillboard } from './source-details';
 import { patchExtraSkinMaterial } from './extra-skin';
+import { fetchAsset } from '../core/prepared-assets';
+import type { PlannedAsset } from '../loading/asset-plan';
+
+export const FLASHLIGHT_URL = '/assets/source/flashlight.png';
+let cookieAsset: Promise<{ blob: Blob; asset: PlannedAsset }> | undefined;
+
+function loadCookieAsset() {
+  return cookieAsset ??= (async () => {
+    const response = await fetchAsset(FLASHLIGHT_URL);
+    if (!response.ok) throw new Error(`Flashlight texture could not load (HTTP ${response.status}).`);
+    const blob = await response.blob();
+    return { blob, asset: { url: FLASHLIGHT_URL, bytes: blob.size } };
+  })();
+}
+
+/** Retain the real decoded HTTP body, even when image ResourceTiming omits cached sizes. */
+export function prepareFlashlightAsset(): Promise<PlannedAsset> {
+  return loadCookieAsset().then(value => value.asset);
+}
 
 export class SourceFlashlight {
   readonly exposure = { value: 1 };
@@ -21,16 +40,24 @@ export class SourceFlashlight {
   private previous = performance.now();
   private reset = true;
   private ready = false;
+  private textureReady: Promise<void>;
   on = false;
 
   constructor() {
-    new THREE.TextureLoader().load('/assets/source/flashlight.png', (texture) => {
-      texture.colorSpace = THREE.SRGBColorSpace;
-      texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
-      this.cookie.value = texture;
-      this.ready = true;
-    }, undefined, (e) => console.warn('Source flashlight texture could not be loaded; re-run the Source map importer.', e));
+    this.textureReady = loadCookieAsset().then(async ({ blob }) => {
+      const url = URL.createObjectURL(blob);
+      try {
+        const texture = await new THREE.TextureLoader().loadAsync(url);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
+        this.cookie.value = texture;
+        this.ready = true;
+      } finally { URL.revokeObjectURL(url); }
+    });
+    void this.textureReady.catch(e => console.warn('Source flashlight texture could not be loaded; re-run the Source map importer.', e));
   }
+
+  waitForTexture(): Promise<void> { return this.textureReady; }
 
   set(on: boolean) { this.on = on; this.reset = true; }
 

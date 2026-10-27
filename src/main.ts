@@ -1631,7 +1631,8 @@ class App {
       let generation: number;
       do {
         generation = this.viewBuildGeneration;
-        await Promise.all([this.view.waitForRobotVisuals(), this.view.waitForTerrainVisuals(), this.firstSimulationFrame]);
+        await Promise.all([this.view.waitForRobotVisuals(), this.view.waitForTerrainVisuals(),
+          this.view.waitForFlashlight(), this.firstSimulationFrame]);
       } while (generation !== this.viewBuildGeneration);
       if (!this.lastFrame) throw new Error('The simulator did not provide a scene frame.');
       if (this.view.renderer.getContext().isContextLost()) throw new Error('The viewport is unavailable.');
