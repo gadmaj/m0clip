@@ -513,9 +513,10 @@ export class Panel {
     description.hidden=!description.textContent;
   }
 
-  showPolicyFinished(policy:string) {
+  showPolicyFinished(policy:string,active:string) {
+    if(this.policySel.value!==active)return;
     const description=document.getElementById('policy-description')!;
-    description.dataset.completedFor=this.policySel.value;
+    description.dataset.completedFor=active;
     description.textContent=`${policyPresentation(policy).title} finished.`;
     description.hidden=false;
   }
