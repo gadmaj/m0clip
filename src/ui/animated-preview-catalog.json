@@ -1,0 +1,455 @@
+{
+  "characters": {
+    "bot-02": {
+      "still": "/assets/previews/animated/bot-02/still.min.png",
+      "animation": "/assets/previews/animated/bot-02/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "dragon-wyvern": {
+      "still": "/assets/previews/animated/dragon-wyvern/still.min.png",
+      "animation": "/assets/previews/animated/dragon-wyvern/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "gingerbread-man": {
+      "still": "/assets/previews/animated/gingerbread-man/still.min.png",
+      "animation": "/assets/previews/animated/gingerbread-man/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "male-psx-yugg0": {
+      "still": "/assets/previews/animated/male-psx-yugg0/still.min.png",
+      "animation": "/assets/previews/animated/male-psx-yugg0/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-dog": {
+      "still": "/assets/previews/animated/psx-dog/still.min.png",
+      "animation": "/assets/previews/animated/psx-dog/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-17-female-police": {
+      "still": "/assets/previews/animated/psx-female-character-17-female-police/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-17-female-police/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-18-female-police": {
+      "still": "/assets/previews/animated/psx-female-character-18-female-police/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-18-female-police/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-19-female-police": {
+      "still": "/assets/previews/animated/psx-female-character-19-female-police/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-19-female-police/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-20-female-police": {
+      "still": "/assets/previews/animated/psx-female-character-20-female-police/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-20-female-police/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-21-female-firefighter": {
+      "still": "/assets/previews/animated/psx-female-character-21-female-firefighter/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-21-female-firefighter/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-22-female-firefighter": {
+      "still": "/assets/previews/animated/psx-female-character-22-female-firefighter/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-22-female-firefighter/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-23-female-doctor": {
+      "still": "/assets/previews/animated/psx-female-character-23-female-doctor/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-23-female-doctor/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-24-female-doctor": {
+      "still": "/assets/previews/animated/psx-female-character-24-female-doctor/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-24-female-doctor/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-25-female-police": {
+      "still": "/assets/previews/animated/psx-female-character-25-female-police/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-25-female-police/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-26-female-police": {
+      "still": "/assets/previews/animated/psx-female-character-26-female-police/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-26-female-police/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-27-female-hm": {
+      "still": "/assets/previews/animated/psx-female-character-27-female-hm/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-27-female-hm/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-28-female-hm": {
+      "still": "/assets/previews/animated/psx-female-character-28-female-hm/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-28-female-hm/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-29-female": {
+      "still": "/assets/previews/animated/psx-female-character-29-female/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-29-female/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-30-female": {
+      "still": "/assets/previews/animated/psx-female-character-30-female/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-30-female/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-31-female": {
+      "still": "/assets/previews/animated/psx-female-character-31-female/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-31-female/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-32-female": {
+      "still": "/assets/previews/animated/psx-female-character-32-female/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-32-female/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-33-female": {
+      "still": "/assets/previews/animated/psx-female-character-33-female/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-33-female/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-01": {
+      "still": "/assets/previews/animated/psx-female-character-female-01/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-01/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-02": {
+      "still": "/assets/previews/animated/psx-female-character-female-02/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-02/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-03": {
+      "still": "/assets/previews/animated/psx-female-character-female-03/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-03/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-04": {
+      "still": "/assets/previews/animated/psx-female-character-female-04/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-04/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-05": {
+      "still": "/assets/previews/animated/psx-female-character-female-05/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-05/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-06": {
+      "still": "/assets/previews/animated/psx-female-character-female-06/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-06/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-07": {
+      "still": "/assets/previews/animated/psx-female-character-female-07/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-07/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-08": {
+      "still": "/assets/previews/animated/psx-female-character-female-08/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-08/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-09": {
+      "still": "/assets/previews/animated/psx-female-character-female-09/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-09/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-10": {
+      "still": "/assets/previews/animated/psx-female-character-female-10/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-10/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-11": {
+      "still": "/assets/previews/animated/psx-female-character-female-11/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-11/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-12": {
+      "still": "/assets/previews/animated/psx-female-character-female-12/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-12/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-13": {
+      "still": "/assets/previews/animated/psx-female-character-female-13/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-13/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-14": {
+      "still": "/assets/previews/animated/psx-female-character-female-14/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-14/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-15": {
+      "still": "/assets/previews/animated/psx-female-character-female-15/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-15/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-female-character-female-16": {
+      "still": "/assets/previews/animated/psx-female-character-female-16/still.min.png",
+      "animation": "/assets/previews/animated/psx-female-character-female-16/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-horror-entity": {
+      "still": "/assets/previews/animated/psx-horror-entity/still.min.png",
+      "animation": "/assets/previews/animated/psx-horror-entity/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-killers-character-killer": {
+      "still": "/assets/previews/animated/psx-killers-character-killer/still.min.png",
+      "animation": "/assets/previews/animated/psx-killers-character-killer/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-killers-character-killer-01": {
+      "still": "/assets/previews/animated/psx-killers-character-killer-01/still.min.png",
+      "animation": "/assets/previews/animated/psx-killers-character-killer-01/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-killers-character-killer-02": {
+      "still": "/assets/previews/animated/psx-killers-character-killer-02/still.min.png",
+      "animation": "/assets/previews/animated/psx-killers-character-killer-02/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-killers-character-killer-03": {
+      "still": "/assets/previews/animated/psx-killers-character-killer-03/still.min.png",
+      "animation": "/assets/previews/animated/psx-killers-character-killer-03/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-killers-character-killer-04": {
+      "still": "/assets/previews/animated/psx-killers-character-killer-04/still.min.png",
+      "animation": "/assets/previews/animated/psx-killers-character-killer-04/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-killers-character-killer-05": {
+      "still": "/assets/previews/animated/psx-killers-character-killer-05/still.min.png",
+      "animation": "/assets/previews/animated/psx-killers-character-killer-05/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-killers-character-killer-06": {
+      "still": "/assets/previews/animated/psx-killers-character-killer-06/still.min.png",
+      "animation": "/assets/previews/animated/psx-killers-character-killer-06/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-killers-character-killer-07": {
+      "still": "/assets/previews/animated/psx-killers-character-killer-07/still.min.png",
+      "animation": "/assets/previews/animated/psx-killers-character-killer-07/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-killers-character-monster": {
+      "still": "/assets/previews/animated/psx-killers-character-monster/still.min.png",
+      "animation": "/assets/previews/animated/psx-killers-character-monster/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-killers-character-monster-01": {
+      "still": "/assets/previews/animated/psx-killers-character-monster-01/still.min.png",
+      "animation": "/assets/previews/animated/psx-killers-character-monster-01/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-killers-character-monster-02": {
+      "still": "/assets/previews/animated/psx-killers-character-monster-02/still.min.png",
+      "animation": "/assets/previews/animated/psx-killers-character-monster-02/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-killers-character-monster-03": {
+      "still": "/assets/previews/animated/psx-killers-character-monster-03/still.min.png",
+      "animation": "/assets/previews/animated/psx-killers-character-monster-03/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-killers-character-monster-04": {
+      "still": "/assets/previews/animated/psx-killers-character-monster-04/still.min.png",
+      "animation": "/assets/previews/animated/psx-killers-character-monster-04/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-killers-character-monster-05": {
+      "still": "/assets/previews/animated/psx-killers-character-monster-05/still.min.png",
+      "animation": "/assets/previews/animated/psx-killers-character-monster-05/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-low-poly-skeleton": {
+      "still": "/assets/previews/animated/psx-low-poly-skeleton/still.min.png",
+      "animation": "/assets/previews/animated/psx-low-poly-skeleton/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-01": {
+      "still": "/assets/previews/animated/psx-male-character-01/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-01/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-02": {
+      "still": "/assets/previews/animated/psx-male-character-02/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-02/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-03": {
+      "still": "/assets/previews/animated/psx-male-character-03/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-03/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-04": {
+      "still": "/assets/previews/animated/psx-male-character-04/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-04/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-05": {
+      "still": "/assets/previews/animated/psx-male-character-05/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-05/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-06": {
+      "still": "/assets/previews/animated/psx-male-character-06/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-06/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-07": {
+      "still": "/assets/previews/animated/psx-male-character-07/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-07/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-08": {
+      "still": "/assets/previews/animated/psx-male-character-08/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-08/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-09": {
+      "still": "/assets/previews/animated/psx-male-character-09/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-09/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-10": {
+      "still": "/assets/previews/animated/psx-male-character-10/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-10/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-11": {
+      "still": "/assets/previews/animated/psx-male-character-11/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-11/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-12": {
+      "still": "/assets/previews/animated/psx-male-character-12/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-12/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-13": {
+      "still": "/assets/previews/animated/psx-male-character-13/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-13/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-14": {
+      "still": "/assets/previews/animated/psx-male-character-14/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-14/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-15": {
+      "still": "/assets/previews/animated/psx-male-character-15/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-15/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-16": {
+      "still": "/assets/previews/animated/psx-male-character-16/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-16/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-17-police": {
+      "still": "/assets/previews/animated/psx-male-character-17-police/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-17-police/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-18-police": {
+      "still": "/assets/previews/animated/psx-male-character-18-police/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-18-police/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-19-police": {
+      "still": "/assets/previews/animated/psx-male-character-19-police/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-19-police/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-20-police": {
+      "still": "/assets/previews/animated/psx-male-character-20-police/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-20-police/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-21-police": {
+      "still": "/assets/previews/animated/psx-male-character-21-police/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-21-police/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-22-police": {
+      "still": "/assets/previews/animated/psx-male-character-22-police/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-22-police/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-23-firefighter": {
+      "still": "/assets/previews/animated/psx-male-character-23-firefighter/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-23-firefighter/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-24-firefighter": {
+      "still": "/assets/previews/animated/psx-male-character-24-firefighter/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-24-firefighter/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-25-doctor": {
+      "still": "/assets/previews/animated/psx-male-character-25-doctor/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-25-doctor/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-26-doctor": {
+      "still": "/assets/previews/animated/psx-male-character-26-doctor/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-26-doctor/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-27-hm": {
+      "still": "/assets/previews/animated/psx-male-character-27-hm/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-27-hm/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-28-hm": {
+      "still": "/assets/previews/animated/psx-male-character-28-hm/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-28-hm/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-29": {
+      "still": "/assets/previews/animated/psx-male-character-29/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-29/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-30": {
+      "still": "/assets/previews/animated/psx-male-character-30/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-30/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-31": {
+      "still": "/assets/previews/animated/psx-male-character-31/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-31/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-male-character-32": {
+      "still": "/assets/previews/animated/psx-male-character-32/still.min.png",
+      "animation": "/assets/previews/animated/psx-male-character-32/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "ralph": {
+      "still": "/assets/previews/animated/ralph/still.min.png",
+      "animation": "/assets/previews/animated/ralph/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "ronin-01": {
+      "still": "/assets/previews/animated/ronin-01/still.min.png",
+      "animation": "/assets/previews/animated/ronin-01/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "solus": {
+      "still": "/assets/previews/animated/solus/still.min.png",
+      "animation": "/assets/previews/animated/solus/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "the-wrapped": {
+      "still": "/assets/previews/animated/the-wrapped/still.min.png",
+      "animation": "/assets/previews/animated/the-wrapped/turntable.gif",
+      "caption": "360° view · rest pose"
+    }
+  },
+  "policies": {}
+}

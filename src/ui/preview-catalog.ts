@@ -1,16 +1,20 @@
 import { authoredCharacter, CHARACTER_CHOICES, characterPhysics, compatibleBody, isBodyVisual } from '../characters/catalog';
 import { decodePmodelId, pmodelRecord, searchPmodels } from '../characters/pmodels';
 import type { VisualPickerConfig } from './visual-picker';
+import animations from './animated-preview-catalog.json';
+import { previewMedia, type PreviewMedia } from './preview-media';
 
-/** Frozen scene renders: safe in the pre-load launch shell (no renderer imports). */
+const characterAnimations: Readonly<Record<string, PreviewMedia>> = animations.characters;
+const policyAnimations: Readonly<Record<string, PreviewMedia>> = animations.policies;
+
+/** Frozen image media: safe in the pre-load shell (no renderer imports). */
 export function previewImage(kind:'robot'|'character'|'body'|'head'|'map'|'terrain',value:string,robot?:string):HTMLElement {
-  const holder=document.createElement('span'); holder.className='static-preview';
-  const image=document.createElement('img'); image.alt=''; image.decoding='async'; image.loading='lazy';
-  image.crossOrigin='anonymous';
   const name=kind==='map'&&value.startsWith('map:')?`map-${value.slice(4)}`:`${kind}-${value}`;
-  image.src=kind==='character'?characterPreviewUrl(value,robot??'r1'):`/assets/previews/${encodeURIComponent(name)}.webp`;
-  image.onerror=()=>{holder.textContent=`Preview unavailable: ${value}`;holder.setAttribute('role','status');};
-  holder.append(image);return holder;
+  const animated=kind==='character'?characterAnimations[value]:undefined;
+  return previewMedia(animated??{
+    still:kind==='character'?characterPreviewUrl(value,robot??'r1'):`/assets/previews/${encodeURIComponent(name)}.webp`,
+    caption:kind==='character'&&decodePmodelId(value)?'Upstream still · no permitted animation available':undefined,
+  });
 }
 
 /** Attach only cheap static thumbnail URLs; gallery rendering stays lazy. */
@@ -29,6 +33,13 @@ export function characterPreviewUrl(value:string,robot:string):string {
   const remote=decodePmodelId(value);
   if(remote)return pmodelRecord(remote).thumbnail;
   return `/assets/previews/${encodeURIComponent(value==='dog'?'body-dog':`character-${robot}-${value}`)}.webp`;
+}
+
+/** Exact robot/checkpoint identities only; never guess motion from a policy name. */
+export function policyPreview(name:string,robot:string):HTMLElement {
+  const media=policyAnimations[`${robot}:${name}`];
+  return previewMedia(media??{still:`/assets/previews/robot-${encodeURIComponent(robot)}.webp`,
+    caption:'Robot only · motion preview unavailable'});
 }
 
 export function characterDescription(value:string):string {
@@ -63,6 +74,6 @@ export function sourceModelCatalog(compatible:boolean):NonNullable<VisualPickerC
   return {label:'Search Source models',load:async(query,offset,signal)=>{
     const page=await searchPmodels(query,{offset,limit:40,signal});
     return {...page,options:page.results.map(record=>({value:record.id,label:`${record.name} · ${record.game==='hl'?'Half-Life':'Sven Co-op'}`,thumbnail:record.thumbnail,
-      description:compatible?'':'Requires R1 physics.',disabled:!compatible}))};
+      description:`Upstream still; no permitted prebuilt animation. ${compatible?'Compatible humanoid rig required.':'Requires R1 physics.'}`,disabled:!compatible}))};
   }};
 }

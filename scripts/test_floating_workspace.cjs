@@ -266,9 +266,14 @@ async function desktop(page, base, directory) {
   await page.keyboard.press('Tab'); assert.equal(await page.locator('#panel').isVisible(), false); await dockProof(page);
   await page.locator('#toggle-menu').click();
   assert.equal(await page.locator('#workspace-panels').isVisible(), false, 'Tall desktop keeps the compact toolbar even with Controls open');
-  await hit(page.locator('#policy-search'));
+  await hit(page.locator('#policy-trigger'));
   const policy = await page.locator('#sel-policy').inputValue();
-  await page.locator('#policy-search').fill(policy); await page.keyboard.press('Enter');
+  await page.locator('#policy-trigger').click();
+  const policies = page.locator('dialog[data-visual-picker="policy"]');
+  await policies.locator('input[type="search"]').fill(policy);
+  await policies.locator(`button[data-value=${JSON.stringify(policy)}]`).click();
+  await policies.waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('#sel-policy').inputValue(), policy);
   await page.locator('button[aria-controls="policy-manager"]').click();
   await page.locator('#policy-manager').waitFor({ state: 'visible' });
   const packCards = await page.locator('#policy-manager .pack-card').count();

@@ -51,7 +51,9 @@
 .visual-picker-preview img, .visual-picker-preview canvas, .visual-picker-preview svg {
   display: block; width: 100%; height: 100%; object-fit: contain;
 }
-.static-preview { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden; }
+.static-preview { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden; }
+.visual-picker-preview .static-preview img { min-height: 0; flex: 1 1 0; object-fit: contain; }
+.static-preview small { flex: 0 0 auto; padding: 2px 4px; font-size: 10px; line-height: 1.2; text-align: center; color: var(--text-2); }
 .visual-picker-dialog [hidden], .visual-picker > select[hidden] { display: none !important; }
 .visual-picker-dialog :focus-visible, .visual-picker-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .visual-picker-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
