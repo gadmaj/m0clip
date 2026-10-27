@@ -273,6 +273,7 @@ Controls lock while encoding, not merely while setup is open.
 In **Render controls**, enable **Character wireframe** and leave **Map wireframe**
 off to keep the map solid. Keep **Textures** and **Map geometry** enabled to see
 the textured environment.
+On Flat, the camera flashlight keeps the floor and its reflection visible.
 
 - Detailed maps can require substantial downloads, memory and startup time.
 - Source gameplay, moving doors, prop physics, particles and HDR bloom are not
