@@ -184,7 +184,8 @@ async function extract(file: Blob, entry: ZipEntry, centralOffset: number, signa
     if (entry.method !== 0 && chunk.length) chunks.push(chunk as BlobPart);
   };
   const inflate = entry.method === 8 ? new BoundedInflate(entry.compressed, entry.bytes, consume, signal) : null;
-  const feedBytes = inflate ? deflateFeedBytes : 16384;
+  // Stored bodies have no inflate window; keep CRC and cancellation per bounded read.
+  const feedBytes = inflate ? deflateFeedBytes : 256 * 1024;
   try {
     for (let pos = 0; pos < entry.compressed; pos += feedBytes) {
       const body = await read(file, start + pos, Math.min(feedBytes, entry.compressed - pos), signal);

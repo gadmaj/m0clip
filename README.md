@@ -112,7 +112,8 @@ Unsafe paths and excessively complex dependency metadata are rejected before
 the map becomes active.
 
 Choose **Open map bundle…** in the map gallery. Files are checked locally, not
-uploaded. Local maps last for the tab's session. Saved takes and views remember
+uploaded. Cancel verification before installation to keep the current scene.
+Local maps last for the tab's session. Saved takes and views remember
 the map's identity, not its files: after reloading, reattach the same bundle.
 Raw BSP, GMA and VPK files are not browser import formats yet.
 
