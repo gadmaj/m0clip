@@ -119,6 +119,7 @@ export class Panel {
   private noclipBtn!: HTMLButtonElement;
   private noclipOn = false;
   private flashlightBtn!: HTMLButtonElement;
+  private flashlightKey!: HTMLElement;
   private flashlightOn = false;
   private remoteEl!: HTMLElement;
   private remoteKey = "";
@@ -211,8 +212,10 @@ export class Panel {
     this.noclipBtn = button("Noclip", { key: "N", title: "Fly the robot through walls; toggle physics (N)",
                                         onclick: () => this.cb.onNoclip(!this.noclipOn) });
     this.noclipBtn.setAttribute("aria-pressed", "false");
-    this.flashlightBtn = button("Flashlight", { key: "F", title: "Toggle the camera flashlight (F)",
+    this.flashlightKey = el('kbd', null, 'F');
+    this.flashlightBtn = button("Flashlight", { title: "Toggle the camera flashlight (F)",
       onclick: () => this.cb.onFlashlight(!this.flashlightOn) });
+    this.flashlightBtn.append(this.flashlightKey);
     this.flashlightBtn.setAttribute("aria-pressed", "false");
     this.screenshotBtn=button('Screenshot',{title:'Save a PNG after the scene finishes loading',onclick:cb.onScreenshot});
     this.screenshotBtn.id='capture-screenshot';this.screenshotBtn.setAttribute('aria-busy','false');this.screenshotBtn.setAttribute('aria-describedby','screenshot-status');
@@ -303,7 +306,7 @@ export class Panel {
     root.append(dbg);
     this.padDebugOpen = () => dbg.open;
 
-    const keys = el("details.fold", null, el("summary", null, "Keys and gamepad"));
+    const keys = el("details.fold", null, el("summary", null, "Live keys and gamepad"));
     keys.dataset.workspace = 'inspector';
     const k = (...ks: string[]) => {
       const dt = el("dt");
@@ -400,6 +403,7 @@ export class Panel {
     }
     this.robotPicker.sync(); this.terrainPicker.sync(); this.policyPicker.sync();
     this.flashlightBtn.title = reviewing ? 'SHOT · Camera flashlight' : 'LIVE · Camera flashlight (F)';
+    this.flashlightKey.hidden = reviewing;
   }
 
   /** Buttons for the active policy's remote actions, grouped and named (status.actions); each shows
