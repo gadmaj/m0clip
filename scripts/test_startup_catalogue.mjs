@@ -79,6 +79,7 @@ try {
   await put('assets/previews/manifest.json', { baseURL: 'private-capture-origin', console: ['private capture notes'] });
   await put('assets/previews/character.webp', Buffer.alloc(79));
   for (const name of ['source-upgrade.json', 'props-report.json']) await put(map + name, { internal: true });
+  await put('assets/characters/authored/analysis.json', { internal: 'conversion provenance' });
   const catalogue = await buildStartupCatalogue(root, graph.runtime, { dependencies: graph.dependencies });
   assert.deepEqual(catalogue.mapVisuals.selected, [
     'lighting.json', 'lightstyles.json', 'manifest.json', 'props-native.glb', 'source-color-0.rgb',
@@ -97,6 +98,8 @@ try {
   for (const name of ['source-upgrade.json', 'props-report.json']) {
     assert(!('/' + map + name in catalogue.sizes), 'Conversion-only receipts must not be advertised by the public catalogue');
   }
+  assert(!('/assets/characters/authored/analysis.json' in catalogue.sizes),
+    'Conversion-only character analysis must not be advertised by the public catalogue');
   const first = await writeStartupCatalogue(root, graph.runtime, { dependencies: graph.dependencies, fileName: 'startup-catalogue-release.json' });
   await put(map + 'source-color-0.rgb', Buffer.alloc(101));
   const final = await writeStartupCatalogue(root, graph.runtime, { dependencies: graph.dependencies, fileName: 'startup-catalogue-release.json' });
