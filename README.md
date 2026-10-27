@@ -114,6 +114,10 @@ The in-app Source model search uses the
 models retain their own authorship and terms; search results are not a license
 grant. Remote search also depends on its upstream services and CORS support.
 
+Compatible biped imports align named left/right limbs to the robot and keep the
+model's reference pose separate from animated bone controllers. Custom skeletons
+may require an explicit rig mapping.
+
 ### Robot policies
 
 Import your compatible policy ZIP through **Controls → Play → Packs →
