@@ -118,9 +118,79 @@ def encode_preview_with_host(png_path):
     return result
 
 
+def encode_animation(frames, output_root, fps=12, timestamps=None):
+    """Encode rendered masters only; GIF is lossy, reduced-motion PNG is exact."""
+    from PIL import Image
+
+    frames = [Path(frame).resolve() for frame in frames]
+    output_root = Path(output_root).resolve()
+    if not 2 <= len(frames) <= 120 or not 1 <= fps <= 30:
+        raise ValueError('Animation requires 2–120 explicit frames at 1–30 fps')
+    if output_root.exists():
+        raise ValueError('Animation output must be a new private staging directory')
+    images, records = [], []
+    for frame in frames:
+        with Image.open(frame) as source:
+            rgba = source.convert('RGBA')
+        if images and rgba.size != images[0].size:
+            raise ValueError('Animation frame dimensions differ')
+        if max(rgba.size) > 512:
+            raise ValueError('Preview frames must be at most 512 pixels per side')
+        # Composite transparent authored pixels onto the gallery charcoal.
+        background = Image.new('RGBA', rgba.size, (24, 26, 23, 255))
+        background.alpha_composite(rgba)
+        image = background.convert('RGB')
+        images.append(image)
+        records.append({'sha256': hashlib.sha256(frame.read_bytes()).hexdigest(),
+                        'rgbSHA256': hashlib.sha256(image.tobytes()).hexdigest()})
+    if len({record['rgbSHA256'] for record in records}) < 2:
+        raise ValueError('Animation masters contain no visual change')
+    output_root.mkdir(parents=True)
+    still_master = output_root / 'still.png'
+    images[0].save(still_master)
+    still = encode_preview(still_master)
+    output = output_root / 'turntable.gif'
+    # GIF stores centiseconds; distribute rounding instead of speeding up 12 fps.
+    durations = [round((index + 1) * 100 / fps) * 10 - round(index * 100 / fps) * 10
+                 for index in range(len(frames))]
+    if timestamps is not None:
+        if len(timestamps) != len(frames):
+            raise ValueError('One actual simulation timestamp is required per frame')
+        intervals = [b - a for a, b in zip(timestamps, timestamps[1:])]
+        if any(not 0 < interval <= 5 for interval in intervals):
+            raise ValueError('Simulation timestamps must increase with gaps at most 5 seconds')
+        durations = [max(10, round(interval * 100) * 10) for interval in intervals]
+        durations.append(durations[-1])
+    palettes = [image.quantize(colors=256) for image in images]
+    palettes[0].save(output, save_all=True, append_images=palettes[1:],
+                     duration=durations, loop=0, disposal=2, optimize=False)
+    with Image.open(output) as decoded:
+        if decoded.format != 'GIF' or decoded.size != images[0].size or decoded.n_frames < 2:
+            raise ValueError('GIF readback lost animation or dimensions')
+        decoded_frames = decoded.n_frames
+        decoded_ms = 0
+        for index in range(decoded_frames):
+            decoded.seek(index)
+            decoded.convert('RGB').load()
+            decoded_ms += decoded.info.get('duration', 0)
+    result = {'still': still, 'animation': {'path': str(output), 'bytes': output.stat().st_size,
+        'sha256': hashlib.sha256(output.read_bytes()).hexdigest(), 'frames': decoded_frames,
+        'durationMs': decoded_ms, 'encoding': 'GIF89a, per-frame 256-color palette (lossy)'},
+        'width': images[0].width, 'height': images[0].height, 'sourceFrames': records}
+    (output_root / 'encoding.json').write_text(json.dumps(result, indent=2) + '\n')
+    return result
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('png', type=Path, nargs='+', help='Explicit PNG masters; no recursive discovery')
+    parser.add_argument('--animation-output', type=Path, help='New private directory for GIF + real still')
+    parser.add_argument('--fps', type=int, default=12)
+    parser.add_argument('--timestamps', type=Path, help='JSON array of actual simulation seconds')
     args = parser.parse_args()
-    for png in args.png:
-        print(json.dumps(encode_preview(png)), flush=True)
+    if args.animation_output:
+        timestamps = json.loads(args.timestamps.read_text()) if args.timestamps else None
+        print(json.dumps(encode_animation(args.png, args.animation_output, args.fps, timestamps)), flush=True)
+    else:
+        for png in args.png:
+            print(json.dumps(encode_preview(png)), flush=True)
