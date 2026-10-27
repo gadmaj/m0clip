@@ -8,8 +8,10 @@ import { sharedView } from './explore';
 import { Pong } from './pong';
 import { VisualPicker } from './visual-picker';
 import { previewImage, staticPreviewOptions, characterOptions, characterDescription, sourceModelCatalog } from './preview-catalog';
-import { SceneProgress, downloadTime } from '../loading/progress';
+import { SceneProgress, downloadTime, type LoadingSnapshot } from '../loading/progress';
 import { observeTransfers, type TransferUpdate } from '../loading/transfers';
+import type { PlannedAsset } from '../loading/asset-plan';
+import { registerPreviewAsset } from '../loading/preview-assets';
 import './launch.css';
 
 export interface LaunchSelection {
@@ -37,6 +39,16 @@ function rememberedCharacter(appearance: unknown): CharacterId | null {
   return styles.every(style => style === styles[0]) && Object.hasOwn(characters, styles[0]) ? styles[0] as CharacterId : null;
 }
 
+/** Keep useful asset paths, never URL credentials, search parameters or fragments. */
+function transferName(value: string): string {
+  try {
+    const url = new URL(value, location.href);
+    return url.protocol === 'http:' || url.protocol === 'https:'
+      ? `${url.origin === location.origin ? '' : url.host}${url.pathname}` : 'Asset';
+  } catch { return 'Asset'; }
+}
+const transferStates: Record<TransferUpdate['state'], string> = { loading: 'Active', done: 'Completed', failed: 'Failed', cancelled: 'Cancelled' };
+
 class LaunchController {
   readonly selection: LaunchSelection;
   private root!: HTMLElement;
@@ -51,6 +63,7 @@ class LaunchController {
   private visuals = false;
   private frame = false;
   private callbacks: Array<() => void> = [];
+  private failureCallbacks: Array<() => void> = [];
   private maps: MapEntry[] = [];
   private shared = sharedView();
   private initialAppearance: unknown;
@@ -67,6 +80,14 @@ class LaunchController {
   private meter!: HTMLProgressElement;
   private bytes!: HTMLElement;
   private eta!: HTMLElement;
+  private details!: HTMLDetailsElement;
+  private detailStatus!: HTMLElement;
+  private detailReadiness!: HTMLElement;
+  private detailBytes!: HTMLElement;
+  private detailCounts!: HTMLElement;
+  private detailTransfers!: HTMLElement;
+  private detailsDirty = true;
+  private detailRows = new Map<string, { row: HTMLElement; state: HTMLElement; bytes: HTMLElement }>();
   private loadingStarted = 0;
   private gameTimer?: number;
   private morphTimer?: number;
@@ -95,6 +116,7 @@ class LaunchController {
   get active() { return this.showing; }
   get loadingId() { return this.loadGeneration; }
   onEnter(callback: () => void) { this.callbacks.push(callback); }
+  onFailure(callback: () => void) { this.failureCallbacks.push(callback); }
   ownsKey(code: string) { return this.heldKeys.has(code); }
 
   mount(load: () => Promise<unknown>) {
@@ -115,7 +137,8 @@ class LaunchController {
         </section>
         <section id="launch-loading-step" aria-labelledby="launch-loading-title" hidden><h2 id="launch-loading-title">Loading</h2>
           <p id="launch-context"></p>
-          <div id="launch-transfer" class="launch-transfer" title="Asset payload from the network or browser cache. Totals grow as assets are discovered.">
+          <div id="launch-transfer" class="launch-transfer" title="Selected scene asset payload. The maximum is fixed before scene downloads; browser caching can reduce network traffic.">
+            <div class="launch-transfer-heading"><span id="launch-bytes">Planning scene assets…</span><span id="launch-eta"></span></div>
             <div id="launch-load-stage" class="launch-load-stage" data-game="waiting">
               <progress id="launch-progress" max="1" aria-label="Scene assets" aria-describedby="launch-bytes launch-eta"></progress>
               <div class="launch-morph" aria-hidden="true"><i class="morph-left"></i><i class="morph-middle"></i><i class="morph-right"></i><i class="morph-ball"></i></div>
@@ -123,9 +146,18 @@ class LaunchController {
                 <canvas id="launch-pong" tabindex="0" role="application" aria-label="Pong" aria-describedby="launch-pong-help" title="Move: ↑ ↓ / W S, mouse or touch. Space / P pauses."></canvas>
               </div>
             </div>
-            <div class="launch-transfer-heading"><span id="launch-bytes">Discovering sizes…</span><span id="launch-eta"></span></div>
           </div>
           <p id="launch-status" role="status" aria-live="polite"></p><p id="launch-map-progress" role="status"></p>
+          <details id="launch-details" class="launch-details" hidden>
+            <summary>Details</summary>
+            <div class="launch-detail-content">
+              <p id="launch-detail-status"></p>
+              <p id="launch-detail-readiness"></p>
+              <p id="launch-detail-bytes"></p>
+              <p id="launch-detail-counts"></p>
+              <ul id="launch-detail-transfers" aria-label="Asset transfers"></ul>
+            </div>
+          </details>
           <p id="launch-pong-help" class="launch-game-help">Arrow up/down or W/S move while the court is focused. Mouse or touch moves the paddle. Space or P pauses. Leaving the court pauses play.</p>
           <div class="launch-actions"><div id="launch-pong-actions" hidden><button id="launch-pong-pause" class="btn" type="button" aria-pressed="false">Play Pong</button></div>
             <button id="launch-enter" class="btn primary" type="button" disabled>Enter scene</button>
@@ -143,6 +175,15 @@ class LaunchController {
     this.bytes = this.root.querySelector('#launch-bytes')!;
     this.eta = this.root.querySelector('#launch-eta')!;
     this.gameStage = this.root.querySelector('#launch-load-stage')!;
+    this.details = this.root.querySelector('#launch-details')!;
+    this.detailStatus = this.root.querySelector('#launch-detail-status')!;
+    this.detailReadiness = this.root.querySelector('#launch-detail-readiness')!;
+    this.detailBytes = this.root.querySelector('#launch-detail-bytes')!;
+    this.detailCounts = this.root.querySelector('#launch-detail-counts')!;
+    this.detailTransfers = this.root.querySelector('#launch-detail-transfers')!;
+    this.details.addEventListener('toggle', () => {
+      if (this.details.open) { this.detailsDirty = true; this.renderProgress(); }
+    });
     this.reducedMotion.addEventListener('change', () => {
       if (this.reducedMotion.matches && this.gameStage.dataset.game === 'morph') this.revealPong();
     });
@@ -167,7 +208,8 @@ class LaunchController {
     this.root.querySelector<HTMLButtonElement>('#launch-back')!.onclick = () => { step('map'); this.mapPicker.button.focus(); };
     this.root.querySelector<HTMLButtonElement>('#launch-load')!.onclick = () => {
       if (this.loading) return;
-      this.loading = true; step('loading'); this.context.textContent = this.describe();
+      this.loading = true; this.root.dataset.loading = 'true'; step('loading'); this.context.textContent = this.describe();
+      this.context.title = this.context.textContent;
       this.startProgress();
       this.phase('Starting renderer and physics…');
       this.status.tabIndex = -1; this.status.focus({ preventScroll: true });
@@ -176,6 +218,7 @@ class LaunchController {
     this.enter.onclick = () => {
       if (this.failed || !this.simulation || !this.visuals || !this.frame) return;
       this.showing = false; this.cancelPong(); this.root.hidden = true;
+      this.details.open = false; this.details.hidden = true;
       this.stopTransfers?.(); this.stopTransfers = undefined;
       window.clearInterval(this.progressTimer); this.progressTimer = undefined;
       this.mapPicker.dispose(); this.robotPicker.dispose(); this.characterPicker?.dispose();
@@ -262,6 +305,16 @@ class LaunchController {
   }
 
   private startProgress() {
+    for (const option of this.root.querySelectorAll<HTMLOptionElement>('option[data-preview]')) {
+      if (option.dataset.preview) registerPreviewAsset(option.dataset.preview);
+    }
+    this.stopTransfers?.();
+    window.clearInterval(this.progressTimer);
+    this.details.open = false; this.details.hidden = false;
+    this.detailRows.clear(); this.detailTransfers.replaceChildren();
+    this.detailStatus.textContent = ''; this.detailReadiness.textContent = '';
+    this.detailBytes.textContent = ''; this.detailCounts.textContent = '';
+    this.detailsDirty = true;
     this.loadGeneration = this.progress.begin(performance.now());
     this.loadingStarted = performance.now();
     this.schedulePong();
@@ -271,7 +324,20 @@ class LaunchController {
   }
 
   receiveTransfers(generation: number, updates: TransferUpdate[]) {
-    if (this.loading && this.showing) this.progress.update(generation, updates, performance.now());
+    if (!this.loading || !this.showing || generation !== this.loadGeneration) return;
+    this.progress.update(generation, updates, performance.now());
+    this.detailsDirty = true;
+    if (this.progress.hasCatalogueMismatch) this.fail('Scene asset payload differs from this release’s catalogue. Reload to load a matching build.');
+  }
+
+  freezeAssets(generation: number, assets: readonly PlannedAsset[], prepared: readonly PlannedAsset[]) {
+    if (!this.loading || !this.showing || generation !== this.loadGeneration) return;
+    const now = performance.now();
+    this.progress.prepared(generation, prepared, now);
+    this.progress.freeze(generation, assets, now);
+    if (this.progress.hasCatalogueMismatch) throw new Error('Scene asset payload differs from this release’s catalogue. Reload to load a matching build.');
+    this.detailsDirty = true;
+    this.renderProgress();
   }
 
   private renderProgress() {
@@ -280,26 +346,60 @@ class LaunchController {
     const ready = !this.failed && this.simulation && this.visuals && this.frame;
     const loaded = (snapshot.loaded / 1_000_000).toFixed(1);
     const known = (snapshot.knownTotal / 1_000_000).toFixed(1);
-    const bytes = ready ? `${loaded} MB loaded`
-      : snapshot.knownTotal > 0 ? `${loaded} / ${known} MB known${snapshot.unknown ? ' + sizes pending' : ''}`
-      : 'Discovering sizes…';
-    if (this.bytes.textContent !== bytes) this.bytes.textContent = bytes;
+    const left = (snapshot.remaining / 1_000_000).toFixed(1);
+    const bytes = snapshot.frozen ? `${left} MB LEFT · ${loaded} / ${known} MB`
+      : `Planning scene assets… · ${loaded} MB received`;
+    if (this.bytes.textContent !== bytes) { this.bytes.textContent = bytes; this.bytes.title = bytes; }
     this.transferRoot.dataset.state = ready ? 'ready' : this.failed ? 'error' : snapshot.active ? 'loading' : 'preparing';
-    if (ready) { this.meter.max = 1; this.meter.value = 1; }
-    else if (!this.failed && snapshot.active > 0 && snapshot.unknown === 0 && snapshot.remaining > 0) {
-      this.meter.max = snapshot.knownTotal; this.meter.value = snapshot.loaded;
+    if (snapshot.frozen) {
+      this.meter.max = Math.max(1, snapshot.knownTotal);
+      this.meter.value = snapshot.knownTotal === 0 ? 1 : snapshot.loaded;
     } else this.meter.removeAttribute('value');
     this.meter.setAttribute('aria-valuetext', this.failed ? 'Loading interrupted' : ready ? 'Scene ready' : bytes);
 
     const eta = this.failed ? ''
       : ready ? ''
+      : !snapshot.frozen ? 'ETA pending'
+      : snapshot.remaining === 0 ? 'Preparing scene…'
       : snapshot.stalled ? 'Waiting for data…'
-      : snapshot.unknown > 0 ? 'ETA pending'
       : snapshot.etaSeconds !== null ? `~${downloadTime(snapshot.etaSeconds)} download`
       : snapshot.active > 0 ? 'Measuring speed…'
-      : 'Preparing scene…';
+      : 'Assets incomplete';
     if (this.eta.textContent !== eta) this.eta.textContent = eta;
-    this.eta.hidden = !eta;
+    this.renderDetails(snapshot);
+  }
+
+  private renderDetails(snapshot: LoadingSnapshot) {
+    // No resource iteration, URL parsing or detail DOM updates while collapsed.
+    if (!this.details.open || !this.detailsDirty) return;
+    this.detailsDirty = false;
+    const message = `${this.status.textContent ?? ''} ${this.root.querySelector('#launch-map-progress')!.textContent ?? ''}`.trim()
+      .replace(/(?:https?:\/\/|\/)[^\s<>"']+/g, transferName);
+    if (this.detailStatus.textContent !== message) this.detailStatus.textContent = message;
+    const readiness = `Simulation: ${this.simulation ? 'ready' : 'pending'} · Visuals: ${this.visuals ? 'ready' : 'pending'} · First frame: ${this.frame ? 'ready' : 'pending'}`;
+    if (this.detailReadiness.textContent !== readiness) this.detailReadiness.textContent = readiness;
+    const bytes = `${snapshot.loaded} B received · ${snapshot.knownTotal} B ${snapshot.frozen ? 'fixed maximum' : 'discovered'}${snapshot.unknown ? ` · ${snapshot.unknown} sizes pending` : ''}${snapshot.unexpected ? ` · ${snapshot.unexpected} catalogue mismatches` : ''}`;
+    if (this.detailBytes.textContent !== bytes) this.detailBytes.textContent = bytes;
+    const counts = { loading: 0, done: 0, failed: 0, cancelled: 0 };
+    for (const transfer of this.progress.transfers()) {
+      counts[transfer.state]++;
+      let elements = this.detailRows.get(transfer.id);
+      if (!elements) {
+        const row = document.createElement('li');
+        const name = document.createElement('span'); name.className = 'launch-detail-name';
+        name.textContent = transferName(transfer.url); name.title = name.textContent;
+        const state = document.createElement('span');
+        const bytes = document.createElement('span'); bytes.className = 'launch-detail-size';
+        row.append(name, state, bytes); this.detailTransfers.append(row);
+        elements = { row, state, bytes }; this.detailRows.set(transfer.id, elements);
+      }
+      if (elements.row.dataset.state !== transfer.state) elements.row.dataset.state = transfer.state;
+      if (elements.state.textContent !== transferStates[transfer.state]) elements.state.textContent = transferStates[transfer.state];
+      const amount = `${transfer.loaded} B received${transfer.total === null ? ' · response size unadvertised' : ` / ${transfer.total} B known`}`;
+      if (elements.bytes.textContent !== amount) elements.bytes.textContent = amount;
+    }
+    const summary = `${counts.loading} active · ${counts.done} completed · ${counts.failed} failed · ${counts.cancelled} cancelled`;
+    if (this.detailCounts.textContent !== summary) this.detailCounts.textContent = summary;
   }
 
   private schedulePong() {
@@ -343,17 +443,27 @@ class LaunchController {
     if (!this.showing || this.failed || !this.status) return;
     this.simulation = false; this.visuals = false; this.frame = false;
     this.enter.disabled = true; this.status.textContent = message;
+    this.detailsDirty = true;
     this.renderProgress();
   }
-  mapProgress(message: string) { if (this.showing && !this.failed && this.root) this.root.querySelector('#launch-map-progress')!.textContent = message; }
+  mapProgress(message: string) {
+    if (!this.showing || this.failed || !this.root) return;
+    this.root.querySelector('#launch-map-progress')!.textContent = message;
+    this.detailsDirty = true;
+  }
   fail(error: unknown, recover?: () => Promise<void>) {
     // Keep the first primary error; only a primary failure can replace a cosmetic one.
     if (!this.showing || !this.status || (this.failed && (!this.failed.recover || recover))) return;
     const failure = this.failed = { recover };
     this.enter.disabled = true;
     this.cancelPong();
+    if (!recover) {
+      this.stopTransfers?.(); this.stopTransfers = undefined;
+      for (const callback of this.failureCallbacks) callback();
+    }
     this.status.textContent = error instanceof Error ? error.message : String(error);
     this.status.dataset.kind = 'error';
+    this.detailsDirty = true;
     this.root.querySelector<HTMLButtonElement>('#launch-reload')!.hidden = false;
     const original = this.root.querySelector<HTMLButtonElement>('#launch-original')!;
     original.hidden = !recover; original.disabled = false;
@@ -362,12 +472,14 @@ class LaunchController {
       if (this.failed !== failure) return;
       original.disabled = true;
       this.status.textContent = 'Loading Original robot…';
+      this.detailsDirty = true; this.renderProgress();
       try {
         await recover();
         if (this.failed !== failure) return;
         this.failed = null;
         delete this.status.dataset.kind;
         this.context.textContent = this.describe();
+        this.context.title = this.context.textContent;
         this.root.querySelector<HTMLButtonElement>('#launch-reload')!.hidden = true;
         original.hidden = true; original.onclick = null;
         this.updateReady();
@@ -381,12 +493,14 @@ class LaunchController {
   visualsReady() { this.visuals = true; this.updateReady(); }
   firstFrame() { if (!this.frame) { this.frame = true; this.updateReady(); } }
   private updateReady() {
-    if (!this.showing || this.failed || !this.status) return;
-    this.renderProgress();
+    if (!this.showing || !this.status) return;
+    this.detailsDirty = true;
+    if (this.failed) { this.renderProgress(); return; }
     if (this.simulation && this.visuals && this.frame) {
       this.status.textContent = 'Ready'; this.enter.disabled = false;
       this.cancelPong();
     }
+    this.renderProgress();
   }
 }
 

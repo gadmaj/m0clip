@@ -1,6 +1,10 @@
 #launch-screen { position: fixed; inset: 0; z-index: 5000; overflow: auto; overscroll-behavior: contain; display: grid; align-items: center; justify-items: center; background: var(--bg); color: var(--text); padding: 24px 20px; }
 #launch-screen[hidden], #launch-screen [hidden] { display: none; }
 .launch-shell { width: min(100%, 460px); min-width: 0; margin: auto; }
+/* Loading content grows downwards: phase wraps and Details cannot recenter the meter. */
+#launch-screen[data-loading="true"] { align-items: start; }
+#launch-screen[data-loading="true"] .launch-shell { margin: clamp(0px, 10vh, 80px) auto 0; }
+#launch-screen { scrollbar-gutter: stable; overflow-anchor: none; }
 .launch-shell header { margin-bottom: 28px; }
 .launch-shell h1 { margin: 0; color: var(--accent); font: 24px var(--sans); font-weight: 700; letter-spacing: -.5px; }
 .launch-shell h2 { font: 15px var(--sans); font-weight: 700; margin: 0 0 20px; }
@@ -12,6 +16,7 @@
 .launch-actions .primary { margin-left: auto; }
 #launch-catalog-status:empty, #launch-appearance-note:empty, #launch-map-progress:empty { display: none; }
 #launch-catalog-status, #launch-appearance-note, #launch-context, #launch-map-progress { color: var(--text-2); overflow-wrap: anywhere; }
+#launch-context { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #launch-status { min-height: 18px; margin: 14px 0 0; overflow-wrap: anywhere; }
 #launch-status[data-kind="error"] { color: var(--danger); }
 .launch-transfer { margin: 8px 0 0; }
@@ -19,7 +24,8 @@
 .launch-load-stage[data-game="morph"] { height: var(--court-height); animation: launch-court 1100ms steps(10, end) both; }
 .launch-load-stage[data-game="pong"] { height: var(--court-height); }
 @keyframes launch-court { from { height: 12px; } to { height: var(--court-height); } }
-.launch-transfer-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; font: 11px var(--mono); color: var(--text-2); }
+.launch-transfer-heading { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 17px 17px; text-align: left; font: 11px/17px var(--mono); font-variant-numeric: tabular-nums; color: var(--text-2); }
+.launch-transfer-heading > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #launch-progress { position: absolute; top: 50%; transform: translateY(-50%); display: block; width: 100%; height: 12px; margin: 0; border: 0; border-radius: 0; overflow: hidden; appearance: none; background: var(--line); accent-color: var(--accent); }
 #launch-progress::-webkit-progress-bar { background: var(--line); }
 #launch-progress::-webkit-progress-value { background: repeating-linear-gradient(90deg, var(--accent) 0 6px, transparent 6px 8px); }
@@ -42,6 +48,20 @@
 #launch-pong:focus-visible { outline: 1px solid var(--accent); outline-offset: 4px; }
 .launch-game-help { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 #launch-pong-pause { min-height: 38px; font-size: 12px; }
+.launch-details { min-width: 0; margin-top: 12px; font-size: 12px; color: var(--text-2); }
+.launch-details summary { width: fit-content; min-height: 28px; padding: 5px 2px; cursor: pointer; color: var(--text); }
+.launch-details summary:hover { color: var(--accent); }
+.launch-details summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.launch-details summary:active { color: var(--text-2); }
+.launch-detail-content { max-height: 240px; overflow: auto; overscroll-behavior: contain; padding: 0 8px; border-left: 1px solid var(--line); }
+.launch-detail-content p { margin: 6px 0; overflow-wrap: anywhere; }
+#launch-detail-bytes, #launch-detail-counts, #launch-detail-transfers { font: 11px/1.5 var(--mono); font-variant-numeric: tabular-nums; }
+#launch-detail-transfers { list-style: none; padding: 0; margin: 10px 0 4px; }
+#launch-detail-transfers li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.launch-detail-name { min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+.launch-detail-size { grid-column: 1 / -1; overflow-wrap: anywhere; }
+#launch-detail-transfers li[data-state="failed"] > :nth-child(2) { color: var(--danger); }
 @media (prefers-reduced-motion: reduce) { .launch-morph i, .launch-load-stage { animation: none; } }
 @media (max-width: 380px) { #launch-screen { padding: 20px 16px; } .launch-load-stage { --court-height: calc((100vw - 32px) * 4 / 7); } }
 @media (max-height: 600px) { .launch-shell header { margin-bottom: 18px; } .launch-shell h2 { margin-bottom: 12px; } .launch-load-stage { --court-height: min(180px, calc((100vw - 40px) * 4 / 7)); width: min(100%, 315px); margin-inline: auto; } }
+@media (max-height: 600px) { #launch-screen[data-loading="true"] .launch-shell { margin-top: 0; } }

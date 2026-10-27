@@ -137,7 +137,7 @@ export class G1PunchDriver extends BaseDriver {
   /** queue a remote combo; handled at the next control tick like the firmware's button scan */
   override remote(combo: string) { if (this.p.combos[combo]) this.pending = combo; }
 
-  private init(): Promise<void> {
+  prepare(): Promise<void> {
     this.ready ??= (async () => {
       const cache: Record<string, Promise<Float32Array[]>> = {};
       for (const [name, t] of Object.entries(this.p.trajs)) {
@@ -210,7 +210,7 @@ export class G1PunchDriver extends BaseDriver {
   }
 
   async step(command: Command): Promise<Float64Array> {
-    await this.init();
+    await this.prepare();
     const p = this.p, tw = this.tw, mv = tw.c.max_v;
     const [q, qd] = this.readQ();
     const [pos, bq] = this.pose();

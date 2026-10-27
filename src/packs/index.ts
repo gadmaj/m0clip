@@ -16,6 +16,8 @@
 import { load as yamlLoad } from "js-yaml";
 import { unzipSync, strFromU8 } from "fflate";
 import type { EvalConfig, PolicyEntry } from "../core/types";
+import { selectedDriverAssets } from '../core/driver-assets';
+import { fetchAsset } from '../core/prepared-assets';
 
 export interface PackManifest {
   schemaVersion: number;
@@ -155,19 +157,22 @@ export async function storePack(pack: StoredPack): Promise<PackMetadata> {
 }
 
 /** Load only the selected pack. Cached bytes never enter the startup catalog. */
-export async function loadPack(id: string): Promise<StoredPack> {
-  let metadata: PackMetadata | undefined;
-  const files = await tx<StoredPack['files'] | undefined>('readonly', transaction => {
-    const request: IDBRequest<PackMetadata | undefined> = transaction.objectStore(STORE).get(id);
-    request.onsuccess = () => { metadata = request.result; };
-    return transaction.objectStore(PAYLOADS).get(id);
-  }, PACK_STORES);
+export async function loadPack(id: string, selected?: PackMetadata): Promise<StoredPack> {
+  let metadata = selected;
+  const files = selected?.downloadUrl ? undefined
+    : await tx<StoredPack['files'] | undefined>('readonly', transaction => {
+      if (!metadata) {
+        const request: IDBRequest<PackMetadata | undefined> = transaction.objectStore(STORE).get(id);
+        request.onsuccess = () => { metadata = request.result; };
+      }
+      return transaction.objectStore(PAYLOADS).get(id);
+    }, PACK_STORES);
   if (!metadata) throw new Error(`Policy pack ${id} not found.`);
   if (!metadata.downloadUrl) {
     if (!files) throw new Error(`Policy files for ${id} are missing. Reimport the pack.`);
     return { ...metadata, files };
   }
-  const response = await fetch(metadata.downloadUrl);
+  const response = await fetchAsset(metadata.downloadUrl);
   if (!response.ok) throw new Error(`Policy download: HTTP ${response.status}`);
   const downloaded = parsePack(new Uint8Array(await response.arrayBuffer()));
   if (downloaded.id !== id) throw new Error('Downloaded policy has a different identifier');
@@ -232,6 +237,17 @@ export function packEntries(pack: PackMetadata): PolicyEntry[] {
       ?? (pack.config.go2?.fsm_id as number | undefined),
     models: pack.config.g1?.models ?? pack.config.r1?.models,
   }));
+}
+
+/** Pack-contained members are local payload, not additional HTTP entities. */
+export function packAssetUrls(pack: PackMetadata): string[] {
+  const assets = selectedDriverAssets({ ...pack.config, robot: pack.manifest.robot });
+  return [...new Set([
+    ...(pack.downloadUrl ? [pack.downloadUrl] : []),
+    ...Object.entries(assets.models).filter(([role]) => !pack.manifest.aux?.[role]).map(([, url]) => url),
+    ...Object.entries(assets.files).filter(([role]) => !pack.manifest.auxFiles?.[role]).map(([, url]) => url),
+    ...(assets.clip && !pack.manifest.clip ? [assets.clip] : []),
+  ])];
 }
 
 const blobUrls = new Map<string, string>();      // "packId::inzipPath" -> blob url

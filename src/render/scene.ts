@@ -34,12 +34,13 @@ import { DogRetarget } from './source-robot/retarget';
 import { fadeOpacity } from './robot-fade';
 import { loadGhostHead, R1_HEAD_PART, type SourceHeadAsset, type SourceHeadOverride } from "./source-robot/head";
 import { authoredCharacter, type BodyVisual } from '../characters/catalog';
-import { decodePmodelId, loadPmodel } from '../characters/pmodels';
+import { decodePmodelId } from '../characters/pmodels';
 import { characterCompatible, loadCharacter } from './characters/body';
-import { loadGoldSrcCharacter } from './characters/goldsrc';
+import { loadPreparedPmodelCharacter } from '../characters/prepared-pmodel';
 import type { CharacterAsset, CharacterBody } from './characters/types';
 import type { GeometryTrack } from '../core/geometry';
 import { applyPartPaint, readPartPaint } from './paint-material';
+import { normalizeDisplay, type SceneDisplay } from './display';
 
 import { renderPreview, antialiasingPreview, type PreviewRequest } from './previews';
 export type HeadVisual = "stock" | "ghost";
@@ -71,7 +72,6 @@ export interface Lighting {
   shadows: boolean;
   background: number;
 }
-export interface SceneDisplay { textures: boolean; wireframe: boolean; characterWireframe?: boolean; map: boolean; robot: boolean; decals: boolean }
 export const STUDIO: Lighting = {
   sunAzimuth: 27, sunElevation: 61, sunIntensity: 1.5, sunColor: 0xffffff,
   ambient: 0.8, skyColor: 0xdfeaf5, groundColor: 0x1a2028, fill: 0.7, reflections: 0.55,
@@ -441,7 +441,9 @@ export class SceneView {
     this.placementMarker.material.color.setHex(valid ? 0xe0a23c : 0xe5484d);
   }
 
-  setFlashlight(on: boolean) { this.flashlight.set(on); }
+  private flashlightOn = false;
+  getFlashlight(): boolean { return this.flashlightOn; }
+  setFlashlight(on: boolean) { this.flashlightOn = on; this.flashlight.set(on); ++this.editRevision; }
 
   private displayMaterial(m: THREE.Material, wireframe = this.display.wireframe) {
     if (!(m instanceof THREE.MeshStandardMaterial || m instanceof THREE.MeshBasicMaterial)) return;
@@ -456,8 +458,10 @@ export class SceneView {
     }
   }
 
+  getDisplay(): Required<SceneDisplay> { return { ...this.display }; }
   setDisplay(display: SceneDisplay) {
-    this.display = { ...display, characterWireframe: display.characterWireframe ?? display.wireframe, decals: display.decals ?? true };
+    this.display = normalizeDisplay(display);
+    ++this.editRevision;
     if (this.terrainVisual) {
       this.terrainVisual.visible = display.map;
       this.terrainVisual.traverse(object => { if (object.userData.sourceOverlay) object.visible = this.display.decals; });
@@ -623,7 +627,7 @@ export class SceneView {
       } else {
         const definition=authoredCharacter(choice),source=decodePmodelId(choice);
         if(choice!=='dog'&&!definition&&!source)throw new Error('The selected character is unknown.');
-        load=(choice==='dog'?loadDog():definition?loadCharacter(definition):loadPmodel(source!).then(loadGoldSrcCharacter))
+        load=(choice==='dog'?loadDog():definition?loadCharacter(definition):loadPreparedPmodelCharacter(source!))
           .catch(error=>{if(this.bodyAssets.get(choice)===load)this.bodyAssets.delete(choice);throw error});
         this.bodyAssets.set(choice,load);
       }
@@ -1320,6 +1324,7 @@ export class SceneView {
   private terrainGeneration=0;
 
   waitForTerrainVisuals(): Promise<void> { return this.terrainRequest; }
+  waitForFlashlight(): Promise<void> { return this.flashlight.waitForTexture(); }
 
   /** Show a converted map's textured scene (null removes it). Its positions are already in the
    * MuJoCo frame, so it goes in as-is; the map's collision lives in MuJoCo, not here. */

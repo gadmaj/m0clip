@@ -8,7 +8,7 @@ import { GamepadInput, type ComboAction } from "./input/gamepad";
 import { ExportDialog, loadPrefs as loadExportPrefs } from "./record/export-dialog";
 import { exportGlb } from "./record/export-blender";
 import type { Stage } from "./record/export-video";
-import { defaultShot, ShotPath, type Shot } from "./record/shot";
+import { applyStaticShot, grabShotView, defaultShot, ShotPath, type Shot } from "./record/shot";
 import { loadTake, motionCsv, saveTake, Take, TakeRecorder } from "./record/take";
 import { eventList, fmtTime, Timeline, type ViewMode } from "./record/timeline";
 import { download, capturePng, stamp } from "./render/recorder";
@@ -34,6 +34,13 @@ import { PhotoLibrary } from './record/photos';
 import { RecordingRecovery, type RecordingCheckpointWriter } from './record/recovery';
 import { storageErrorMessage } from './record/storage';
 import { characterOptions } from './ui/preview-catalog';
+import type { SceneDisplay } from './render/display';
+import { effectiveVisualState, type ShotLight } from './record/post';
+import { loadStartupCatalogue, plannedAssets } from './loading/catalogue';
+import { OptionalVisualAssetError, planVisualAssets } from './loading/visual-plan';
+import { resolveLaunchVisualSelection, type ResolvedLaunchVisualSelection } from './loading/visual-selection';
+import type { StartupAssetCatalogue, VisualAssetPlan, WorkerAssetPlan } from './loading/asset-plan';
+import { discardPreparedPmodelCharacters } from './characters/prepared-pmodel';
 
 /** Robot family: r1 + r1_air (EDU 24-DOF / Air 20-DOF) share one UI slot, g1 + g1_air (EDU 29-DOF / Air 23-DOF) one UI
  * slot; go2 is its own. */
@@ -63,6 +70,10 @@ const STATE_NAME: Record<FsmState, string> = {
 /** Longest take kept in memory (≈ 100 MB of R1 frames). */
 const MAX_TAKE_S = 20 * 60;
 const slug = (x: string) => x.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "take";
+const LIVE_ONLY_MESSAGES: Partial<Record<ToWorker['t'], true>> = {
+  robot: true, terrain: true, policy: true, cycle: true, state: true, reset: true, hoist: true,
+  remote: true, playback: true, stopPlayback: true, deletePack: true, deleteAllPacks: true, recenter: true,
+};
 
 const esc = (x: string) => x.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 const sgn = (x: number, d = 2) => (x >= 0 ? "+" : "-") + Math.abs(x).toFixed(d);
@@ -121,6 +132,15 @@ interface StoredTakeState {
   thumbnail?:Blob;previewTimer?:number;previewVersion:number;
   recovery?:RecordingCheckpointWriter;
 }
+interface WorkspaceCamera {
+  position: [number, number, number];
+  target: [number, number, number];
+  orientation: [number, number, number, number];
+  up: [number, number, number];
+  fov: number;
+  held: boolean;
+  mode: ViewMode;
+}
 class App {
   /** Modal surfaces own keyboard, pointer and gamepad input. */
   private get inputBlocked() { return launch.active || !!this.help?.isOpen || !!this.shotLibrary?.isOpen || VisualPicker.active; }
@@ -128,6 +148,9 @@ class App {
   private modalKeys = new Set<string>();
   private initialViewRestore: Promise<void> = Promise.resolve();
   private launchCharacterApplied = false;
+  private startupCatalogue!: StartupAssetCatalogue;
+  private launchVisualSelection: ResolvedLaunchVisualSelection | null = null;
+  private launchPlanToken: string | null = null;
   private resolveFirstFrame: (() => void) | null = null;
   private firstSimulationFrame = new Promise<void>(resolve => { this.resolveFirstFrame = resolve; });
   view = new SceneView(document.getElementById("viewport")!);
@@ -181,8 +204,8 @@ class App {
   private screenshotRequest=0;
   private screenshotAbort:AbortController|null=null;
   private screenshotIsCurrent:(()=>boolean)|null=null;
-  private liveReview: { model: RenderModel | null; appearance: Appearance; head: HeadVisual; look: LookState } | null = null;
-  private reviewOriginal: { take: Take; appearance: Appearance; head: HeadVisual; look: LookState } | null = null;
+  private liveReview: { model: RenderModel | null; appearance: Appearance; head: HeadVisual; look: LookState; display: SceneDisplay; flashlight: boolean; shot: Shot; camera: WorkspaceCamera } | null = null;
+  private reviewOriginal: { take: Take; appearance: Appearance; head: HeadVisual; look: LookState; display: SceneDisplay; flashlight: boolean; lights: ShotLight[] } | null = null;
   /** last value logged per input: a change the user makes is logged when they make it (at the frame
    * they were looking at), and the status that confirms it later is not logged again */
   private logged: { state?: FsmState; policy?: string; hoist?: boolean } = {};
@@ -210,11 +233,13 @@ class App {
   private dialog: ExportDialog;
   private shot: Shot;
   private shotPath: ShotPath | null = null;
+  private readonly liveShotBase: [number, number, number] = [0, 0, 0];
   private readonly shotCam = new SceneCamera(40, 16 / 9, 0.05, 100);
   private readonly exportCam = new SceneCamera(40, 16 / 9, 0.05, 100);
   private exporting = false;
   private shotDrag: { az: number; el: number; d: number; off: THREE.Vector3 } | null = null;
   private viewBeforeDialog: ViewMode = "free";
+  private setupCamera: WorkspaceCamera | null = null;
   private look!: LookPanel;
   private recBadge = document.getElementById("rec-badge")!;
   private recTime = document.getElementById("rec-time")!;
@@ -270,8 +295,9 @@ class App {
   constructor() {
     this.panel = new Panel(document.getElementById("panel")!,
                            document.getElementById("policy-manager")!, [], {
-      onRobot: (r) => { this.cancelScreenshot(); this.cancelViewRestore(); if (this.noclip) this.setNoclip(false); this.heldView = false; this.send({ t: "robot", robot: r }); },
+      onRobot: (r) => { if(this.timeline.isOpen||this.exporting)return; this.cancelScreenshot(); this.cancelViewRestore(); if (this.noclip) this.setNoclip(false); this.heldView = false; this.send({ t: "robot", robot: r }); },
       onTerrain: (t) => {
+        if(this.timeline.isOpen||this.exporting)return;
         this.cancelScreenshot();
         this.cancelViewRestore();
         if (this.noclip) this.setNoclip(false);
@@ -285,7 +311,7 @@ class App {
         history.replaceState(null, '', url);
         this.send({ t: "terrain", terrain: t });
       },
-      onPolicy: (name) => { this.logInput("policy", name); this.send({ t: "policy", name }); },
+      onPolicy: (name) => { if(this.timeline.isOpen||this.exporting)return; this.logInput("policy", name); this.send({ t: "policy", name }); },
       onState: (s) => this.setState(s),
       onReset: () => this.reset(),
       onRecenter: () => this.recenterView(),
@@ -293,6 +319,7 @@ class App {
       onScreenshot: () => {void this.takeScreenshot();},
       onRecordToggle: () => this.toggleRecording(),
       onOpenTimeline: () => this.openReview(),
+      onExportSetup: () => this.openExport("video"),
       onOpenShots:()=>{void this.openShots();},
       onLoadTake: (file) => void this.openTakeFile(file),
       onLoadCsv: (file, fps) => this.loadCsv(file, fps),
@@ -321,12 +348,14 @@ class App {
     const saved = loadExportPrefs();
     this.shot = { ...defaultShot(0.7), ...(saved.shot ?? {}) };
     this.dialog = new ExportDialog(document.getElementById("export")!, {
-      take: () => this.take!,
-      range: () => [this.timeline.rangeIn, this.timeline.rangeOut],
+      take: () => this.timeline.isOpen ? this.take : null,
+      range: () => this.timeline.isOpen && this.take ? [this.timeline.rangeIn, this.timeline.rangeOut] : null,
       shot: this.shot,
       shotChanged: () => this.rebuildShot(),
-      grabView: () => ShotPath.grab(this.take!, this.timeline.time, this.view.camera.position, this.view.controls.target),
-      path: () => this.shotPath!,
+      grabView: () => this.timeline.isOpen && this.take
+        ? ShotPath.grab(this.take, this.timeline.time, this.view.camera.position, this.view.controls.target)
+        : grabShotView(this.view.camera.position, this.view.controls.target),
+      path: () => this.timeline.isOpen ? this.shotPath : null,
       stage: () => this.stage(),
       setExporting: (on) => this.setExporting(on),
       glb: (fps, camera, floor) => exportGlb(this.take!, this.view, this.takeModel!, {
@@ -335,7 +364,15 @@ class App {
       csv: (fps) => motionCsv(this.take!, fps, this.timeline.rangeIn, this.timeline.rangeOut),
       saveTake: () => this.saveTakeFile(),
       save: (blob, ext) => download(blob, `${this.fileStem()}.${ext}`),
-      onClose: () => this.setViewMode(this.viewBeforeDialog),
+      onClose: () => {
+        document.body.classList.remove('output-setup');
+        if (this.setupCamera) {
+          const camera = this.setupCamera; this.setupCamera = null;
+          this.restoreWorkspaceCamera(camera);
+          this.flight.setActive(this.noclip);
+          document.getElementById('flight-hud')!.hidden = !this.noclip;
+        } else this.setViewMode(this.viewBeforeDialog);
+      },
     });
     this.wireShotOrbit();
     this.look = new LookPanel(document.getElementById("panel")!, this.view);
@@ -343,6 +380,7 @@ class App {
       display: (display) => this.view.setDisplay(display),
       capture: () => this.captureView(), restore: (view) => this.restoreView(view),
     });
+    this.setFlashlight(localStorage.getItem('ume-live-flashlight') === 'true', false);
     window.addEventListener('hashchange', () => { const view = sharedView(); if (view) void this.explore.restoreView(view); });
     this.wirePartPicking();
     this.worker.onmessage = (ev: MessageEvent<FromWorker>) => {
@@ -433,7 +471,12 @@ class App {
     launch.onEnter(() => {
       this.keysHeld.clear(); this.flight.stop(); this.pad.rearm(); this.view.controls.enabled = !this.noclip;
       this.send({ t: 'loadingFinished', generation: launch.loadingId });
+      discardPreparedPmodelCharacters();
       storageConsent.sceneEntered();
+    });
+    launch.onFailure(() => {
+      this.send({ t: 'loadingFinished', generation: launch.loadingId });
+      discardPreparedPmodelCharacters();
     });
     void this.start().catch(error => this.showOverlay(`Scene could not start: ${error instanceof Error ? error.message : error}`, 'error'));
     this.renderLoop();
@@ -465,17 +508,67 @@ class App {
       this.initialViewRestore = this.restoreView(shared, false);
       void this.initialViewRestore.catch(error => this.failLaunchVisuals(`Shared view could not load: ${error instanceof Error ? error.message : error}`));
     }
-    this.send({ t: "init", robot: selection.robot, terrain: selection.terrain, loadingId: launch.loadingId,
+    const catalogue = this.startupCatalogue = await loadStartupCatalogue();
+    this.send({ t: "init", robot: selection.robot, terrain: selection.terrain, loadingId: launch.loadingId, catalogue,
       robotExplicit:selection.robotChanged||selection.preserveView,
       policy: selection.robotChanged || selection.robot !== prefs.robot ? undefined : prefs.policy });
     if (this.pendingViewRestore) this.send({ t: 'viewReady', request: this.pendingViewRestore.id });
     this.send({ t: "inspect", on: true });   // left column always streams
-    if (mapId(selection.terrain)) this.prepareMapVisual(selection.terrain);
   }
 
-  private send(m: ToWorker) { this.worker.postMessage(m); }
+  /** The worker's actual model/policy selection owns the one startup payload plan. */
+  private async prepareStartupAssets(plan: WorkerAssetPlan) {
+    if (!launch.active || plan.generation !== launch.loadingId || this.launchPlanToken !== null) return;
+    this.launchPlanToken = plan.token;
+    let optionalFailure = false;
+    const prepare = async (original: boolean) => {
+      const catalogue = this.startupCatalogue, selection = launch.selection;
+      let appearances: Record<string, Appearance> = {}, heads: Record<string, HeadVisual> = {};
+      try { appearances = JSON.parse(localStorage.getItem('ume-appearance') ?? '{}') as Record<string, Appearance> ?? {}; } catch { /* Default paint. */ }
+      try { heads = JSON.parse(localStorage.getItem('ume-head-visuals') ?? '{}') as Record<string, HeadVisual> ?? {}; } catch { /* Stock head. */ }
+      if (original) {
+        discardPreparedPmodelCharacters();
+        selection.character = 'stock';
+      }
+      const linked = this.pendingViewRestore?.view;
+      const visual = resolveLaunchVisualSelection({ terrain: selection.terrain, robot: plan.robot,
+        character: selection.character, sharedAppearance: linked?.appearance,
+        rememberedAppearance: appearances[plan.robot], queryBody: new URLSearchParams(location.search).get('body'),
+        sharedHead: linked?.sourceHead, rememberedHead: heads[plan.robot] });
+      this.launchVisualSelection = visual;
+      if (original && this.pendingViewRestore) {
+        this.pendingViewRestore.view = { ...this.pendingViewRestore.view, appearance: visual.appearance, sourceHead: 'stock' };
+      }
+      let visuals: VisualAssetPlan;
+      try { visuals = await planVisualAssets(visual, catalogue); }
+      catch (error) { optionalFailure = error instanceof OptionalVisualAssetError; throw error; }
+      if (!launch.active || plan.generation !== launch.loadingId || this.launchPlanToken !== plan.token) {
+        discardPreparedPmodelCharacters();
+        return;
+      }
+      const prepared = [...plan.prepared, ...visuals.prepared];
+      const assets = plannedAssets(catalogue, [...catalogue.runtime.page, ...plan.urls, ...visuals.urls,
+        ...prepared.map(asset => asset.url)], prepared);
+      launch.freezeAssets(plan.generation, assets, prepared);
+      this.send({ t: 'loadingProceed', generation: plan.generation, token: plan.token });
+      this.prepareMapVisual(selection.terrain);
+    };
+    try { await prepare(false); }
+    catch (error) {
+      discardPreparedPmodelCharacters();
+      const message = `Scene assets could not be planned: ${error instanceof Error ? error.message : error}`;
+      if (optionalFailure) launch.fail(message, () => prepare(true));
+      else this.showOverlay(message, 'error');
+    }
+  }
+
+  private send(m: ToWorker) {
+    if ((this.timeline?.isOpen || this.exporting) && LIVE_ONLY_MESSAGES[m.t]) return;
+    this.worker.postMessage(m);
+  }
 
   private setHoist(on: boolean) {
+    if(this.timeline.isOpen||this.exporting)return;
     this.logInput("hoist", on);
     this.hoistOn = on;
     this.send({ t: "hoist", on });
@@ -544,6 +637,7 @@ class App {
   }
 
   private setState(s: FsmState) {
+    if(this.timeline.isOpen||this.exporting)return;
     this.logInput("state", s);
     this.send({ t: "state", state: s });
   }
@@ -570,6 +664,7 @@ class App {
   }
 
   private reset() {
+    if(this.timeline.isOpen||this.exporting)return;
     this.stopAndRearm();
     this.rec?.mark("reset", "Reset");
     this.send({ t: "reset" });
@@ -577,6 +672,7 @@ class App {
 
   /** A remote combo of the active policy (panel button, pad pass-through, G cycling). */
   private remote(combo: string) {
+    if(this.timeline.isOpen||this.exporting)return;
     if (this.rec) {
       const item = this.status?.actions?.flatMap((g) => g.items).find((i) => i.combo === combo);
       this.rec.mark("move", item ? `${item.label} (${combo})` : combo);
@@ -750,10 +846,16 @@ class App {
     document.getElementById('flight-hover')!.setAttribute('aria-pressed', String(this.flight.hover));
   }
 
-  private setFlashlight(on: boolean) {
+  private setFlashlight(on: boolean, deliberate = true) {
+    if (this.exporting) return;
+    this.cancelScreenshot();
     this.flashlight = on;
     this.view.setFlashlight(on);
     this.panel.setFlashlight(on);
+    if (deliberate) {
+      if (this.timeline.isOpen && this.take) this.saveTakeEdits(this.take);
+      else localStorage.setItem('ume-live-flashlight', String(on));
+    }
   }
 
   private captureView(): SavedView {
@@ -845,8 +947,10 @@ class App {
   }
 
   private async loadCsv(file: File, fps: number) {
+    if(this.timeline.isOpen||this.exporting)return;
     try {
       const csv = await file.text();
+      if(this.timeline.isOpen||this.exporting)return;
       if (this.noclip) this.setNoclip(false);
       this.send({ t: "playback", csv, fps, name: file.name });
     } catch (e) {
@@ -859,9 +963,11 @@ class App {
   /** Reads are chained so multi-file imports reach the worker in the order
    * the user picked them (concurrent file reads finish smallest-first). */
   private importPack(file: File) {
+    if(this.timeline.isOpen||this.exporting)return;
     this.importChain = this.importChain.then(async () => {
       try {
         const zip = await file.arrayBuffer();
+        if(this.timeline.isOpen||this.exporting)return;
         this.worker.postMessage({ t: "importPack", zip }, [zip]);
       } catch (e) {
         this.showOverlay(`failed to read ${file.name}: ${e}`);
@@ -879,6 +985,7 @@ class App {
     if(this.pendingViewRestore){this.panel.setRecordInfo('Wait for the saved view to finish restoring.');return;}
     if (this.recordStarting || this.rec || !this.model || this.exporting) return;
     if (this.timeline.isOpen) this.closeReview();
+    if (this.dialog.isOpen) this.dialog.close();
     this.recordStarting = true;
     const generation=this.viewBuildGeneration,model=this.model;
     this.look.setHeadLocked(true);
@@ -903,7 +1010,7 @@ class App {
     const s = this.status;
     this.recModel = m;
     this.rec = new TakeRecorder({
-      robot: m.robot, model: s?.model, terrain: m.terrain??this.panel.terrain, sourceTime: this.view.getSourceTime(), appearance: this.view.getAppearance(), sourceHead: this.view.getSourceHead(), look: this.look.getState(), robotFade: this.view.getRobotFadeState(), policy: s?.policy ?? "-",
+      robot: m.robot, model: s?.model, terrain: m.terrain??this.panel.terrain, sourceTime: this.view.getSourceTime(), appearance: this.view.getAppearance(), sourceHead: this.view.getSourceHead(), look: this.look.getState(), display: this.explore.getDisplay(), flashlight: this.flashlight, lights: this.view.getShotLights(), robotFade: this.view.getRobotFadeState(), policy: s?.policy ?? "-",
       created: new Date().toISOString(), ngeom: m.ngeom, nq: m.nq, baseQadr: m.baseQadr, hinges: m.hinges,
     }, this.liveGeometry.partition);
     this.logged = {};
@@ -976,26 +1083,37 @@ class App {
     this.cancelScreenshot();
     if (!this.timeline.isOpen) {
       this.liveReview = { model: this.viewModel, appearance: this.view.getAppearance(),
-        head: this.view.getHeadVisualState().available ? this.view.getHeadVisual() : 'stock', look: this.look.getState() };
+        head: this.view.getHeadVisualState().available ? this.view.getHeadVisual() : 'stock', look: this.look.getState(),
+        display: this.explore.getDisplay(), flashlight: this.flashlight, shot: { ...this.shot },
+        camera: this.setupCamera ?? this.captureWorkspaceCamera() };
+      this.setupCamera = null;
     }
-    if (this.noclip) this.setNoclip(false);
+    // Review pauses the live simulation; it must not change its noclip/physics mode.
+    this.cancelPlacement();
+    this.flight.setActive(false);
+    document.getElementById('flight-hud')!.hidden = true;
     if (this.viewModel !== tm) { this.buildView(tm); this.viewModel = tm; }
     this.reviewOriginal = { take,
       appearance: take.meta.appearance ?? { ...(this.liveReview?.model === tm ? this.liveReview.appearance : { colorway: 'grey', parts: {} }), sourceBody: 'stock' },
       head: take.meta.sourceHead === 'ghost' ? 'ghost' : 'stock',
-      look: take.meta.look ?? this.liveReview!.look };
+      look: take.meta.look ?? this.liveReview!.look,
+      display: take.meta.display ?? this.liveReview!.display,
+      flashlight: take.meta.flashlight ?? this.liveReview!.flashlight,
+      lights: take.meta.lights ?? [] };
     this.applyTakeLook();
     this.send({ t: "pause", on: true });
     this.keysHeld.clear();
     if (this.command.some((v) => v !== 0)) this.setCommand([0, 0, 0]);
     this.followZ = tm.robot.startsWith("go2") ? 0.35 : 0.7;
-    if (take.shot) Object.assign(this.shot,take.shot);
-    else {
+    Object.assign(this.shot, take.shot ?? this.liveReview!.shot);
+    if (!take.shot) {
       if(this.shot.height<=0)this.shot.height=this.followZ;
       take.shot={...this.shot};
     }
     this.timeline.open(take, this.takeTitle);
+    this.panel.setReviewScope(true);
     this.rebuildShot(false);
+    if (this.dialog.isOpen) this.dialog.refresh();
     const savedState=this.storedTakes.get(take);
     this.timeline.setAutosaveState('');
     if(savedState)this.updateShotSaveStatus(take,savedState);
@@ -1017,7 +1135,13 @@ class App {
     const live=this.liveReview,sameRobot=!!live?.model&&live.model.robot===this.model?.robot;
     this.look.endShotEdit();
     this.look.setHeadLocked(false);
-    this.view.setShotLights([]);
+    this.explore.endShotEdit();
+    if (live) {
+      this.setFlashlight(live.flashlight, false);
+      Object.assign(this.shot, live.shot);
+    }
+    this.shotPath = null;
+    this.panel.setReviewScope(false);
     if (this.model && this.viewModel !== this.model) {
       this.buildView(this.model);
       this.viewModel = this.model;
@@ -1031,6 +1155,9 @@ class App {
     void this.view.setSourceHead(head).then(() => this.look.refreshHead())
       .catch(error => { if (!this.timeline.isOpen && this.view.getHeadVisual() === head) this.showOverlay(`Head visual could not load: ${error instanceof Error ? error.message : error}`, 'error'); });
     this.followZ = this.model?.robot.startsWith("go2") ? 0.35 : 0.7;
+    if (live) this.restoreWorkspaceCamera(live.camera);
+    this.flight.setActive(this.noclip);
+    document.getElementById('flight-hud')!.hidden = !this.noclip;
     this.send({ t: "pause", on: false });
     this.inspectorBody.innerHTML = `<span class="ins-empty">Back to the live sim…</span>`;
   }
@@ -1041,14 +1168,16 @@ class App {
     const edits = take!.meta.edits, head = edits?.sourceHead ?? original.head;
     this.cancelScreenshot();
     this.view.setAppearance(edits?.appearance ?? original.appearance, head);
-    this.view.setShotLights(edits?.lights ?? []);
+    const visuals = effectiveVisualState({ display: original.display, flashlight: original.flashlight, lights: original.lights, edits });
+    this.explore.beginShotEdit(visuals.display, () => this.saveTakeEdits(take!));
+    this.setFlashlight(visuals.flashlight, false);
     this.look.setHeadLocked(false);
     this.look.beginShotEdit(edits?.look ?? original.look, () => this.saveTakeEdits(take!), () => {
       if (this.take !== take || this.exporting) return;
       delete take!.meta.edits;
       this.applyTakeLook();
       this.queueShotUpdate(take!);
-    });
+    }, visuals.lights);
     const generation = this.viewBuildGeneration;
     void this.view.setSourceHead(head).then(() => {
       if (this.take === take && this.viewBuildGeneration === generation) this.look.refreshHead();
@@ -1062,7 +1191,7 @@ class App {
     if (this.take !== take || !this.timeline.isOpen || this.exporting) return;
     this.cancelScreenshot();
     take.meta.edits = { version: 1, appearance: this.view.getAppearance(), sourceHead: this.view.getHeadVisual(),
-      look: this.look.getState(), lights: this.view.getShotLights() };
+      look: this.look.getState(), lights: this.view.getShotLights(), display: this.explore.getDisplay(), flashlight: this.flashlight };
     this.queueShotUpdate(take);
   }
 
@@ -1077,8 +1206,12 @@ class App {
     this.exporting = on;
     this.cancelScreenshot();
     this.look.setReadOnly(on);
+    this.explore.setReadOnly(on);
     this.timeline.root.inert = on;
     document.getElementById('panel')!.inert = on;
+    document.getElementById('scene-actions')!.inert = on;
+    document.getElementById('viewport-tools')!.inert = on;
+    document.getElementById('flight-hud')!.inert = on;
     document.getElementById('policy-manager')!.inert = on;
     document.getElementById('inspector')!.inert = on;
     this.view.controls.enabled = !on && this.timeline.mode !== 'recorded';
@@ -1098,19 +1231,50 @@ class App {
   }
 
   private rebuildShot(persist=true) {
-    if (!this.take) return;
-    this.shotPath = new ShotPath(this.take, this.shot, this.timeline.rangeIn);
+    const reviewing = this.timeline.isOpen && this.take;
+    this.shotPath = reviewing ? new ShotPath(reviewing, this.shot, this.timeline.rangeIn) : null;
     const s = this.shot;
     const [w, h] = this.dialog.outSize;
-    this.shotFrame.querySelector("span")!.textContent = `${w} × ${h} · ${s.focal} mm · ${s.mode}`;
-    if(persist){this.take.shot={...this.shot};this.queueShotUpdate(this.take);}
+    this.shotFrame.querySelector("span")!.textContent = `${w} × ${h} · ${s.focal} mm · ${s.mode}${reviewing ? '' : ' · static'}`;
+    if(persist && reviewing){reviewing.shot={...this.shot};this.queueShotUpdate(reviewing);}
+  }
+
+  private captureWorkspaceCamera(): WorkspaceCamera {
+    return { position: this.view.camera.position.toArray(), target: this.view.controls.target.toArray(),
+      orientation: this.view.camera.quaternion.toArray(), up: this.view.camera.up.toArray(),
+      fov: this.view.camera.fov, held: this.heldView, mode: this.timeline.mode };
+  }
+
+  private restoreWorkspaceCamera(camera: WorkspaceCamera) {
+    this.setViewMode(camera.mode);
+    const controls = this.view.controls, damping = controls.enableDamping;
+    controls.enableDamping = false; controls.update();
+    this.view.camera.position.fromArray(camera.position); controls.target.fromArray(camera.target);
+    this.view.camera.up.fromArray(camera.up); this.view.camera.quaternion.fromArray(camera.orientation);
+    this.view.camera.fov = camera.fov; this.view.camera.updateProjectionMatrix();
+    this.view.camera.updateMatrixWorld(true); controls.enableDamping = damping;
+    controls.enabled = camera.mode !== 'recorded' && !this.noclip && !this.exporting;
+    this.heldView = camera.held;
   }
 
   private openExport(tab: "video" | "data") {
-    if (!this.take) return;
-    if (!this.dialog.isOpen) this.viewBeforeDialog = this.timeline.mode;
+    if (this.exporting) return;
+    if (this.rec || this.recordStarting) {
+      this.panel.setRecordInfo('Stop recording before opening camera / output setup.');
+      return;
+    }
+    if (!this.dialog.isOpen) {
+      this.viewBeforeDialog = this.timeline.mode;
+      if (!this.timeline.isOpen) {
+        this.setupCamera = this.captureWorkspaceCamera();
+        this.flight.setActive(false);
+        document.getElementById('flight-hud')!.hidden = true;
+      }
+    }
     this.timeline.setPlaying(false);
+    document.body.classList.add('output-setup');
     this.dialog.open(tab);
+    this.rebuildShot(false);
     this.setViewMode("shot");
   }
 
@@ -1143,12 +1307,13 @@ class App {
     this.cancelScreenshot();
     ++this.viewBuildGeneration;
     this.view.build(desc);
-    const initialHead = launch.active && launch.selection.character ? 'stock' : this.pendingViewRestore?.view.sourceHead;
-    this.look.onModel(desc.robot, initialHead);
+    const visual = launch.active ? this.launchVisualSelection : null;
+    const initialHead = visual?.head ?? this.pendingViewRestore?.view.sourceHead;
+    this.look.onModel(desc.robot, initialHead, visual?.appearance ?? this.pendingViewRestore?.view.appearance);
     // Reuse the existing Character handler, including its Original paint semantics.
     const character = launch.selection.character;
     if (launch.active && character && !this.launchCharacterApplied) {
-      this.look.restoreAppearance(desc.robot, { ...this.view.getAppearance(), sourceBody: 'stock' });
+      this.look.restoreAppearance(desc.robot, visual?.appearance ?? { ...this.view.getAppearance(), sourceBody: 'stock' }, 'stock');
       const select = document.querySelector<HTMLSelectElement>('#panel select[aria-label="Character"]');
       if (!select) throw new Error('The character menu is unavailable for the selected robot.');
       characterOptions(select, character, desc.robot, true);
@@ -1219,10 +1384,16 @@ class App {
       return [Math.atan2(v.y, v.x) * R2D, Math.asin(Math.max(-1, Math.min(1, v.z / r))) * R2D, r];
     };
     c.addEventListener("start", () => {
-      if (this.timeline.mode !== "shot" || !this.shotPath || this.shot.mode === "viewport") return;
-      const p = this.shotPath.at(this.timeline.time);   // start from what the shot shows now
-      c.target.copy(p.target);
-      this.view.camera.position.copy(p.pos);
+      if (this.timeline.mode !== "shot" || this.exporting || this.shot.mode === "viewport") return;
+      if (this.shotPath) {
+        const p = this.shotPath.at(this.timeline.time);
+        c.target.copy(p.target);
+        this.view.camera.position.copy(p.pos);
+      } else if (this.dialog.isOpen) {
+        applyStaticShot(this.shotCam, this.shot, this.liveShotBase, this.dialog.aspect, this.view.camera);
+        c.target.set(this.baseXY[0], this.baseXY[1], this.shot.height);
+        this.view.camera.position.copy(this.shotCam.position);
+      } else return;
       this.shotDrag = { az: this.shot.azimuth, el: this.shot.elevation, d: this.shot.distance, off: offset() };
     });
     c.addEventListener("change", () => {
@@ -1270,6 +1441,7 @@ class App {
         return;
       }
       if (this.rec) this.stopRecording();
+      if (this.timeline.isOpen) this.closeReview();
       this.take = take;
       this.takeModel = m;
       this.takeNo++;
@@ -1459,7 +1631,8 @@ class App {
       let generation: number;
       do {
         generation = this.viewBuildGeneration;
-        await Promise.all([this.view.waitForRobotVisuals(), this.view.waitForTerrainVisuals(), this.firstSimulationFrame]);
+        await Promise.all([this.view.waitForRobotVisuals(), this.view.waitForTerrainVisuals(),
+          this.view.waitForFlashlight(), this.firstSimulationFrame]);
       } while (generation !== this.viewBuildGeneration);
       if (!this.lastFrame) throw new Error('The simulator did not provide a scene frame.');
       if (this.view.renderer.getContext().isContextLost()) throw new Error('The viewport is unavailable.');
@@ -1492,6 +1665,8 @@ class App {
     character.dispatchEvent(new Event('change', { bubbles: true }));
     launch.selection.character = 'stock';
     this.launchCharacterApplied = true;
+    this.launchVisualSelection = resolveLaunchVisualSelection({ terrain: launch.selection.terrain,
+      robot, character: 'stock', rememberedAppearance: this.view.getAppearance() });
     this.initialViewRestore = Promise.resolve();
     if (linked) {
       const original = { ...linked, appearance: this.view.getAppearance(), sourceHead: 'stock' as const };
@@ -1508,6 +1683,7 @@ class App {
   // ---- worker messages ------------------------------------------------
   private onWorker(m: FromWorker) {
     switch (m.t) {
+      case 'loadingPlan': void this.prepareStartupAssets(m.plan); return;
       case 'loading': return launch.receiveTransfers(m.generation, m.updates);
       case "model":
         // a rebuild mid-recording ends the take there: its frames belong to the old model
@@ -1671,6 +1847,11 @@ class App {
   // ---- input ----------------------------------------------------------
   private onKey(e: KeyboardEvent) {
     if (e.defaultPrevented || this.inputBlocked || launch.ownsKey(e.code) || this.modalKeys.has(e.code)) return;
+    if (e.key === 'Escape' && this.dialog.isOpen) {
+      e.preventDefault();
+      if (!this.exporting) this.dialog.close();
+      return;
+    }
     if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target instanceof HTMLElement && e.target.isContentEditable)) return;
     // Native buttons and details summaries own activation, including Workspace tools.
     if ((e.target instanceof HTMLButtonElement || e.target instanceof HTMLElement && e.target.closest('summary'))
@@ -1690,7 +1871,6 @@ class App {
     }
     if (this.timeline.isOpen) {
       // the deck owns the keyboard while reviewing; the sim is paused, so nothing drives it
-      if (e.key === "Escape" && this.dialog.isOpen) { this.dialog.close(); e.preventDefault(); return; }
       if (this.timeline.onKey(e)) e.preventDefault();
       return;
     }
@@ -1822,11 +2002,19 @@ class App {
   /** Draw the latest live pose without polling controls or advancing the simulation. */
   private drawLiveFrame(){
     if(this.lastFrame){
-      if(!this.heldView&&!this.noclip)this.view.follow(this.baseXY[0],this.baseXY[1],this.baseZ);
+      if(!this.heldView&&!this.noclip&&!this.shotDrag)this.view.follow(this.baseXY[0],this.baseXY[1],this.baseZ);
       this.view.updateRobotLighting(this.baseXY[0],this.baseXY[1],this.baseZ);
       this.view.sync(this.lastFrame.xpos,this.lastFrame.xmat);
     }
     if(this.leashDrag)this.view.setLeash([this.baseXY[0],this.baseXY[1],.3],[this.leashDrag[0],this.leashDrag[1],.12]);
+    if (this.dialog.isOpen && !this.timeline.isOpen) {
+      this.liveShotBase[0] = this.baseXY[0]; this.liveShotBase[1] = this.baseXY[1]; this.liveShotBase[2] = this.baseZ;
+      if (this.shotDrag) this.view.controls.update();
+      applyStaticShot(this.shotCam, this.shot, this.liveShotBase, this.dialog.aspect, this.view.camera);
+      const r = this.view.renderFramed(this.shotCam, this.dialog.aspect), st = this.shotFrame.style;
+      st.left = `${r.x}px`; st.top = `${r.y}px`; st.width = `${r.w}px`; st.height = `${r.h}px`;
+      return;
+    }
     this.view.render();
   }
 
@@ -1857,7 +2045,7 @@ class App {
         lastPadCmd = "";
         this.setCommand([0, 0, 0]);
       }
-      if (this.noclip) {
+      if (this.noclip && !this.dialog.isOpen) {
         const velocity = this.flight.update(dt);
         this.updateFlightHud();
         if (velocity.lengthSq() > 0) this.send({ t: 'noclipStep', delta: velocity.toArray().map(v => v * dt) as [number, number, number] });

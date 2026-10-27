@@ -28,12 +28,13 @@ import type { Command, EvalConfig, RobotSpec } from "../types";
 import type { Engine } from "../../sim/engine";
 import type { OnnxSession } from "../policy";
 import { BaseDriver } from "./base";
+import { fetchAsset } from '../prepared-assets';
 
 /** Firmware `action_joint_idx_23dof`: net slot i drives Unitree joint AJ[i]. */
 const AJ_23 = [0, 6, 12, 1, 7, 15, 22, 2, 8, 16, 23, 3, 9, 17, 24, 4, 10, 18, 25, 5, 11, 19, 26];
 
 async function loadMotion(url: string, na: number): Promise<Float32Array[]> {
-  const txt = await fetch(url).then((r) => {
+  const txt = await fetchAsset(url).then((r) => {
     if (!r.ok) throw new Error(`failed to fetch ${url}: ${r.status}`);
     return r.text();
   });
@@ -98,6 +99,12 @@ export class G1GetupDriver extends BaseDriver {
       this.motions[side] = loadMotion(url, na);
       this.motions[side]!.catch(() => undefined);   // surfaced on first use
     }
+  }
+
+  async prepare(): Promise<void> {
+    // Both sides start downloading in the constructor; the chosen side still
+    // surfaces its own error on first use, as before.
+    await Promise.allSettled(Object.values(this.motions));
   }
 
   override reset() {
