@@ -32,6 +32,7 @@ import type { Engine } from "../../sim/engine";
 import type { OnnxSession } from "../policy";
 import { BaseDriver } from "./base";
 import { Task137, loadRows, resample } from "./g1_vq137";
+import { fetchAsset } from '../prepared-assets';
 
 /** `g1.vq` config block (all optional; defaults are the firmware values). */
 /** one motion of the 137-dim family (Air 503 / 550) */
@@ -105,7 +106,7 @@ function yawOf(q: ArrayLike<number>): number {   // wxyz
 
 /** Parse a latent CSV and L2-normalise every row (the firmware normalises the cmd). */
 async function loadLatent(url: string): Promise<Float32Array[]> {
-  const r = await fetch(url);
+  const r = await fetchAsset(url);
   if (!r.ok) throw new Error(`failed to fetch latent ${url}: ${r.status}`);
   const rows: Float32Array[] = [];
   for (const line of (await r.text()).split("\n")) {
@@ -257,7 +258,7 @@ export class G1VqDriver extends BaseDriver {
   }
 
   /** Fetch the latent CSVs (once) and build the dance schedule. */
-  private init(): Promise<void> {
+  prepare(): Promise<void> {
     this.ready ??= (async () => {
       const v = this.vq;
       if (this.mode === "dance") {
@@ -390,7 +391,7 @@ export class G1VqDriver extends BaseDriver {
   }
 
   async step(command: Command): Promise<Float64Array> {
-    await this.init();
+    await this.prepare();
     const pObs = this.observe();
     let act: Float32Array;
     if (this.mode === "dance") act = await this.stepDance(pObs);

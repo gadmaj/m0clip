@@ -155,9 +155,22 @@ environment's Python executable before invoking `npm run build`.
 
 The build typechecks the application, writes `dist/`, then generates compressed
 robot meshes and processes native map visuals when the corresponding map inputs
-are present. Keep the complete output, including `assets/`, `wasm/`, manifests
-and `.gz` files. `npm run preview` serves it locally with the required isolation
-headers; it is a preview server, not a production hosting service.
+are present. It writes a release-specific startup asset catalogue **after** those
+steps, using the final file sizes and dependencies. Keep the complete output,
+including `assets/`, `wasm/`, manifests, the startup catalogue and `.gz` files.
+`npm run preview` serves it locally with the required isolation headers; it is a
+preview server, not a production hosting service.
+
+If you change assets in an already-built output directory, regenerate its
+catalogue before serving that output:
+
+```sh
+node scripts/build_startup_catalogue.mjs dist
+```
+
+This keeps the catalogue URL compiled into that build. Prepare character previews
+and model conversions before the final catalogue pass; do not mix a catalogue
+from one output with files from another.
 
 ## Host the static build
 
@@ -185,14 +198,14 @@ resource policy; do not disable isolation to work around a blocked asset.
 | `.wasm` | `Content-Type: application/wasm`; preserve binary bytes. |
 | `.json` manifests | `Content-Type: application/json`; missing assets must not become an HTML fallback. |
 | GLB, ONNX, meshes and ZIPs | Serve the actual binary files, with an appropriate binary MIME type. Do not apply text conversion. |
-| Explicit `.gz` mesh or lightstyle files | Keep their filenames and bytes. Serving raw gzip files as `application/gzip` without `Content-Encoding` is supported; the application decodes them. |
+| Explicit `.gz` mesh or lightstyle files | Keep their filenames and bytes. Serve as `application/gzip` without `Content-Encoding`; the application inflates them. |
 
-HTTP compression is separate from an explicit `.gz` asset. If your host sends
-`Content-Encoding: gzip` or `br`, the response body must actually use that
-encoding. The browser decodes it before the application receives it. The runtime
-also accepts already-decoded explicit gzip assets, but a false encoding header,
-a renamed uncompressed file or an HTML error page will break loading. Do not
-strip the generated `.gz` files as redundant precompression artifacts.
+HTTP compression is separate from an explicit `.gz` asset. For ordinary resources,
+if your host sends `Content-Encoding: gzip` or `br`, the response body must actually
+use that encoding. The browser decodes it before the application receives it.
+Do not label an explicit `.gz` file as HTTP gzip: its compressed file bytes are
+part of the generated scene payload budget. Do not strip the generated `.gz`
+files as redundant precompression artifacts or replace missing files with HTML.
 
 Deploy HTML, scripts, asset manifests and their referenced files together. Avoid
 long-lived caching for `index.html` and mutable catalog/manifest URLs; reserve
@@ -203,6 +216,27 @@ immutable caching for files whose URLs change with their contents.
 Choose a map and character, then **Load scene**. The scene controls and **? Help**
 list movement, camera and capture actions. Record takes, review them in Timeline
 and download saved files for backup.
+
+Loading first resolves the selected scene, model, appearance and policy. Selected
+external player models may need to finish downloading during this planning step;
+their prepared data is reused. Before the remaining scene downloads begin, the
+loader fixes its **scene asset payload** maximum. **MB LEFT** and download ETA use
+unique HTTP-decoded resources, including bytes read from browser cache—not billed
+network traffic or inflated texture/mesh memory. Transport compression can reduce
+wire bytes without changing this maximum. A full byte meter does not mean physics
+compilation or material preparation has finished; **Enter scene** waits for the
+simulation, visuals and a rendered frame. Expand **Details** for actual transfers
+and readiness. Pong appears only if an unfinished load lasts more than 30 seconds.
+
+Open **Camera / output** before recording to set the static camera, lens and output
+format. **Scene** remains available above setup for look, parts, lighting and
+display controls. Motion/video/data exports require an open recorded take; static
+setup does not create one. Press **Escape** to close setup. Starting a recording
+also closes it and restores the live camera without losing the output recipe;
+setup cannot open while a recording is starting or active. In review, appearance,
+display, flashlight, added lights and camera edits belong to that shot, not live
+preferences. Robot, map, policy and other simulation controls are LIVE-only.
+Controls lock while encoding, not merely while setup is open.
 
 In **Render controls**, enable **Character wireframe** and leave **Map wireframe**
 off to keep the map solid. Keep **Textures** and **Map geometry** enabled to see

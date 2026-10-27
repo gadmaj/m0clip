@@ -1,4 +1,5 @@
 import type { GoldSrcSource } from '../render/characters/goldsrc';
+import type { PlannedAsset } from '../loading/asset-plan';
 
 export type PmodelGame = 'hl' | 'sc';
 export interface PmodelRef { game: PmodelGame; name: string }
@@ -224,25 +225,30 @@ export async function searchPmodels(query: string, options: PmodelSearchOptions 
 }
 
 /** Load one deliberate selection; dependencies are fetched only when the parser requests them. */
-export async function loadPmodel(ref: PmodelRef, signal?: AbortSignal): Promise<GoldSrcSource> {
+export async function loadPmodel(ref: PmodelRef, signal?: AbortSignal, onAsset?: (asset: PlannedAsset) => void): Promise<GoldSrcSource> {
   const record = pmodelRecord(ref);
   checkAbort(signal);
   const root = modelRoot(record);
   const base = `${root}${encodeURIComponent(record.name)}`;
-  const modelBytes = (await fetchBytes(`${base}.mdl`, MAX_MODEL_BYTES, signal))!;
+  const read = async (url: string, maxBytes: number, optional = false) => {
+    const bytes = await fetchBytes(url, maxBytes, signal, optional);
+    if (bytes) onAsset?.({ url, bytes: bytes.byteLength });
+    return bytes;
+  };
+  const modelBytes = (await read(`${base}.mdl`, MAX_MODEL_BYTES))!;
   // Keep original authorship/readmes, not a database-wide license assertion.
   // Missing JSON is allowed by the upstream API; other failed responses remain
   // visible. Never consult another model, an index, sounds or an animation pack.
   let readme: string | undefined;
   if (isLocal(record)) {
-    readme = new TextDecoder().decode((await fetchBytes(`${base}.txt`, MAX_README_BYTES, signal))!);
+    readme = new TextDecoder().decode((await read(`${base}.txt`, MAX_README_BYTES))!);
   } else {
-    const bytes = await fetchBytes(`${base}.json`, MAX_METADATA_BYTES, signal, true);
+    const bytes = await read(`${base}.json`, MAX_METADATA_BYTES, true);
     if (bytes) {
       const metadata: unknown = JSON.parse(new TextDecoder().decode(bytes));
       if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) throw new Error(`Invalid Source model metadata: ${base}.json`);
       if ('readme' in metadata && metadata.readme === true) {
-        readme = new TextDecoder().decode((await fetchBytes(`${base}.txt`, MAX_README_BYTES, signal))!);
+        readme = new TextDecoder().decode((await read(`${base}.txt`, MAX_README_BYTES))!);
       }
     }
   }
@@ -269,7 +275,7 @@ export async function loadPmodel(ref: PmodelRef, signal?: AbortSignal): Promise<
       const canonical = `${name}${suffix}`;
       let pending = dependencies.get(canonical);
       if (!pending) {
-        pending = fetchBytes(`${root}${encodeURIComponent(canonical)}`, MAX_MODEL_BYTES, signal).then(bytes => bytes!)
+        pending = read(`${root}${encodeURIComponent(canonical)}`, MAX_MODEL_BYTES).then(bytes => bytes!)
           .catch(error => { dependencies.delete(canonical); throw error; });
         dependencies.set(canonical, pending);
       }

@@ -4,13 +4,14 @@
  * discrete inputs as timeline events (FSM state, policy, remote moves, reset, hoist, clip).
  * The timeline plays a take back; the exporters resample it at any frame rate. */
 import type { Appearance } from "../render/scene";
+import { validDisplay, type SceneDisplay } from '../render/display';
 import { unzip, zip } from "fflate";
 import {Matrix4,Quaternion,Vector3} from 'three';
 import type { Command, RobotSpec } from "../core/types";
 import { SPECS } from "../robots";
 import { type RobotFade, recordedRobotOpacity } from '../render/robot-fade';
 import type { LookState } from '../ui/look';
-import { validLook, validShotEdits, type ShotEdits } from './post';
+import { validLook, validShotEdits, validShotLights, type ShotEdits, type ShotLight } from './post';
 import type { Shot } from './shot';
 import { GEOM_STRIDE, GeometryTrack, validGeometryPartition, validGeometryData, matToQuat, quatToMat, nlerp, type GeometryPartition } from '../core/geometry';
 
@@ -34,6 +35,9 @@ export interface TakeMeta {
   appearance?: Appearance;   // fixed paint and robot illumination for this take
   sourceHead?: 'stock' | 'ghost'; // optional cosmetic geometry; older takes use the stock head
   look?: LookState;        // recorded Look; absent in older takes
+  display?: SceneDisplay;   // initial viewport choices; absent in older takes
+  flashlight?: boolean;    // initial camera flashlight state
+  lights?: ShotLight[];    // initial world-space shot lights
   edits?: ShotEdits;       // non-destructive review edits, never applied to recorded tracks
   robotFade?: RobotFade;    // initial visual transition; noclip events drive subsequent fades
   policy: string;           // policy active when recording started
@@ -365,6 +369,9 @@ const bytes = (a: Float32Array | Float64Array | Uint32Array) => new Uint8Array(a
 
 export async function saveTake(take: Take): Promise<Blob> {
   if (take.meta.look !== undefined && !validLook(take.meta.look)) throw new Error('take file: invalid recorded look');
+  if (take.meta.display !== undefined && !validDisplay(take.meta.display)) throw new Error('take file: invalid recorded display');
+  if (take.meta.flashlight !== undefined && typeof take.meta.flashlight !== 'boolean') throw new Error('take file: invalid recorded flashlight');
+  if (take.meta.lights !== undefined && !validShotLights(take.meta.lights)) throw new Error('take file: invalid recorded lights');
   if (take.meta.edits !== undefined && !validShotEdits(take.meta.edits, take.meta.robot))
     throw new Error('take file: invalid shot edits');
   if(take.shot!==undefined&&!validShotCamera(take.shot))throw new Error('take file: invalid shot camera');
@@ -390,6 +397,9 @@ export async function loadTake(data: ArrayBuffer): Promise<Take> {
   if (head.version !== 1 && head.version !== 2) throw new Error('take file: unsupported version');
   const meta = head.meta as TakeMeta, n = Number(head.frames);
   if (meta.look !== undefined && !validLook(meta.look)) throw new Error('take file: invalid recorded look');
+  if (meta.display !== undefined && !validDisplay(meta.display)) throw new Error('take file: invalid recorded display');
+  if (meta.flashlight !== undefined && typeof meta.flashlight !== 'boolean') throw new Error('take file: invalid recorded flashlight');
+  if (meta.lights !== undefined && !validShotLights(meta.lights)) throw new Error('take file: invalid recorded lights');
   if (meta.edits !== undefined && !validShotEdits(meta.edits, meta.robot))
     throw new Error('take file: invalid shot edits');
   const arr = (name: string, per: number, f64 = false) => {

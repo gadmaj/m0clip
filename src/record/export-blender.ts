@@ -40,14 +40,16 @@ function pushQuat(out: number[], q: THREE.Quaternion) {
   else out.push(q.x, q.y, q.z, q.w);
 }
 
+
 export async function exportGlb(take: Take, view: SceneView, model: RenderModel, job: GlbJob): Promise<Blob> {
   await Promise.all([view.waitForRobotVisuals(),view.waitForTerrainVisuals()]);
   const restoreHighlights=view.suspendHighlights();
   try {
   const appearance = view.getAppearance(), sourceHead = view.getSourceHead(), lights = view.getShotLights();
+  const display = view.getDisplay(), flashlight = view.getFlashlight();
   const look = structuredClone(job.look ?? take.meta.edits?.look ?? take.meta.look);
   const shotEdits: ShotEdits = {
-    version: 1, appearance, sourceHead, ...(look ? { look } : {}), lights,
+    version: 1, appearance, sourceHead, ...(look ? { look } : {}), display, flashlight, lights,
   };
   const N = Math.max(2, Math.round((job.t1 - job.t0) * job.fps) + 1);
   const times = Float32Array.from({ length: N }, (_, i) => Math.min(i / job.fps, job.t1 - job.t0));
@@ -61,7 +63,9 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
     range_s: [job.t0, job.t1], key_fps: job.fps,
     robotAppearance: appearance, recordedAppearance: structuredClone(take.meta.appearance),
     sourceHead, recordedSourceHead: take.meta.sourceHead, look, recordedLook: structuredClone(take.meta.look),
-    shotEdits, sourceRendering: 'Native Source lightmaps, tone mapping and custom shader effects are not reproduced by glTF materials.',
+    display, recordedDisplay: structuredClone(take.meta.display),
+    flashlight, recordedFlashlight: take.meta.flashlight, lights, recordedLights: structuredClone(take.meta.lights),
+    shotEdits, sourceRendering: 'Native Source lightmaps, tone mapping, browser wireframe and custom shader effects are not reproduced by glTF materials. Camera flashlight state is metadata only, not an exported light.',
     robotFade: take.meta.robotFade, noclipTransitions: take.events.filter(event => event.kind === 'noclip'),
   };
   const robot = new THREE.Group(), world = new THREE.Group();
@@ -116,14 +120,14 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
     }
   }
 
-  const sourceBody=view.exportSourceBody(geometry,times);
+  const sourceBody=display.robot?view.exportSourceBody(geometry,times):null;
   if(sourceBody){
     const wrap=new THREE.Group();wrap.name=unique('source_robot');wrap.quaternion.copy(TO_YUP);
     wrap.add(sourceBody.root);robot.add(wrap);tracks.push(...sourceBody.tracks);
   }
 
   // a converted game map's textured visual (already in the MuJoCo frame): wrapped into Y-up
-  if (view.terrainObject) {
+  if (display.map && view.terrainObject) {
     const wrap = new THREE.Group();
     wrap.name = unique("map");
     wrap.quaternion.copy(TO_YUP);

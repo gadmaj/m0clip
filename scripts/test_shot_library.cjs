@@ -72,6 +72,9 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         window.makeTake = offset => {
           const lighting = { sunAzimuth: 27, sunElevation: 61, sunIntensity: 1.5, sunColor: 0xffffff, ambient: .8, skyColor: 0xdfeaf5, groundColor: 0x1a2028, fill: .7, reflections: .55, exposure: 1, shadows: false, background: 0x0b0e12 };
           const meta = { robot: 'r1', terrain: 'flat', policy: 'fixture', created: new Date(1700000000000 + offset * 1000).toISOString(), ngeom: 2, nq: 8, baseQadr: 0, hinges: [{ name: 'elbow', qadr: 7 }], appearance: { colorway: 'product', parts: {} }, sourceHead: 'ghost', look: { preset: 'studio', custom: lighting, antialiasing: 'fxaa' } };
+          meta.display = { textures: false, wireframe: true, characterWireframe: false, map: true, robot: true, decals: false };
+          meta.flashlight = true;
+          meta.lights = [{ id: 'initial', name: 'Initial key', kind: 'point', enabled: true, color: 0xffcc88, intensity: 31, position: [3, -2, 4], target: [0, 0, 1], range: 12, angle: 30, penumbra: .2 }];
           const recorder = new fixture.TakeRecorder(meta, { fixedIds: new Uint32Array([1]), fixed: new Float32Array([.4, .2, 1.5, 1, 0, 0, 0]) });
           for (let i = 0; i < 6; i++) {
             const step = i * .17 + offset, angle = i * .12, c = Math.cos(angle), s = Math.sin(angle);
@@ -82,7 +85,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
           const take = recorder.finish(); check(take, 'Fixture contains completed motion');
           take.shot = { mode: 'orbit', focal: 50, sensor: 24.89, distance: 4.7, azimuth: -73, elevation: 21, height: 1.2, orbitPeriod: -7, smooth: .08 };
           take.range = offset === 0 ? [.02, .08] : [.04, .09];
-          take.meta.edits = { version: 1, appearance: { colorway: 'model', parts: { torso: { color: 0x18a5ef }, elbow: { roughness: .23 } } }, lights: [] };
+          take.meta.edits = { version: 1, appearance: { colorway: 'model', parts: { torso: { color: 0x18a5ef }, elbow: { roughness: .23 } } }, display: { textures: true, wireframe: false, characterWireframe: true, map: false, robot: true, decals: true }, flashlight: false, lights: [] };
           return take;
         };
         window.makeModel = () => ({ robot: 'r1', terrain: 'flat', ngeom: 2, nq: 8, baseQadr: 0, hinges: [{ name: 'elbow', qadr: 7 }], type: new Int32Array([7, 2]), size: new Float64Array([.2, .3, .4, .1, .2, .3]), rgba: new Float32Array([.2, .4, .8, 1, .7, .3, .1, .9]), group: new Int32Array([1, 2]), contype: new Int32Array([1, 0]), bodyid: new Int32Array([1, 1]), dataid: new Int32Array([0, -1]), bodyNames: ['world', 'torso'], meshes: { 0: { name: 'asymmetric triangle', vert: new Float32Array([0, 0, 0, .3, .1, 0, .1, .4, .2]), face: new Uint32Array([0, 1, 2]), pos: [.1, -.2, .3], quat: [1, 0, 0, 0] } }, bodyFrames: { parent: new Int32Array([0, 0]), pos: new Float64Array([0, 0, 0, .2, .3, .4]), quat: new Float64Array([1, 0, 0, 0, 1, 0, 0, 0]) }, geomFrames: { pos: new Float64Array([.1, .2, .3, .4, .5, .6]), quat: new Float64Array([1, 0, 0, 0, 1, 0, 0, 0]) } });
@@ -171,6 +174,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       const expected = { ids, first: await trackHashes(first), second: await trackHashes(second), firstSample: sample(first), secondSample: sample(second), events: structuredClone(first.events), shot: structuredClone(first.shot), meta: structuredClone(first.meta), range: [...first.range], secondRange: [...second.range], duration: first.duration, frames: first.n, mesh: await hash(model.meshes[0].vert), rgba: await hash(model.rgba) };
       const saving = library.save({ id: ids[0], name: 'Arc one', take: first, model, thumbnail: null });
       first.meta.policy = 'mutated while opening'; first.shot.focal = 135; first.events[0].label = 'mutated while opening'; first.range[0] = .03;
+      first.meta.display.decals = true; first.meta.flashlight = false; first.meta.lights[0].position[0] = 999;
+      first.meta.edits.display.map = true; first.meta.edits.flashlight = true;
       await Promise.all([saving, library.save({ id: ids[1], name: 'Arc two', take: second, model, thumbnail: null })]);
       const shots = await readStore('shots');
       check(shots.find(s => s.id === ids[0]).sceneId === shots.find(s => s.id === ids[1]).sceneId, 'Same model object shares one stored scene identity');
@@ -205,14 +210,17 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       equal(sample(opened.take), expected.firstSample, 'Real replay methods preserve nontrivial movement/camera after reopen');
       equal(opened.take.events, expected.events, 'Discrete motion events survive reopen');
       equal(opened.take.meta.look, expected.meta.look, 'Original look survives reopen');
+      for (const key of ['display', 'flashlight', 'lights']) equal(opened.take.meta[key], expected.meta[key], `Initial ${key} survives real IDB realm recreation`);
+      equal(opened.take.meta.edits, expected.meta.edits, 'Edited display/flashlight and explicitly empty lights survive reopen');
       check(await hash(opened.model.meshes[0].vert) === expected.mesh, 'Stored scene survives page recreation');
       equal(opened.take.range, expected.range, 'Range survives page and connection recreation');
       const portable = await fixture.loadTake(await (await fixture.saveTake(opened.take)).arrayBuffer());
       equal(portable.range, expected.range, 'Actual IDB take retains range through portable ZIP');
       equal(portable.meta.edits, expected.meta.edits, 'Partial per-part paint survives IDB and ZIP together');
+      for (const key of ['display', 'flashlight', 'lights']) equal(portable.meta[key], expected.meta[key], `Initial ${key} survives IDB → portable ZIP`);
       equal(sample(portable), expected.firstSample, 'Restored trim drives actual motion and camera-path sampling');
       equal(await trackHashes(portable), expected.first, 'IDB to ZIP retains seven exact buffer hashes');
-      opened.take.meta.edits = { version: 1, appearance: { colorway: 'model', parts: { torso: { color: 0x18a5ef, roughness: .23 } } }, lights: [] };
+      opened.take.meta.edits = { version: 1, appearance: { colorway: 'model', parts: { torso: { color: 0x18a5ef, roughness: .23 } } }, display: { textures: false, wireframe: true, map: true, robot: false }, flashlight: true, lights: [{ ...opened.take.meta.lights[0], id: 'edited', name: 'Edited key', intensity: 71 }] };
       opened.take.shot.focal = 85;
       opened.take.range = [.03, .07];
       const desiredMeta = structuredClone(opened.take.meta), desiredShot = structuredClone(opened.take.shot), desiredRange = [...opened.take.range];
@@ -226,10 +234,16 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       try {
         const updating = library.update(expected.ids[0], { meta: opened.take.meta, shot: opened.take.shot, range: opened.take.range });
         opened.take.meta.edits.appearance.parts.torso.color = 0; opened.take.shot.focal = 14; opened.take.range[0] = .04;
+        opened.take.meta.edits.display.robot = true; opened.take.meta.edits.flashlight = false; opened.take.meta.edits.lights[0].intensity = 1;
         await updating;
         const listed = await library.list(); check(listed[0].id === expected.ids[0], 'Updated entry sorts first');
         equal(listed[0].range, desiredRange, 'Small listing carries updated range');
         check(listed[0].duration === expected.duration && listed[0].frames === expected.frames, 'Listed duration and frames remain full-sized');
+        for (const change of [
+          { display: { ...desiredMeta.display, decals: null } }, { flashlight: 1 }, { lights: [desiredMeta.lights[0], desiredMeta.lights[0]] },
+          { edits: { ...desiredMeta.edits, display: {} } }, { edits: { ...desiredMeta.edits, flashlight: null } },
+          { edits: { ...desiredMeta.edits, lights: [{ ...desiredMeta.lights[0], intensity: -1 }] } },
+        ]) await rejects(() => library.update(expected.ids[0], { meta: { ...desiredMeta, ...change }, shot: desiredShot, range: desiredRange }), /invalid/i);
         for (const range of [null, [], [0], [0, .02, .03], [0, 0], [.07, .03], [-.01, .03], [0, expected.duration + .001], [NaN, .04], [0, Infinity], ['0', .04]]) {
           await rejects(() => library.update(expected.ids[0], { meta: desiredMeta, shot: desiredShot, range }), /invalid/i);
           equal((await library.list()).find(s => s.id === expected.ids[0]).range, desiredRange, 'Invalid range update cannot commit');
@@ -268,6 +282,14 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       // Corruption rejects before replay. Restore each real record so unrelated checks remain meaningful.
       const record = (await readStore('shots')).find(s => s.id === expected.ids[0]);
       for (const corrupted of [{ ...record, events: [{ t: -1, kind: 'move', label: 'invalid' }] }, { ...record, meta: { ...record.meta, robot: 'go2' } }, { ...record, shot: { ...record.shot, focal: -2 } }, ...[[0, 0], [0, record.info.duration + .001], [0, .02, .03], [NaN, .03], null].map(range => ({ ...record, info: { ...record.info, range } }))]) {
+        await writeRecord('shots', corrupted); await rejects(() => library.open(expected.ids[0]), /invalid/i); await writeRecord('shots', record);
+      }
+      for (const change of [
+        { display: null }, { flashlight: 'true' }, { lights: null },
+        { edits: { ...record.meta.edits, display: { ...record.meta.display, characterWireframe: 1 } } },
+        { edits: { ...record.meta.edits, flashlight: null } }, { edits: { ...record.meta.edits, lights: [record.meta.lights[0], record.meta.lights[0]] } },
+      ]) {
+        const corrupted = { ...record, meta: { ...record.meta, ...change } };
         await writeRecord('shots', corrupted); await rejects(() => library.open(record.id), /invalid/i); await writeRecord('shots', record);
       }
       const legacy = structuredClone(record); delete legacy.info.range;

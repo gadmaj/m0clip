@@ -4,12 +4,14 @@ import type { Finish } from "../render/paint";
 import { FINISH } from "../render/paint";
 import type { PartOverride } from "../render/scene";
 import type { SourceAntialiasing } from '../render/source-color';
-import { KIT_REGIONS, KIT_STYLES, KIT_LABELS, kitRegion, type KitStyle, type RobotModules } from '../render/robot-kit-data';
+import { KIT_REGIONS, KIT_STYLES, KIT_LABELS, kitRegion, type KitStyle } from '../render/robot-kit-data';
 import { STUDIO, type Appearance, type Colorway, type Lighting, type SceneView, type HeadVisual } from "../render/scene";
 import { VisualPicker, type VisualPickerConfig } from './visual-picker';
 import { previewImage, characterOptions, characterDescription, sourceModelCatalog } from './preview-catalog';
 import { characterPhysics, compatibleBody, isBodyVisual, isCharacter } from '../characters/catalog';
 import { ShotLightsPanel } from './shot-lights';
+import { validShotLights, type ShotLight } from '../record/post';
+import { resolveLaunchVisualSelection } from '../loading/visual-selection';
 
 /** Sun / ambient a map ships (Source light_environment), from its bundle manifest. */
 export interface MapLight { azimuth: number; elevation: number; color: number; intensity: number; ambient: number; ambientColor: number }
@@ -71,7 +73,8 @@ export class LookPanel {
   private lightBody: HTMLElement;
   private paintBody: HTMLElement;
   private paintFold: HTMLDetailsElement;
-  private shotLights: ShotLightsPanel | null = null;
+  private shotLights: ShotLightsPanel;
+  private liveLights: ShotLight[] | null = null;
   private liveLook: LookState | null = null;
   private shotChanged: (() => void) | null = null;
   private shotReset: (() => void) | null = null;
@@ -110,6 +113,23 @@ export class LookPanel {
     this.view.onHeadVisualChange = () => this.renderPaint();
     this.applyLighting();
     this.renderLighting();
+    try {
+      const lights: unknown = JSON.parse(localStorage.getItem('ume-live-lights') ?? '[]');
+      if (validShotLights(lights)) this.view.setShotLights(lights);
+    } catch { /* damaged light preferences leave the scene unmodified */ }
+    this.shotLights = new ShotLightsPanel(this.view, () => {
+      if (this.liveLook) this.shotChanged?.();
+      else localStorage.setItem('ume-live-lights', JSON.stringify(this.view.getShotLights()));
+    }, () => {
+      if (this.liveLook) this.shotReset?.();
+      else {
+        this.view.setShotLights([]);
+        localStorage.setItem('ume-live-lights', '[]');
+        this.shotLights.show(this.readOnly, false);
+      }
+    });
+    parent.append(this.shotLights.root);
+    this.shotLights.show(false, false);
   }
 
   // ---- lighting ----------------------------------------------------------------
@@ -125,18 +145,16 @@ export class LookPanel {
   }
 
   /** Keep the first live snapshot when switching directly between reviewed takes. */
-  beginShotEdit(look: LookState, changed: () => void, reset: () => void): void {
+  beginShotEdit(look: LookState, changed: () => void, reset: () => void, lights: readonly ShotLight[] = []): void {
     if (this.readOnly) return;
     this.liveLook ??= this.getState();
+    this.liveLights ??= this.view.getShotLights();
     this.shotChanged = changed;
     this.shotReset = reset;
     this.setState(look);
+    this.view.setShotLights(lights);
     this.renderPaint();
-    if (!this.shotLights) {
-      this.shotLights = new ShotLightsPanel(this.view, () => this.shotChanged?.(), () => this.shotReset?.());
-      this.paintFold.after(this.shotLights.root);
-    }
-    this.shotLights.show(this.readOnly || this.headLocked);
+    this.shotLights.show(this.readOnly, true);
   }
 
   endShotEdit(): void {
@@ -146,11 +164,14 @@ export class LookPanel {
     this.liveLook = null;
     this.shotChanged = null;
     this.shotReset = null;
-    this.shotLights?.hide();
+    if (this.liveLights) this.view.setShotLights(this.liveLights);
+    this.liveLights = null;
+    this.shotLights.show(this.readOnly, false);
+    this.renderLighting();
     this.renderPaint();
   }
 
-  /** Export/recording lock; rebuilding also disposes galleries attached to document.body. */
+  /** Encoding lock; rebuilding also disposes galleries attached to document.body. */
   setReadOnly(on: boolean): void {
     this.readOnly = on;
     if (!on && this.mapLightPending) {
@@ -159,7 +180,7 @@ export class LookPanel {
     }
     this.renderLighting();
     this.renderPaint();
-    this.shotLights?.setReadOnly(on || this.headLocked);
+    this.shotLights?.setReadOnly(on);
   }
 
   revealShotEdit(): void {
@@ -221,6 +242,7 @@ export class LookPanel {
     for (const picker of this.lightPickers) picker.dispose();
     this.lightPickers = [];
     b.replaceChildren();
+    b.append(el('div', 'sub', this.liveLook ? 'SHOT' : 'LIVE'));
     const presetSel = el("select");
     for (const p of Object.keys(PRESET_LABEL) as Preset[]) {
       const o = new Option(PRESET_LABEL[p], p);
@@ -310,10 +332,14 @@ export class LookPanel {
 
   // ---- robot paint -------------------------------------------------------------
   /** A model was (re)built: re-list its parts and re-apply its saved paint. */
-  onModel(robot: string, initialHead?: HeadVisual) {
+  onModel(robot: string, initialHead?: HeadVisual, initialAppearance?: Appearance) {
     if (this.readOnly) return;
     const changed = this.robot !== robot;
     this.robot = robot;
+    if (!this.liveLook && initialAppearance) {
+      this.paints[robot] = structuredClone(initialAppearance);
+      this.sourceBodyLinkApplied = true;
+    }
     const requested=new URL(location.href).searchParams.get('body');
     if(!this.liveLook&&!this.sourceBodyLinkApplied&&isBodyVisual(requested)&&compatibleBody(requested,robot)){
       this.sourceBodyLinkApplied=true;this.paints[robot]={...this.app(),sourceBody:requested};
@@ -338,11 +364,11 @@ export class LookPanel {
     if(this.robot===robot){this.view.setAppearance(appearance,head);this.renderPaint();}
   }
 
-  /** A recording fixes the robot shell; reviewed takes remain editable. */
+  /** A recording fixes the robot shell, not the independently editable added-light rig. */
   setHeadLocked(locked: boolean) {
     this.headLocked = locked;
     this.renderPaint();
-    this.shotLights?.setReadOnly(locked || this.readOnly);
+    this.shotLights?.setReadOnly(this.readOnly);
   }
   refreshHead() { this.renderPaint(); }
 
@@ -394,26 +420,16 @@ export class LookPanel {
     const uniform=styles.every(s=>s===styles[0]);
     const character=el('select');character.id='character';character.setAttribute('aria-label','Character');character.disabled=this.appearanceLocked;
     characterOptions(character,stockBody?(uniform?styles[0]:'custom'):bodyState.choice,this.robot,true);
-    const paint:Record<Exclude<KitStyle,'stock'>,number[]>={
-      boxy:[0xd8bd74,0xe1c991,0xa59776,0x665a47,0xa59776,0x665a47],
-      round:[0xc9eef1,0x78c5cf,0x9ed5db,0x426b80,0x9ed5db,0x426b80],
-      prism:[0xebc4f8,0x9b7bc4,0xb99cdd,0x51416d,0xb99cdd,0x51416d],
-    };
     character.onchange=()=>{
       if(this.appearanceLocked||!isCharacter(character.value))return;
       const value=character.value;
       const body=isBodyVisual(value)?value:'stock';
       if(!compatibleBody(body,this.robot))return;
       if(!this.liveLook){const url=new URL(location.href);url.searchParams.set('body',body);history.replaceState(null,'',url);}
-      if(body!=='stock')this.savePaint({...this.app(),sourceBody:body});
-      else{
-        const style=value as KitStyle,parts={...this.app().parts};
-        if(style!=='stock')for(const name of this.view.partNames()){
-          const region=kitRegion(name);if(region)parts[name]={color:paint[style][KIT_REGIONS.indexOf(region)],finish:'satin'};
-        }
-        this.chooseHead('stock',false);
-        this.savePaint({...this.app(),sourceBody:'stock',parts,modules:Object.fromEntries(KIT_REGIONS.map(r=>[r,style])) as RobotModules});
-      }
+      const resolved = resolveLaunchVisualSelection({ terrain: 'flat', robot: this.robot, character: value,
+        rememberedAppearance: this.app(), partNames: this.view.partNames() });
+      this.chooseHead('stock', false);
+      this.savePaint(resolved.appearance);
       this.renderPaint();
     };
     const characterRow=row('Character',this.choice(character,{

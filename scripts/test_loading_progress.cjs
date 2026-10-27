@@ -2,6 +2,7 @@
  * BASE_URL=http://127.0.0.1:PORT PLAYWRIGHT_MODULE=/path/to/playwright \
  *   node scripts/test_loading_progress.cjs
  * Optional: LOADING_SCENARIOS=cold,warm,concurrent,unknown,compressed,stall,interrupt,failure,original,mobile
+ * MOBILE_WIDTH=320 or 390 selects the loading-layout viewport for the mobile scenario.
  * A loopback reverse proxy streams unchanged real asset payloads; no readiness/render hooks.
  * Covers transfer accounting and real scene/error behavior independently of delayed Pong;
  * the dedicated Source startup regression owns the >30-second morph/game contract.
@@ -106,6 +107,8 @@ async function createProxy(upstream) {
 async function snapshot(page) {
   return page.evaluate(() => {
     const progress = document.querySelector('#launch-progress'), enter = document.querySelector('#launch-enter');
+    const bytes = document.querySelector('#launch-bytes'), eta = document.querySelector('#launch-eta');
+    const byteRect = bytes?.getBoundingClientRect(), etaRect = eta?.getBoundingClientRect();
     return {
       at: Date.now(), bytes: document.querySelector('#launch-bytes')?.textContent ?? '',
       eta: document.querySelector('#launch-eta')?.textContent ?? '',
@@ -113,14 +116,18 @@ async function snapshot(page) {
       error: document.querySelector('#launch-status')?.dataset.kind === 'error',
       state: document.querySelector('#launch-transfer')?.dataset.state,
       value: progress?.hasAttribute('value') ? progress.value / progress.max : null,
+      maximum: progress?.hasAttribute('value') ? progress.max : null,
       ready: !!enter && !enter.disabled, screen: !document.querySelector('#launch-screen')?.hidden,
+      loadingVisible: !document.querySelector('#launch-loading-step')?.hidden && !document.querySelector('#launch-screen')?.hidden,
+      byteBox: byteRect && { x: byteRect.x, y: byteRect.y, height: byteRect.height },
+      etaBox: etaRect && { x: etaRect.x, y: etaRect.y, height: etaRect.height },
     };
   });
 }
 const numericEta = text => /\d+(?:\.\d+)?\s*(?:s\b|sec|m\b|min|h\b|hour)/i.test(text);
 const mbValues = text => [...text.matchAll(/([\d,.]+)\s*MB/gi)].map(match => Number(match[1].replaceAll(',', '')));
 const loadedMB = text => {
-  const match = text.match(/^\s*([\d,.]+)/);
+  const match = text.match(/·\s*([\d,.]+)\s*\/\s*[\d,.]+\s*MB/);
   return match ? Number(match[1].replaceAll(',', '')) : null;
 };
 const etaSeconds = text => {
@@ -159,6 +166,9 @@ async function pick(page, proxy, { mobile = false, head = false } = {}) {
       await page.screenshot({ path: path.join(process.env.QA_ARTIFACT_DIR, `mobile-map-gallery-${width}.png`), fullPage: true });
       await page.keyboard.press('Escape');
     }
+    const width = Number(process.env.MOBILE_WIDTH || 390);
+    assert.ok(width === 320 || width === 390, 'MOBILE_WIDTH must be 320 or 390');
+    await page.setViewportSize({ width, height: 844 });
   }
   await chooseVisual(page, 'launch-map', 'flat');
   await page.locator('#launch-next').click();
@@ -183,6 +193,51 @@ async function enterAndPlayback(page, out) {
   assert.notEqual(after, before, 'Recorded scene timeline must actually advance during playback');
   await page.screenshot({ path: path.join(out, 'scene-playback.png') });
   return { frames, before, after };
+}
+
+async function inspectDetails(page, { failed = false } = {}) {
+  const disclosure = page.locator('#launch-details');
+  const before = await snapshot(page);
+  await disclosure.locator('summary').focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelector('#launch-details').open);
+  await page.locator('#launch-detail-transfers li').first().waitFor();
+  const details = await disclosure.evaluate(node => ({
+    readiness: node.querySelector('#launch-detail-readiness').textContent,
+    status: node.querySelector('#launch-detail-status').textContent,
+    bytes: node.querySelector('#launch-detail-bytes').textContent,
+    rows: [...node.querySelectorAll('li')].map(row => ({
+      path: row.firstElementChild.textContent, state: row.dataset.state, amount: row.lastElementChild.textContent,
+    })),
+    live: node.querySelectorAll('[aria-live], [role="status"], [role="alert"]').length,
+  }));
+  assert.match(details.readiness, /Simulation: (ready|pending) · Visuals: (ready|pending) · First frame: (ready|pending)/);
+  assert.match(details.bytes, /^\d+ B received · \d+ B (?:fixed maximum|discovered)/);
+  if (before.ready) assert.equal(details.readiness, 'Simulation: ready · Visuals: ready · First frame: ready', 'Final readiness details must reflect the actual scene gates');
+  assert.ok(details.rows.every(row => ['loading', 'done', 'failed', 'cancelled'].includes(row.state)));
+  assert.ok(details.rows.every(row => /^\d+ B received/.test(row.amount)), 'Every resource amount must report observed bytes');
+  assert.ok(details.rows.every(row => !/[?#]/.test(row.path) && !/https?:\/\//.test(row.path)), 'Asset labels must omit URL query tokens, fragments and credentials');
+  assert.equal(details.live, 0, 'Detailed byte and transfer changes must not create live-region chatter');
+  if (failed) assert.ok(details.rows.some(row => row.state === 'failed'), 'A failed real asset must remain visible in the transfer history');
+  const after = await snapshot(page);
+  assert.deepEqual(after.byteBox, before.byteBox, 'Opening Details must not move the MB row');
+  assert.deepEqual(after.etaBox, before.etaBox, 'Opening Details must not move the ETA row');
+  await page.keyboard.press('Space');
+  await page.waitForFunction(() => !document.querySelector('#launch-details').open);
+  // Observe only the optional content, not the real progress shell.
+  await disclosure.evaluate(node => {
+    window.__detailMutationCount = 0;
+    window.__detailObserver = new MutationObserver(records => { window.__detailMutationCount += records.length; });
+    window.__detailObserver.observe(node.querySelector('.launch-detail-content'), { subtree: true, childList: true, characterData: true, attributes: true });
+  });
+  await delay(800);
+  const mutations = await page.evaluate(() => { window.__detailObserver.disconnect(); return window.__detailMutationCount; });
+  assert.equal(mutations, 0, 'Collapsed Details must not rebuild or update its transfer list on progress ticks');
+  await disclosure.locator('summary').click();
+  await page.waitForFunction(() => document.querySelector('#launch-details').open);
+  await disclosure.locator('summary').click();
+  await page.waitForFunction(() => !document.querySelector('#launch-details').open);
+  return details;
 }
 
 async function runSuite() {
@@ -224,11 +279,14 @@ async function runSuite() {
         const { loadStartedAt } = await pick(page, proxy, { mobile, head: name === 'original' });
         result.loadStartedAt = loadStartedAt;
         await page.locator('#launch-progress').waitFor();
+        assert.equal(await page.locator('#launch-details').evaluate(node => node.open), false, 'Details must start genuinely collapsed');
+        assert.equal(await page.locator('#launch-detail-transfers li').count(), 0, 'A collapsed initial load must not materialize transfer rows');
         if (['cold', 'unknown', 'compressed', 'stall', 'concurrent'].includes(name)) {
           const deadline = Date.now() + 45000;
           while (!run.resources.some(resource => resource.path === wasm && resource.bytes > 0 && resource.controlled) && Date.now() < deadline) await delay(50);
           await page.screenshot({ path: path.join(out, `${name}-streaming.png`), fullPage: mobile });
         }
+        if (['cold', 'unknown', 'compressed', 'mobile'].includes(name)) result.details = await inspectDetails(page);
         if (mobile) await page.screenshot({ path: path.join(out, 'mobile-loading.png'), fullPage: true });
         if (name === 'stall') {
           const deadline = Date.now() + 45000;
@@ -244,6 +302,7 @@ async function runSuite() {
           await page.locator('#launch-status[data-kind="error"]').waitFor({ timeout: 180000 });
           const failed = await snapshot(page); result.failure = failed;
           if (name === 'failure') assert.match(failed.status, /503/, 'Original HTTP error detail must remain actionable');
+          result.details = await inspectDetails(page, { failed: true });
           if (name === 'failure') {
             run.failureObservedAt = Date.now();
             const deadline = Date.now() + 15000;
@@ -265,14 +324,20 @@ async function runSuite() {
         } else {
           await page.locator('#launch-enter:not([disabled])').waitFor({ timeout: 240000 });
           const ready = await snapshot(page); result.ready = ready;
-          assert.equal(ready.value, 1, 'Only actual ready scene should finish the overall progress');
+          assert.equal(ready.value, 1, 'A successful complete selected payload should finish the byte meter; readiness is checked independently');
+          if (name === 'cold' || mobile) result.readyDetails = await inspectDetails(page);
           const controlled = run.resources.filter(resource => resource.controlled && resource.done);
           const decoded = controlled.reduce((sum, resource) => sum + resource.decoded, 0);
           assert.ok(Math.max(...mbValues(ready.bytes)) * 1e6 >= decoded - 120000, 'Displayed decoded MB must include all streamed real assets, not compressed wire length');
           if (name === 'cold') {
-            const required = run.resources.filter(resource => resource.started >= result.loadStartedAt && isSceneAsset(resource.path) && resource.done);
+            const unique = resources => [...resources.reduce((entities, resource) => {
+              const previous = entities.get(resource.path);
+              if (!previous || resource.decoded > previous.decoded) entities.set(resource.path, resource);
+              return entities;
+            }, new Map()).values()];
+            const required = unique(run.resources.filter(resource => resource.started >= result.loadStartedAt && isSceneAsset(resource.path) && resource.done));
             const payload = required.reduce((sum, resource) => sum + resource.decoded, 0);
-            const startup = run.resources.filter(resource => resource.started >= result.loadStartedAt && resource.done && !/\/previews\//.test(resource.path));
+            const startup = unique(run.resources.filter(resource => resource.started >= result.loadStartedAt && resource.done && !/\/previews\//.test(resource.path)));
             const ceiling = startup.reduce((sum, resource) => sum + resource.decoded, 0);
             result.payloadReconciliation = { requiredPayload: payload, allStartupPayload: ceiling, displayed: Math.max(...mbValues(ready.bytes)) * 1e6,
               assets: required.map(({ path, decoded }) => ({ path, decoded })) };
@@ -293,7 +358,7 @@ async function runSuite() {
           }
           if (name === 'cold') result.playback = await enterAndPlayback(page, out);
           else { await page.screenshot({ path: path.join(out, `${name}-ready.png`), fullPage: mobile }); await page.locator('#launch-enter').click(); if (mobile) await raf(page); }
-          if (name === 'mobile') {
+          if (mobile) {
             result.viewport = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth }));
             assert.ok(result.viewport.scroll <= result.viewport.width + 1, 'Mobile scene must not require horizontal document scrolling');
           }
@@ -301,17 +366,28 @@ async function runSuite() {
           assert.deepEqual(networkErrors, [], 'Successful scene load must not lose network failures');
         }
         const active = samples.filter(sample => sample.state === 'loading' && !sample.error);
+        const layout = samples.filter(sample => sample.loadingVisible && sample.byteBox?.height);
+        assert.ok(layout.length > 1, 'A real visible loading interval must be sampled');
+        for (const sample of layout) {
+          assert.deepEqual(sample.byteBox, layout[0].byteBox, 'Actual stage/readiness updates must not relocate or wrap MB');
+          assert.deepEqual(sample.etaBox, layout[0].etaBox, 'Actual stage/readiness updates must not relocate or wrap ETA');
+          assert.equal(sample.byteBox.x, sample.etaBox.x, 'MB and ETA must share a stable left edge');
+        }
+        if (name === 'cold') assert.ok(new Set(layout.map(sample => sample.status)).size > 1, 'The layout regression must observe actual changing scene stages');
         for (const sample of samples) {
-          if (!sample.ready) assert.notEqual(sample.value, 1, 'Downloads/preparation must never impersonate canonical ready');
+          if (sample.value === 1 && !sample.ready) assert.equal(numericEta(sample.eta), false, 'A complete payload cannot pretend to time unfinished scene preparation');
           if (sample.state === 'preparing') assert.equal(numericEta(sample.eta), false, 'Download estimates must not pretend to time CPU/graphics preparation');
         }
         if (name === 'unknown' || name === 'compressed') {
           const transfer = run.resources.find(resource => resource.path === wasm);
           const during = active.filter(sample => sample.at >= transfer.chunks[0].at + 250 && sample.at <= transfer.ended - 250);
           assert.ok(during.length >= 3, 'Unknown/compressed response must remain genuinely streaming across observations');
-          assert.ok(during.every(sample => !numericEta(sample.eta)), 'Unknown active decoded sizes must withhold numeric ETA');
+          assert.ok(during.some(sample => numericEta(sample.eta)), 'The fixed exact selected payload supports real-rate ETA independently of chunked/compressed response headers');
         }
         if (name === 'cold' || name === 'stall') assert.ok(active.some(sample => numericEta(sample.eta)), 'Known streaming downloads must yield a current-download estimate after real rate samples');
+        const maxima = samples.filter(sample => sample.maximum !== null && sample.loadingVisible).map(sample => sample.maximum);
+        assert.ok(maxima.length, 'The selected scene must declare its exact payload maximum');
+        assert.equal(new Set(maxima).size, 1, 'The payload maximum cannot grow or shrink across discovery, streaming, failures or preparation');
         if (name === 'cold') {
           const transfer = run.resources.find(resource => resource.path === wasm);
           const stable = active.filter(sample => sample.at > transfer.chunks[0].at + 2000 && sample.at < transfer.ended - 600 && numericEta(sample.eta));

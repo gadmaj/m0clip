@@ -1,6 +1,7 @@
 /** Browser-local capture transactions and shared scene ownership. */
 import type { TakeMeta, TakeEvent } from './take';
-import { validLook, validShotEdits } from './post';
+import { validLook, validShotEdits, validShotLights } from './post';
+import { validDisplay } from '../render/display';
 import type { RenderModel } from '../sim/protocol';
 import { denseGeometryPartition, validGeometryData, type GeometryData, type GeometryPartition } from '../core/geometry';
 
@@ -52,6 +53,9 @@ export function validMeta(meta: TakeMeta): boolean {
     && Number.isInteger(meta.baseQadr) && (meta.baseQadr === -1 || meta.baseQadr >= 0 && meta.baseQadr + 7 <= meta.nq)
     && Array.isArray(meta.hinges) && meta.hinges.every(h => object(h) && typeof h.name === 'string' && integer(h.qadr) && h.qadr < meta.nq)
     && (meta.sourceTime === undefined || Number.isFinite(meta.sourceTime))
+    && (meta.display === undefined || validDisplay(meta.display))
+    && (meta.flashlight === undefined || typeof meta.flashlight === 'boolean')
+    && (meta.lights === undefined || validShotLights(meta.lights))
     && (meta.look === undefined || validLook(meta.look)) && (meta.edits === undefined || validShotEdits(meta.edits, meta.robot));
 }
 export function sameIdentity(a: TakeMeta, b: TakeMeta | RenderModel): boolean {

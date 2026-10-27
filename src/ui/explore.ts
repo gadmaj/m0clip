@@ -1,6 +1,7 @@
 /** Map inspection controls and browser-local / URL camera bookmarks. */
 import { isTerrain, type TerrainName } from '../sim/terrain';
-import type { SceneDisplay, Appearance, HeadVisual } from '../render/scene';
+import type { Appearance, HeadVisual } from '../render/scene';
+import { DEFAULT_DISPLAY, normalizeDisplay, validDisplay, type SceneDisplay } from '../render/display';
 import { validAppearance } from './view-appearance';
 import type { LookState } from './look';
 import { compatibleBody } from '../characters/catalog';
@@ -14,7 +15,6 @@ export interface SavedView {
   orientation?:[number,number,number,number];noclip?:boolean;
   flight?:{speed:number;hover:boolean};
 }
-const DISPLAY: Required<SceneDisplay> = { textures: true, wireframe: false, characterWireframe: false, map: true, robot: true, decals: true };
 const BOOKMARKS_KEY = 'ume-saved-views-v1', DISPLAY_KEY = 'ume-display';
 type Bookmark={name:string;view:SavedView};
 const TERRAIN_NAMES:Record<string,string>={flat:'Flat ground',rough:'Rough ground',slope:'Slope',stairs:'Stairs',park:'Park'};
@@ -25,10 +25,6 @@ const viewLocation=(view:SavedView)=>{
   return `${terrain} · ${view.robot.replace(/_/g,' ').toUpperCase()}`;
 };
 const vector = (v: unknown): v is [number, number, number] => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
-export const validDisplay = (v: unknown): v is SceneDisplay => !!v && typeof v === 'object'
-  && ['textures', 'wireframe', 'map', 'robot'].every((k) => typeof (v as Record<string, unknown>)[k] === 'boolean')
-  // Old bookmarks and links predate independent character wireframe and decals.
-  && ['decals', 'characterWireframe'].every(k => (v as Record<string, unknown>)[k] === undefined || typeof (v as Record<string, unknown>)[k] === 'boolean');
 
 export function validView(v: unknown): v is SavedView {
   if (!v || typeof v !== 'object') return false;
@@ -86,8 +82,14 @@ function fold(parent: HTMLElement, title: string) {
 }
 
 export class ExplorePanel {
-  private display = { ...DISPLAY };
+  private display = { ...DEFAULT_DISPLAY };
+  private liveDisplay: SceneDisplay | null = null;
+  private shotChanged: (() => void) | null = null;
+  private renderScope!: HTMLElement;
+  private viewScope!: HTMLElement;
+  private readOnly = false;
   private checks = new Map<keyof SceneDisplay, HTMLInputElement>();
+  private liveViewControls: HTMLButtonElement[] = [];
   private bookmarks: Bookmark[] = [];
   private list: HTMLElement;
   private message: HTMLElement;
@@ -104,11 +106,13 @@ export class ExplorePanel {
   }) {
     try {
       const display: unknown = JSON.parse(localStorage.getItem(DISPLAY_KEY) ?? 'null');
-      if (validDisplay(display)) this.display = { ...DISPLAY, ...display, characterWireframe: display.characterWireframe ?? display.wireframe };
+      if (validDisplay(display)) this.display = normalizeDisplay(display);
       const saved = JSON.parse(localStorage.getItem(BOOKMARKS_KEY) ?? '[]');
       if (Array.isArray(saved)) this.bookmarks = saved.filter((v) => typeof v?.name === 'string' && validView(v.view));
     } catch { /* use defaults if a browser preference is damaged */ }
     const render = fold(parent, 'Render controls');
+    this.renderScope = document.createElement('div'); this.renderScope.className = 'sub';
+    this.renderScope.textContent = 'LIVE'; render.append(this.renderScope);
     for (const [key, label] of Object.entries({ textures: 'Textures', wireframe: 'Map wireframe', characterWireframe: 'Character wireframe', map: 'Map geometry', decals: 'Decals and markings', robot: 'Robot' })) {
       const row = document.createElement('label'); row.className = 'lk-check';
       const input = document.createElement('input'); input.type = 'checkbox'; input.checked = this.display[key as keyof SceneDisplay];
@@ -117,10 +121,14 @@ export class ExplorePanel {
     }
     callbacks.display(this.display);
     const views = fold(parent, 'Saved views');
+    this.viewScope = document.createElement('div'); this.viewScope.className = 'sub'; this.viewScope.textContent = 'LIVE';
+    views.append(this.viewScope);
     const name = document.createElement('input'); name.type = 'text'; name.placeholder = 'View name'; name.setAttribute('aria-label', 'View name');
     name.maxLength = 80; name.style.minWidth = '0'; name.style.flex = '1';
     const saveRow = document.createElement('div'); saveRow.className = 'row';
     const save=()=>{
+      const unavailable = this.viewUnavailable();
+      if (unavailable) { this.showMessage(unavailable); return; }
       try{
         const view=callbacks.capture();if(!validView(view))throw new Error('Wait for the scene to finish loading, then save the view again.');
         let number=1;while(this.bookmarks.some(bookmark=>bookmark.name===`View ${number}`))number++;
@@ -130,7 +138,9 @@ export class ExplorePanel {
       }catch(error){this.showMessage(error instanceof Error?error.message:String(error))}
     };
     name.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();event.stopPropagation();save()}};
-    saveRow.append(name,button('Save view',save));
+    const saveButton = button('Save view', save);
+    this.liveViewControls.push(saveButton);
+    saveRow.append(name, saveButton);
     this.search=document.createElement('input');this.search.type='search';this.search.className='saved-view-filter';
     this.search.placeholder='Search names, map files or robots';this.search.setAttribute('aria-label','Search saved views');this.search.setAttribute('aria-controls','saved-view-list');
     this.search.oninput=()=>{this.editing=null;this.renderBookmarks()};
@@ -149,9 +159,13 @@ export class ExplorePanel {
     const help = document.createElement('p'); help.className = 'saved-view-state';
     help.textContent = 'Saves the camera, robot appearance, lighting and flight settings. Press C to follow the robot again. Links need the same map and robot assets on the receiving server.';
     const shareRow = document.createElement('div'); shareRow.className = 'row';
-    shareRow.append(button('Share current view', () => {
+    const shareButton = button('Share current view', () => {
+      const unavailable = this.viewUnavailable();
+      if (unavailable) { this.showMessage(unavailable); return; }
       try{void this.share(callbacks.capture())}catch(error){this.showMessage(error instanceof Error?error.message:String(error))}
-    }));
+    });
+    this.liveViewControls.push(shareButton);
+    shareRow.append(shareButton);
     views.append(saveRow, shareRow,
       this.link,this.message,this.undo,this.search,this.results,this.list,help);
     this.renderBookmarks();
@@ -160,15 +174,61 @@ export class ExplorePanel {
   getDisplay(): SceneDisplay { return { ...this.display }; }
 
   setDisplay(display: SceneDisplay) {
-    this.display = { ...DISPLAY, ...display, characterWireframe: display.characterWireframe ?? display.wireframe };
+    if (this.readOnly) return;
+    this.display = normalizeDisplay(display);
     for (const [k, checkbox] of this.checks) checkbox.checked = this.display[k];
-    localStorage.setItem(DISPLAY_KEY, JSON.stringify(this.display));
+    if (!this.liveDisplay) localStorage.setItem(DISPLAY_KEY, JSON.stringify(this.display));
     this.callbacks.display(this.display);
+    this.shotChanged?.();
+  }
+
+  beginShotEdit(display: SceneDisplay, changed: () => void): void {
+    if (this.readOnly) return;
+    this.liveDisplay ??= this.getDisplay();
+    this.shotChanged = null;
+    this.setDisplay(display);
+    this.shotChanged = changed;
+    this.renderScope.textContent = 'SHOT';
+    this.viewScope.textContent = 'LIVE · Close timeline to restore a saved view.';
+    this.syncViewControls();
+  }
+
+  endShotEdit(): void {
+    if (this.readOnly) return;
+    const live = this.liveDisplay;
+    this.shotChanged = null;
+    if (live) this.setDisplay(live);
+    this.liveDisplay = null;
+    this.renderScope.textContent = 'LIVE';
+    this.viewScope.textContent = 'LIVE';
+    this.syncViewControls();
+  }
+
+  setReadOnly(on: boolean): void {
+    this.readOnly = on;
+    for (const checkbox of this.checks.values()) checkbox.disabled = on;
+    this.syncViewControls();
+  }
+
+  private viewUnavailable(): string | null {
+    return this.readOnly ? 'Saved views are locked during export.'
+      : this.liveDisplay ? 'LIVE · Close timeline to save or restore a view.' : null;
+  }
+
+  private syncViewControls(): void {
+    const reason = this.viewUnavailable();
+    for (const control of [...this.liveViewControls, ...this.list.querySelectorAll<HTMLButtonElement>('.saved-view-restore')]) {
+      control.disabled = !!reason;
+      if (reason) control.setAttribute('aria-description', reason);
+      else control.removeAttribute('aria-description');
+    }
   }
 
   showMessage(text:string){this.message.textContent=text;}
 
   async restoreView(view:SavedView,restore=this.callbacks.restore) {
+    const unavailable = this.viewUnavailable();
+    if (unavailable) { this.showMessage(unavailable); return; }
     const request=++this.restoreRequest;this.showMessage('Restoring view…');
     try{await restore(view);if(request===this.restoreRequest)this.showMessage('View restored.');}
     catch(error){if(request===this.restoreRequest)this.showMessage(error instanceof Error?error.message:String(error));}
@@ -229,6 +289,9 @@ export class ExplorePanel {
       remove.setAttribute('aria-label', `Delete ${bookmark.name}`);
       const actions=document.createElement('div');actions.className='row saved-view-actions';actions.append(share,rename,remove);
       row.append(restore,actions);this.list.append(row);
+      restore.disabled = this.readOnly || !!this.liveDisplay;
+      const reason = this.viewUnavailable();
+      if (reason) restore.setAttribute('aria-description', reason);
     });
   }
 
