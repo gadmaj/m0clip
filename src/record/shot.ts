@@ -77,6 +77,54 @@ function smooth3(a: Float64Array, n: number, dt: number, tau: number) {
 
 export interface CamAt { pos: THREE.Vector3; target: THREE.Vector3 }
 
+/** Reproduce real viewport framing without requiring a recording. */
+export function grabShotView(camPos: THREE.Vector3, target: THREE.Vector3, baseZOffset = 0):
+    Pick<Shot, "distance" | "azimuth" | "elevation" | "height"> {
+  const x = camPos.x - target.x, y = camPos.y - target.y, z = camPos.z - target.z;
+  const r = Math.hypot(x, y, z) || 1;
+  return {
+    distance: +r.toFixed(2),
+    azimuth: Math.round(Math.atan2(y, x) / D2R),
+    elevation: Math.round(Math.asin(Math.max(-1, Math.min(1, z / r))) / D2R),
+    height: +(target.z - baseZOffset).toFixed(2),
+  };
+}
+
+function offsetPosition(shot: Shot, target: THREE.Vector3, pos: THREE.Vector3, phase: number) {
+  const az = (shot.azimuth + phase) * D2R, el = shot.elevation * D2R;
+  pos.set(target.x + shot.distance * Math.cos(el) * Math.cos(az),
+          target.y + shot.distance * Math.cos(el) * Math.sin(az),
+          target.z + shot.distance * Math.sin(el));
+}
+
+function applyShotLens(cam: THREE.PerspectiveCamera, shot: Shot, aspect: number) {
+  cam.aspect = aspect;
+  cam.fov = vfov(shot.focal, shot.sensor, aspect);
+  cam.updateProjectionMatrix();
+  cam.updateMatrixWorld();
+}
+
+/** Preview the current scene, not an invented take or a moving camera track.
+ * Offset modes use the live base position at phase zero; viewport mode copies the real camera. */
+export function applyStaticShot(cam: THREE.PerspectiveCamera, shot: Shot,
+                                base: readonly [number, number, number], aspect: number,
+                                viewportCamera?: THREE.PerspectiveCamera): void {
+  if (shot.mode === "viewport") {
+    if (viewportCamera) {
+      cam.position.copy(viewportCamera.position);
+      cam.quaternion.copy(viewportCamera.quaternion);
+      cam.up.copy(viewportCamera.up);
+    }
+  } else {
+    cam.up.set(0, 0, 1);
+    // Reuse the camera position as scratch storage; no per-frame temporary vectors.
+    cam.position.set(base[0], base[1], shot.height);
+    offsetPosition(shot, cam.position, cam.position, 0);
+    cam.lookAt(base[0], base[1], shot.height);
+  }
+  applyShotLens(cam, shot, aspect);
+}
+
 /** The camera path of one shot over one take, precomputed per take frame and interpolated. */
 export class ShotPath {
   private target: Float64Array;          // n·3 look-at point per frame
@@ -131,11 +179,8 @@ export class ShotPath {
     lerp(this.target, o.target);
     if (this.pos) { lerp(this.pos, o.pos); return o; }
     const s = this.shot;
-    const az = (s.azimuth + (s.mode === "orbit" && s.orbitPeriod ? 360 * (time - this.t0) / s.orbitPeriod : 0)) * D2R;
-    const el = s.elevation * D2R;
-    o.pos.set(o.target.x + s.distance * Math.cos(el) * Math.cos(az),
-              o.target.y + s.distance * Math.cos(el) * Math.sin(az),
-              o.target.z + s.distance * Math.sin(el));
+    offsetPosition(s, o.target, o.pos,
+      s.mode === "orbit" && s.orbitPeriod ? 360 * (time - this.t0) / s.orbitPeriod : 0);
     return o;
   }
 
@@ -146,21 +191,12 @@ export class ShotPath {
     cam.position.copy(p.pos);
     cam.lookAt(p.target);
     if(this.orientation){const[i,f]=this.take.locate(time);cam.quaternion.fromArray(cameraOrientationAt(this.orientation,i,Math.min(i+1,this.take.n-1),f));}
-    cam.aspect = aspect;
-    cam.fov = vfov(this.shot.focal, this.shot.sensor, aspect);
-    cam.updateProjectionMatrix();
-    cam.updateMatrixWorld();
+    applyShotLens(cam, this.shot, aspect);
   }
 
   /** Framing that reproduces a viewport camera at `time`: distance / azimuth / elevation / height. */
   static grab(take: Take, time: number, camPos: THREE.Vector3, target: THREE.Vector3):
       Pick<Shot, "distance" | "azimuth" | "elevation" | "height"> {
-    const d = camPos.clone().sub(target), r = d.length() || 1;
-    return {
-      distance: +r.toFixed(2),
-      azimuth: Math.round(Math.atan2(d.y, d.x) / D2R),
-      elevation: Math.round(Math.asin(Math.max(-1, Math.min(1, d.z / r))) / D2R),
-      height: +(target.z - (take.basePosAt(time)[2] - take.basePosAt(0)[2])).toFixed(2),
-    };
+    return grabShotView(camPos, target, take.basePosAt(time)[2] - take.basePosAt(0)[2]);
   }
 }

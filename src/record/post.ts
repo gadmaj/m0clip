@@ -1,5 +1,6 @@
 /** Renderer-only shot edits. Recorded geometry, joint tracks and live preferences stay unchanged. */
 import type { Appearance, HeadVisual } from '../render/scene';
+import { normalizeDisplay, validDisplay, type SceneDisplay } from '../render/display';
 import type { LookState } from '../ui/look';
 import { validAppearance } from '../ui/view-appearance';
 import { compatibleBody } from '../characters/catalog';
@@ -24,6 +25,8 @@ export interface ShotEdits {
   appearance?: Appearance;
   sourceHead?: HeadVisual;
   look?: LookState;
+  display?: SceneDisplay;
+  flashlight?: boolean;
   lights?: ShotLight[];
 }
 
@@ -72,12 +75,27 @@ export function validShotLights(v: unknown): v is ShotLight[] {
 /** Only cosmetic choices supported by the recorded robot may be applied to its fixed tracks. */
 export function validShotEdits(v: unknown, robot: string): v is ShotEdits {
   if (!object(v) || v.version !== 1 || typeof robot !== 'string'
-    || !Object.keys(v).every(key => ['version', 'appearance', 'sourceHead', 'look', 'lights'].includes(key))) return false;
+    || !Object.keys(v).every(key => ['version', 'appearance', 'sourceHead', 'look', 'display', 'flashlight', 'lights'].includes(key))) return false;
   if (v.appearance !== undefined && (!validAppearance(v.appearance)
     || !compatibleBody(v.appearance.sourceBody, robot))) return false;
   if (v.sourceHead !== undefined && (v.sourceHead !== 'stock' && v.sourceHead !== 'ghost'
     || v.sourceHead === 'ghost' && !robot.startsWith('r1'))) return false;
   if (v.look !== undefined && !validLook(v.look)) return false;
+  if (v.display !== undefined && !validDisplay(v.display)) return false;
+  if (v.flashlight !== undefined && typeof v.flashlight !== 'boolean') return false;
   if (v.lights !== undefined && !validShotLights(v.lights)) return false;
   return true;
+}
+
+/** Edits override the initial recording; only legacy takes use the captured live baseline. */
+export function effectiveVisualState(
+  meta: Pick<ShotEdits, 'display' | 'flashlight' | 'lights'> & { edits?: ShotEdits },
+  fallback: Pick<ShotEdits, 'display' | 'flashlight'> = {},
+): { display: Required<SceneDisplay>; flashlight: boolean; lights: ShotLight[] } {
+  return {
+    display: normalizeDisplay(meta.edits?.display ?? meta.display ?? fallback.display),
+    flashlight: meta.edits?.flashlight ?? meta.flashlight ?? fallback.flashlight ?? false,
+    // Old takes have no shot lights, regardless of the user's current live rig.
+    lights: structuredClone(meta.edits?.lights ?? meta.lights ?? []),
+  };
 }

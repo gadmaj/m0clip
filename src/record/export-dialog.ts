@@ -15,14 +15,15 @@ import { fmtTime } from "./timeline";
 import { VisualPicker } from "../ui/visual-picker";
 
 export interface ExportHost {
-  take(): Take;
-  range(): [number, number];
+  /** Active recorded review only; setup for a live scene has no take or range. */
+  take(): Take | null;
+  range(): [number, number] | null;
   shot: Shot;
   /** the shot or output aspect changed: rebuild the camera path, repaint the preview */
   shotChanged(): void;
   /** framing of the free viewport camera right now */
   grabView(): Pick<Shot, "distance" | "azimuth" | "elevation" | "height">;
-  path(): ShotPath;
+  path(): ShotPath | null;
   stage(): Stage;
   setExporting(on: boolean): void;
   glb(fps: number, camera: boolean, floor: boolean): Promise<Blob>;
@@ -141,7 +142,8 @@ export class ExportDialog {
   private tab: "video" | "data" = "video";
   private out: OutputPrefs;
   private supported: Set<VideoCodec> | null = null;
-  private probedKey = "";
+  private probeRequest: { key: string; result: Promise<Set<VideoCodec>> } | null = null;
+  private renderVersion = 0;
   private busy: AbortController | null = null;
   private status!: HTMLElement;
   private pickers: { picker: VisualPicker; select: HTMLSelectElement }[] = [];
@@ -197,7 +199,8 @@ export class ExportDialog {
   }
 
   private persist() {
-    localStorage.setItem(PREFS_KEY, JSON.stringify({ out: this.out, shot: this.host.shot }));
+    const shot = this.host.take() ? loadPrefs().shot : this.host.shot;
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ out: this.out, shot }));
   }
 
   private show(tab: "video" | "data") {
@@ -208,10 +211,14 @@ export class ExportDialog {
   }
 
   private render() {
+    ++this.renderVersion;
     for (const { picker } of this.pickers) picker.dispose();
     this.pickers = [];
     this.body.replaceChildren();
     this.status = h("div", "x-status");
+    this.body.append(h("p", "x-note", this.host.take()
+      ? "Motion preview · recorded take."
+      : "LIVE · Static camera preview. Motion paths and exports need a take."));
     if (this.tab === "video") this.renderVideo(); else this.renderData();
     this.body.append(this.status);
   }
@@ -238,6 +245,7 @@ export class ExportDialog {
   }
 
   private shotEdit(patch: Partial<Shot>, rerender = false) {
+    if (this.busy) return;
     Object.assign(this.host.shot, patch);
     this.host.shotChanged();
     this.persist();
@@ -263,11 +271,13 @@ export class ExportDialog {
   // ---- video tab -------------------------------------------------------------
   private renderVideo() {
     const shot = this.host.shot, o = this.out;
+    const key = `${o.width}x${o.height}@${o.fps}`;
+    if (this.probeRequest?.key !== key) this.supported = null;
 
     const cam = this.section("Camera");
     const seg = h("div", "seg");
     for (const [m, label, title] of [
-      ["viewport", "Viewport", "Camera movement recorded in the take"],
+      ["viewport", "Viewport", this.host.take() ? "Camera movement recorded in the take" : "Use the current viewport camera"],
       ["follow", "Follow", "Track the robot from a fixed offset"],
       ["orbit", "Orbit", "Track and circle the robot"],
       ["fixed", "Fixed", "Camera fixed at the robot's position at range start"]] as [ShotMode, string, string][]) {
@@ -358,9 +368,14 @@ export class ExportDialog {
       field("Frame rate", select(FPS.map((f) => [f, `${f} fps`] as [number, string]), o.fps, (v) => { o.fps = v; this.changed(true); })),
       field("Speed", select(SPEEDS.map((s) => [s, s === 1 ? "1× real time" : `${s}×`] as [number, string]), o.speed,
                             (v) => { o.speed = v; this.changed(true); })));
-    const [t0, t1] = this.host.range(), whole = t0 < 1e-6 && t1 >= this.host.take().duration - 1e-6;
-    outS.append(field("Range", h("span", "x-ro", `${fmtTime(t0)} → ${fmtTime(t1)} s` +
-      (whole ? " (whole take — set In / Out on the timeline)" : ""))));
+    const take = this.host.take(), range = this.host.range();
+    const rangeText = range && take
+      ? `${fmtTime(range[0])} → ${fmtTime(range[1])} s` +
+        (range[0] < 1e-6 && range[1] >= take.duration - 1e-6 ? " (whole take — set In / Out on the timeline)" : "")
+      : "Unavailable until a recorded take is open.";
+    const rangeValue = h("span", "x-ro", rangeText);
+    rangeValue.setAttribute("aria-disabled", String(!range || !take));
+    outS.append(field("Range", rangeValue));
 
     const fmt = this.section("Format");
     const codecSel = h("select");
@@ -399,35 +414,44 @@ export class ExportDialog {
       field("Background", bg, h("span", "u", canAlpha(o) ? "" : "PNG or WebM VP9 for alpha")),
       field("", floorLbl));
 
-    const job = this.job();
-    const N = frameCount(job);
-    const summary = h("div", "x-summary",
-      `${o.width} × ${o.height} · ${o.fps} fps · ${fmtTime(N / o.fps)} s → ${N} frames`);
+    const job = this.job(), frames = job ? frameCount(job) : null;
+    const summary = h("div", "x-summary", frames !== null
+      ? `${o.width} × ${o.height} · ${o.fps} fps · ${fmtTime(frames / o.fps)} s → ${frames} frames`
+      : `${o.width} × ${o.height} · ${o.fps} fps · record a take to export`);
     const go = btn("Render video", "btn primary x-go", () => void this.renderVideoJob());
+    go.disabled = !job || !this.host.path();
+    if (go.disabled) go.title = "Open a recorded take to render video.";
     const foot = h("div", "x-foot");
     foot.append(summary, go);
     this.body.append(foot);
     void this.probe(fillCodecs);
   }
 
-  /** Probe encoder support once per size / rate (async; refills the codec list). */
+  /** Reuse each pending probe, but refill only the current mounted controls. */
   private async probe(refill: () => void) {
-    const key = `${this.out.width}x${this.out.height}@${this.out.fps}`;
-    if (key === this.probedKey) return;
-    this.probedKey = key;
-    this.supported = await encodableCodecs(this.out.width, this.out.height, this.out.fps);
-    if (this.probedKey === key && this.tab === "video") refill();
-    if (!this.supported.size) this.say("This browser has no WebCodecs video encoder — PNG sequence still works.", true);
+    const key = `${this.out.width}x${this.out.height}@${this.out.fps}`, version = this.renderVersion;
+    if (this.probeRequest?.key !== key)
+      this.probeRequest = { key, result: encodableCodecs(this.out.width, this.out.height, this.out.fps) };
+    const supported = await this.probeRequest.result;
+    if (this.probeRequest.key !== key) return;
+    this.supported = supported;
+    if (this.isOpen && this.tab === "video" && !this.busy && this.renderVersion === version) {
+      refill();
+      if (!supported.size) this.say("This browser has no WebCodecs video encoder — PNG sequence still works.", true);
+    }
   }
 
   private changed(rerender = false) {
+    if (this.busy) return;
     this.persist();
     this.host.shotChanged();
     if (rerender) this.render();
   }
 
-  private job(): VideoJob {
-    const [t0, t1] = this.host.range(), o = this.out;
+  private job(): VideoJob | null {
+    const range = this.host.range();
+    if (!this.host.take() || !range) return null;
+    const [t0, t1] = range, o = this.out;
     return { width: o.width, height: o.height, fps: o.fps, speed: o.speed, t0, t1, container: o.container,
              codec: o.codec, quality: o.quality, transparent: o.transparent && canAlpha(o), floor: o.floor };
   }
@@ -437,25 +461,34 @@ export class ExportDialog {
     this.status.classList.toggle("err", err);
   }
 
+  /** Native disabled state also blocks keyboard edits while an encoder/export reads the scene. */
+  private freezeControls(): () => void {
+    const controls = [...this.root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button")]
+      .map(control => ({ control, disabled: control.disabled }));
+    for (const { control } of controls) control.disabled = true;
+    for (const { picker } of this.pickers) picker.sync();
+    return () => {
+      for (const { control, disabled } of controls) control.disabled = disabled;
+    };
+  }
   private async renderVideoJob() {
+    if (this.busy) return;
     const job = this.job();
+    if (!job || !this.host.path()) return this.say("Open a recorded take to render video.", true);
     if (job.container !== "png" && this.supported && !this.supported.has(job.codec))
       return this.say(`${CODEC_LABEL[job.codec]} at ${job.width} × ${job.height} is not available in this browser.`, true);
     const ac = new AbortController();
     this.busy = ac;
-    for (const { picker, select } of this.pickers) {
-      select.disabled = true;
-      picker.sync();
-    }
+    const thaw = this.freezeControls();
     this.root.classList.add("busy");
     const foot = this.body.querySelector(".x-foot")!;
     const bar = h("div", "x-progress"), fill = h("i"), txt = h("span");
     bar.append(fill);
     const cancel = btn("Cancel", "btn", () => ac.abort());
     foot.replaceChildren(bar, txt, cancel);
-    this.host.setExporting(true);
     const t0 = performance.now();
     try {
+      this.host.setExporting(true);
       const blob = await renderVideo(job, this.host.stage(), (p) => {
         fill.style.width = `${(100 * p.frame / p.frames).toFixed(1)}%`;
         const eta = (p.frames - p.frame) / Math.max(p.fps, 1e-3);
@@ -470,6 +503,7 @@ export class ExportDialog {
       this.busy = null;
       this.root.classList.remove("busy");
       this.host.setExporting(false);
+      thaw();
       const msg = this.status.textContent, err = this.status.classList.contains("err");
       this.render();
       this.say(msg ?? "", err);
@@ -478,12 +512,24 @@ export class ExportDialog {
 
   // ---- data tab ----------------------------------------------------------------
   private renderData() {
-    const o = this.out, take = this.host.take();
-    const [t0, t1] = this.host.range();
-    const rate = (v: number, set: (v: number) => void) => select(
-      [...FPS.map((f) => [f, `${f} fps`] as [number, string]),
-       [Math.round(1 / take.dt), `${Math.round(1 / take.dt)} fps (every recorded frame)`] as [number, string]]
-        .filter((x, i, a) => a.findIndex((y) => y[0] === x[0]) === i), v, set);
+    const o = this.out, take = this.host.take(), range = this.host.range();
+    const recorded = !!take && !!range && !!this.host.path();
+    const rate = (v: number, set: (v: number) => void) => {
+      const options: [number, string][] = FPS.map((f) => [f, `${f} fps`]);
+      if (take) {
+        const fps = Math.round(1 / take.dt), existing = options.findIndex(([value]) => value === fps);
+        if (existing >= 0) options[existing] = [fps, `${fps} fps (every recorded frame)`];
+        else options.push([fps, `${fps} fps (every recorded frame)`]);
+      }
+      if (!options.some(([value]) => value === v)) options.push([v, `${v} fps`]);
+      const control = select(options, v, set);
+      if (!take) {
+        const unavailable = new Option("Every recorded frame — record a take first", "recorded");
+        unavailable.disabled = true;
+        control.add(unavailable);
+      }
+      return control;
+    };
 
     const glb = this.section("Blender scene", ".glb · glTF 2.0");
     const cam = h("input"), floor = h("input");
@@ -502,27 +548,36 @@ export class ExportDialog {
       this.action("Export .glb", async () => {
         const blob = await this.host.glb(o.glbFps, o.glbCamera, o.glbFloor);
         this.host.save(blob, "glb");
-        return `Saved ${(blob.size / 1e6).toFixed(1)} MB (${fmtTime(t1 - t0)} s at ${o.glbFps} fps).`;
-      }));
+        return `Saved ${(blob.size / 1e6).toFixed(1)} MB (${fmtTime(range![1] - range![0])} s at ${o.glbFps} fps).`;
+      }, recorded));
 
     const csv = this.section("Motion CSV", "base pose + joint angles");
-    const names = csvJointNames(take.meta);
+    const names = take ? csvJointNames(take.meta) : null;
+    const jointOrder = names
+      ? this.details("Joint order", names.map((n, i) => `${i + 8}. ${n}`).join("\n"))
+      : h("p", "x-note", "Joint order is unavailable until a recorded take is open.");
+    if (!names) jointOrder.setAttribute("aria-disabled", "true");
     csv.append(field("Rate", rate(o.csvFps, (v) => { o.csvFps = v; this.persist(); })),
-      h("p", "x-note", `One row per frame: base position (3), base quaternion x y z w (4), then ${names.length} ` +
-        "joint angles in radians, no header. Opens again here under Reference clip (at the same fps) and in " +
+      h("p", "x-note", "One row per frame: base position (3), base quaternion x y z w (4), then " +
+        (names ? `${names.length} joint angles` : "recorded joint angles") +
+        " in radians, no header. Opens again here under Reference clip (at the same fps) and in " +
         "retargeting tools that read this layout."),
-      this.details("Joint order", names.map((n, i) => `${i + 8}. ${n}`).join("\n")),
+      jointOrder,
       this.action("Export .csv", async () => {
         const text = this.host.csv(o.csvFps);
         this.host.save(new Blob([text], { type: "text/csv" }), `${o.csvFps}fps.csv`);
         return `Saved ${text.split("\n").length - 1} rows.`;
-      }));
+      }, recorded));
 
     const tk = this.section("Take file", ".take.zip");
     tk.append(h("p", "x-note", "Save the whole recording: motion, inputs and camera. Reopen with Recording › Open take. " +
       "Requires the same robot model and terrain loaded."),
-      this.action("Save take", async () => { await this.host.saveTake(); return "Saved."; }));
-    this.body.append(h("div", "x-range", `Range ${fmtTime(t0)} → ${fmtTime(t1)} s (set In / Out on the timeline)`));
+      this.action("Save take", async () => { await this.host.saveTake(); return "Saved."; }, recorded));
+    const rangeLabel = h("div", "x-range", range && take
+      ? `Range ${fmtTime(range[0])} → ${fmtTime(range[1])} s (set In / Out on the timeline)`
+      : "Range unavailable · open a recorded take to export or save.");
+    rangeLabel.setAttribute("aria-disabled", String(!range || !take));
+    this.body.append(rangeLabel);
   }
 
   private details(summary: string, text: string): HTMLElement {
@@ -531,16 +586,13 @@ export class ExportDialog {
     return d;
   }
 
-  private action(label: string, run: () => Promise<string>): HTMLElement {
+  private action(label: string, run: () => Promise<string>, available: boolean): HTMLElement {
     const row = h("div", "x-act");
     const b = btn(label, "btn primary", async () => {
-      if (this.busy) return;
+      if (this.busy || !available || !this.host.take() || !this.host.range() || !this.host.path()) return;
       this.busy = new AbortController();
       this.root.classList.add("busy");
-      const controls = [...this.root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button")]
-        .map(control => ({ control, disabled: control.disabled }));
-      for (const { control } of controls) control.disabled = true;
-      for (const { picker } of this.pickers) picker.sync();
+      const thaw = this.freezeControls();
       let message = "", failed = false;
       this.say("Working…");
       try {
@@ -552,11 +604,13 @@ export class ExportDialog {
         this.busy = null;
         this.root.classList.remove("busy");
         this.host.setExporting(false);
+        thaw();
         this.render();
-        for (const { control, disabled } of controls) control.disabled = disabled;
         this.say(message, failed);
       }
     });
+    b.disabled = !available;
+    if (!available) b.title = "Open a recorded take to export or save.";
     row.append(b);
     return row;
   }

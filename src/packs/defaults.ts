@@ -11,7 +11,8 @@ function settings(): Promise<IDBDatabase> {
   });
 }
 
-export async function installDefaultPacks(existing: PackMetadata[], progress: (message: string) => void): Promise<PackMetadata[]> {
+export async function installDefaultPacks(existing: PackMetadata[], progress: (message: string) => void,
+    fetchMetadata: (url: string) => Promise<Response> = fetch): Promise<PackMetadata[]> {
   const db = await settings();
   const key = 'r1-default-v1';
   try {
@@ -22,7 +23,7 @@ export async function installDefaultPacks(existing: PackMetadata[], progress: (m
     });
     if (installed) return existing;
     progress('Preparing the default R1 policy catalog…');
-    const response = await fetch('/assets/packs/r1-default-v1.json');
+    const response = await fetchMetadata('/assets/packs/r1-default-v1.json');
     if (!response.ok) throw new Error(`Default catalog: HTTP ${response.status}`);
     const catalog = await response.json() as StoredPack[];
     if (!Array.isArray(catalog) || !catalog.length) throw new Error('Default catalog contains no policy packs');

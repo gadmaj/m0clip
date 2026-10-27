@@ -11,10 +11,12 @@ import type { TransferUpdate } from "../loading/transfers";
 import type { FsmState } from "./fsm";
 import type { TerrainName } from "./terrain";
 import type { FrameGeometryLayout } from './geometry-frames';
+import type { StartupAssetCatalogue, WorkerAssetPlan } from '../loading/asset-plan';
 
 // ---- main -> worker --------------------------------------------------
 export type ToWorker =
-  | { t: "init"; robot?: string; robotExplicit?: boolean; terrain?: TerrainName; policy?: string; loadingId?: number }  // explicit robot selection must not fall back to another model
+  | { t: "init"; robot?: string; robotExplicit?: boolean; terrain?: TerrainName; policy?: string; loadingId?: number; catalogue?: StartupAssetCatalogue }  // explicit robot selection must not fall back to another model
+  | { t: 'loadingProceed'; generation: number; token: string }
   | { t: "loadingFinished"; generation: number }
   | { t: "policy"; name: string }
   | { t: "cycle"; step: 1 | -1 }
@@ -123,6 +125,7 @@ export interface InspectMsg {
 
 export type FromWorker =
   | { t: "loading"; generation: number; updates: TransferUpdate[] }
+  | { t: 'loadingPlan'; plan: WorkerAssetPlan }
   | {t:'viewReady';request:number;robot:string;terrain:TerrainName}
   | { t: 'robotPlaced' }
   | { t: 'robotPlacementFailed'; msg: string }

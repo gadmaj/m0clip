@@ -26,6 +26,7 @@
  * 25 and 50 fps); the Air then blends the whole 135-col row back to the stance row over transit_length (25 ticks,
  * a = 1 - k/25) and exits to 801; 550 exits to 802 right after the last row.
  */
+import { fetchAsset } from '../prepared-assets';
 
 export type Quat = [number, number, number, number];   // wxyz
 
@@ -99,7 +100,7 @@ export class Task137 {
 
 /** Parse a CSV into raw rows (no normalisation). */
 export async function loadRows(url: string): Promise<Float32Array[]> {
-  const r = await fetch(url);
+  const r = await fetchAsset(url);
   if (!r.ok) throw new Error(`failed to fetch ${url}: ${r.status}`);
   const rows: Float32Array[] = [];
   for (const line of (await r.text()).split("\n")) {

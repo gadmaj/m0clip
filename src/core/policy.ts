@@ -4,6 +4,7 @@
  * mimic p_obs+cmd) use OnnxSession directly with named feeds.
  */
 import * as ort from "onnxruntime-web/wasm";
+import { fetchAsset } from './prepared-assets';
 
 let ortConfigured = false;
 function configureOrt() {
@@ -17,7 +18,7 @@ function configureOrt() {
 
 async function loadSession(url: string): Promise<ort.InferenceSession> {
   configureOrt();
-  const buf = await fetch(url).then((r) => {
+  const buf = await fetchAsset(url).then((r) => {
     if (!r.ok) throw new Error(`failed to fetch policy ${url}: ${r.status}`);
     return r.arrayBuffer();
   });

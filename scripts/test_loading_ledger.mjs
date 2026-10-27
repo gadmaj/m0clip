@@ -1,56 +1,96 @@
-/** Concurrent payloads, unknown sizes, stale generations and expiring download estimates. */
+/** Fixed unique payload maximum, selected preflight bodies, retries and real rate estimates. */
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 
+globalThis.location = new URL('https://scene.test/');
 const result = await build({ entryPoints: ['src/loading/progress.ts'], bundle: true, platform: 'node', format: 'cjs', write: false });
 const module = { exports: {} };
 new Function('module', result.outputFiles[0].text)(module);
 const { SceneProgress } = module.exports;
-const transfer = (id, loaded, total, state = 'loading') => ({ id, url: `https://scene.test/${id}`, loaded, total, state });
+const transfer = (id, url, loaded, total, state = 'loading') => ({ id, url, loaded, total, state });
 const progress = new SceneProgress();
 const first = progress.begin(0);
-progress.update(first, [transfer('page:map', 1_000_000, 4_000_000), transfer('worker:model', 2_000_000, 8_000_000)], 500);
-let value = progress.snapshot(1_000);
-assert.equal(value.loaded, 3_000_000);
-assert.equal(value.knownTotal, 12_000_000);
-assert.equal(value.active, 2);
-assert.equal(value.etaSeconds, null, 'A short initial sample must not invent an estimate');
-progress.update(first, [transfer('page:map', 2_000_000, 4_000_000), transfer('worker:model', 4_000_000, 8_000_000)], 2_000);
-value = progress.snapshot(2_000);
-assert.equal(value.etaSeconds, 2, 'Concurrent remaining bytes share one observed aggregate rate');
-progress.update(first, [transfer('page:map', 4_000_000, 4_000_000, 'done'), transfer('worker:model', 5_000_000, null)], 2_500);
-value = progress.snapshot(2_500);
-assert.equal(value.loaded, 9_000_000);
-assert.equal(value.knownTotal, 9_000_000, 'An unknown body contributes only its actual received minimum');
-assert.equal(value.unknown, 1);
-assert.equal(value.etaSeconds, null, 'Unknown remaining bytes cannot have a finish estimate');
-progress.update(first, [transfer('worker:model', 8_000_000, 8_000_000, 'done')], 3_000);
-progress.update(first, [transfer('worker:model', 9_000_000, 10_000_000)], 3_100);
-value = progress.snapshot(3_100);
-assert.equal(value.loaded, 12_000_000, 'A delayed batch cannot resurrect a terminal transfer');
+progress.update(first, [transfer('metadata', '/metadata.json', 100, 100, 'done')], 100);
+assert.equal(progress.snapshot(500).frozen, false);
+assert.equal(progress.snapshot(1500).etaSeconds, null, 'Planning cannot estimate an unknown final payload');
+progress.prepared(first, [{ url: 'https://external.test/model.mdl', bytes: 200 }], 1600);
+progress.freeze(first, [{ url: '/map.glb', bytes: 4_000_000 }, { url: '/model.zip', bytes: 8_000_000 },
+  { url: 'https://external.test/model.mdl', bytes: 200 }], 1600);
+let value = progress.snapshot(1600);
+assert.equal(value.knownTotal, 12_000_300, 'Actual preflight metadata joins the selected fixed payload exactly once');
+assert.equal(value.loaded, 300, 'Retained external bytes already count as consumed');
+assert.equal(value.frozen, true);
+assert.equal([...progress.transfers()].length, 2, 'Planning must not invent transfer records for unrequested model/map URLs');
+assert.equal(value.active, 0, 'Planned inventory is not an active HTTP transaction');
+assert.throws(() => progress.freeze(first, [], 1700), /already fixed/);
+progress.update(first, [transfer('page:map', '/map.glb', 1_000_000, null),
+  transfer('worker:model', '/model.zip', 2_000_000, null)], 2000);
+value = progress.snapshot(2000);
+assert.equal(value.loaded, 3_000_300);
+assert.equal(value.knownTotal, 12_000_300, 'Unknown HTTP length cannot grow or shrink the catalogue maximum');
+progress.update(first, [transfer('page:map', '/map.glb', 2_000_000, null),
+  transfer('worker:model', '/model.zip', 4_000_000, null)], 4000);
+value = progress.snapshot(4000);
+assert.ok(value.etaSeconds > 0, 'Exact selected payload permits ETA even for compressed/chunked response headers');
+progress.update(first, [transfer('duplicate:map', 'https://scene.test/map.glb#same-entity', 2_000_000, 4_000_000)], 4200);
+assert.equal(progress.snapshot(4200).loaded, 6_000_300, 'Page/worker/cache/retry observations cannot count an entity twice');
+progress.update(first, [transfer('page:map', '/map.glb', 4_000_000, 4_000_000, 'done'),
+  transfer('worker:model', '/model.zip', 5_000_000, null, 'failed')], 4500);
+value = progress.snapshot(4500);
+assert.equal(value.loaded, 9_000_300);
+assert.equal(value.knownTotal, 12_000_300, 'Failed optional entities retain their frozen unreceived remainder');
+assert.equal(value.remaining, 3_000_000);
+progress.update(first, [transfer('worker:model', '/model.zip', 9_000_000, 10_000_000)], 4600);
+assert.equal(progress.snapshot(4600).loaded, 9_000_300, 'Late batches cannot resurrect terminal requests');
+progress.update(first, [transfer('retry:model', '/model.zip', 8_000_000, 8_000_000, 'done')], 5000);
+value = progress.snapshot(5000);
+assert.equal(value.loaded, 12_000_300, 'A real successful retry completes the same entity, not another payload');
 assert.equal(value.active, 0);
-assert.equal(value.etaSeconds, null, 'Completed downloads do not estimate remaining preparation');
+assert.equal(value.etaSeconds, null, 'Completed asset bytes never invent compilation/material ETA');
+assert.equal(value.unexpected, 0);
+assert.equal([...progress.transfers()].length, 4, 'Details expose one row per selected entity');
 
-const second = progress.begin(4_000);
-progress.update(first, [transfer('old:late', 50_000_000, 100_000_000)], 4_100);
-progress.update(second, [transfer('worker:current', 100, 1_000)], 4_500);
-progress.snapshot(4_500);
-progress.update(second, [transfer('worker:current', 600, 1_000)], 6_000);
-value = progress.snapshot(6_000);
-assert.equal(value.loaded, 600, 'A new scene must not include late bytes from the previous generation');
-assert.equal(value.knownTotal, 1_000);
-assert.ok(Math.abs(value.etaSeconds - 4 / 3) < 1e-9);
-value = progress.snapshot(9_501);
+const second = progress.begin(6000);
+progress.update(first, [transfer('old:late', '/old.bin', 50_000_000, 100_000_000)], 6100);
+progress.freeze(second, [{ url: '/current.bin', bytes: 1000 }], 6100);
+progress.update(second, [transfer('current', '/current.bin', 100, null)], 6500);
+progress.snapshot(6500);
+progress.update(second, [transfer('current', '/current.bin', 600, null)], 8000);
+value = progress.snapshot(8000);
+assert.equal(value.loaded, 600, 'A new scene rejects previous-generation bytes');
+assert.equal(value.knownTotal, 1000);
+assert.ok(value.etaSeconds > 0);
+value = progress.snapshot(11501);
 assert.equal(value.stalled, true);
-assert.equal(value.etaSeconds, null, 'A stalled download must retire its stale estimate');
-progress.update(second, [transfer('worker:current', 800, 1_000)], 10_000);
-value = progress.snapshot(10_000);
+assert.equal(value.etaSeconds, null, 'Stalled bytes expire their stale estimate');
+progress.update(second, [transfer('current', '/current.bin', 800, null)], 12000);
+value = progress.snapshot(12000);
 assert.equal(value.stalled, false);
 assert.ok(value.etaSeconds > 0 && Number.isFinite(value.etaSeconds));
-progress.update(second, [transfer('worker:current', 900, 1_000, 'failed'), transfer('page:optional', 50, null, 'cancelled')], 10_100);
-value = progress.snapshot(10_100);
-assert.equal(value.loaded, 950, 'Interrupted payload bytes still count as received');
-assert.equal(value.knownTotal, 950, 'Unreceived failed/abandoned bytes are not pending downloads after recovery');
-assert.equal(value.active, 0);
-assert.equal(value.etaSeconds, null);
-console.log(JSON.stringify({ concurrentBytes: true, observedRate: true, unknownSize: true, terminalIsolation: true, generationIsolation: true, stalledEstimate: true, resumedEstimate: true, interruptedBytes: true }));
+progress.update(second, [transfer('unexpected', '/unplanned.bin', 4000, 4000, 'done')], 12500);
+value = progress.snapshot(12500);
+assert.equal(value.knownTotal, 1000, 'Unexpected observations must not silently expand the fixed maximum');
+assert.equal(value.loaded, 800);
+assert.equal(value.unexpected, 1, 'Catalogue mismatches remain observable instead of invented completion');
+assert.equal(progress.hasCatalogueMismatch, true, 'Release/entity mismatches must be available to the canonical launch failure path');
+
+const third = progress.begin(13000);
+progress.update(third, [transfer('external', 'https://external.test/unknown', 10, null)], 13100);
+assert.throws(() => progress.freeze(third, [], 13200), /missing an exact payload size/,
+  'Unknown selected preflight bodies must complete before freeze');
+progress.update(third, [transfer('external', 'https://external.test/unknown', 20, 20, 'done')], 13300);
+progress.freeze(third, [], 13400);
+assert.equal(progress.snapshot(13400).knownTotal, 20);
+
+const fourth = progress.begin(14000);
+progress.freeze(fourth, [{ url: '/shared.bin', bytes: 1000 }], 14001);
+progress.update(fourth, [transfer('shared:a', '/shared.bin', 100, null),
+  transfer('shared:b', '/shared.bin', 200, null)], 14500);
+progress.update(fourth, [transfer('shared:a', '/shared.bin', 300, null, 'failed')], 15000);
+assert.equal(progress.snapshot(15000).active, 1, 'One failed duplicate cannot hide another real in-flight reader');
+assert.equal(progress.snapshot(15000).loaded, 300, 'Overlapping readers contribute their unique consumed prefix once');
+progress.update(fourth, [transfer('shared:b', '/shared.bin', 1000, 1000, 'done')], 15500);
+assert.equal(progress.snapshot(15500).active, 0);
+assert.equal(progress.snapshot(15500).loaded, 1000);
+console.log(JSON.stringify({ fixedMaximum: true, uniqueEntities: true, retainedPreflight: true,
+  retryIsolation: true, generationIsolation: true, realRate: true, stalledEstimate: true, catalogueMismatch: true }));

@@ -47,6 +47,7 @@ import { clip, matFromWxyz, matTVec } from "../math";
 import type { Command, EvalConfig, RobotSpec } from "../types";
 import type { Engine } from "../../sim/engine";
 import type { OnnxSession } from "../policy";
+import { fetchAsset } from '../prepared-assets';
 import { BaseDriver } from "./base";
 
 type Vec29 = number[];
@@ -111,7 +112,7 @@ const HIST = 10;
 
 /** Parse a latent CSV and L2-normalise every row (as the firmware does with the cmd). */
 async function loadLatentRows(url: string): Promise<Float32Array[]> {
-  const r = await fetch(url);
+  const r = await fetchAsset(url);
   if (!r.ok) throw new Error(`failed to fetch latent ${url}: ${r.status}`);
   const rows: Float32Array[] = [];
   for (const line of (await r.text()).split(/\r?\n/)) {
@@ -197,7 +198,7 @@ export class G1FaceupDriver extends BaseDriver {
       ["last_action", 29]];
   }
 
-  private init(): Promise<void> {
+  prepare(): Promise<void> {
     this.ready ??= (async () => {
       const role = this.fc.latent ?? "latent";
       if (!this.files[role]) throw new Error(`${this.name}: aux_files.${role} (latent csv) missing`);
@@ -254,7 +255,7 @@ export class G1FaceupDriver extends BaseDriver {
   }
 
   async step(_command: Command): Promise<Float64Array> {
-    await this.init();
+    await this.prepare();
     this.tick++;
     if (this.stage === "settle") {             // lying in damping (FSM 1) before 702 is entered
       this.kp.fill(0); this.kd.fill(1);

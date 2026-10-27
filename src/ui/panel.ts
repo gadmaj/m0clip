@@ -23,6 +23,7 @@ export interface PanelCallbacks {
   onScreenshot(): void;
   onRecordToggle(): void;
   onOpenTimeline(): void;
+  onExportSetup(): void;
   onOpenShots(): void;
   onLoadTake(file: File): void;
   onLoadCsv(file: File, fps: number): void;
@@ -131,6 +132,11 @@ export class Panel {
   private mgrEl!: HTMLElement;
   private mgrToggleBtn!: HTMLButtonElement;
   private packCount = 0;
+  private reviewing = false;
+  private liveSections: HTMLElement[] = [];
+  private liveControls: (HTMLButtonElement | HTMLInputElement | HTMLSelectElement)[] = [];
+  private liveDisabled = new WeakMap<HTMLElement, boolean>();
+  private simulationScope!: HTMLElement;
   padDebugOpen: () => boolean = () => false;
 
   constructor(root: HTMLElement, mgrRoot: HTMLElement, robots: string[],
@@ -175,6 +181,7 @@ export class Panel {
     setup.append(form);
     setup.append(el('div.sub', { id: 'policy-description', style: 'font-size:12px;color:var(--text-2);overflow-wrap:anywhere' }));
     root.append(setup);
+    this.liveSections.push(setup);
 
     // FSM state: segmented control
     const stateBlk = block(root, "State", el("span", null, el("kbd", null, "0"), "–", el("kbd", null, "4")));
@@ -188,6 +195,7 @@ export class Panel {
     }
     this.stateDesc = el("div.sub", null, "");
     stateBlk.append(seg, this.stateDesc);
+    this.liveSections.push(stateBlk);
 
     // simulation controls
     const sim = block(root, "Simulation");
@@ -203,11 +211,17 @@ export class Panel {
     this.screenshotBtn=button('Screenshot',{title:'Save a PNG after the scene finishes loading',onclick:cb.onScreenshot});
     this.screenshotBtn.id='capture-screenshot';this.screenshotBtn.setAttribute('aria-busy','false');this.screenshotBtn.setAttribute('aria-describedby','screenshot-status');
     this.screenshotInfo=el('div.screenshot-status',{id:'screenshot-status',role:'status'});
+    const resetButton = button("Reset", { key: "R", title: "Reset the robot pose (R)", onclick: cb.onReset });
+    const stopButton = button("Stop", { key: "Space", title: "Zero the command and re-arm the gamepad (Space)", onclick: cb.onZeroCmd });
+    const recenterButton = button("Recenter", { key: "C", title: "Recenter the camera (C)", onclick: cb.onRecenter });
+    this.liveControls.push(resetButton, stopButton, recenterButton, this.hoistBtn, this.noclipBtn);
+    this.simulationScope = el('div.sub', null, 'LIVE');
+    sim.append(this.simulationScope);
     sim.append(
       el("div.row", null,
-        button("Reset", { key: "R", title: "Reset the robot pose (R)", onclick: cb.onReset }),
-        button("Recenter", { key: "C", title: "Recenter the camera (C)", onclick: cb.onRecenter }),
-        button("Stop", { key: "Space", title: "Zero the command and re-arm the gamepad (Space)", onclick: cb.onZeroCmd })),
+        resetButton,
+        recenterButton,
+        stopButton),
       el("div.row", null,
         this.hoistBtn,
         this.noclipBtn),
@@ -238,15 +252,20 @@ export class Panel {
     rec.append(el("div.row", null, this.recBtn, this.timelineBtn, shotsButton,
                   button("Open take", { icon: "file", title: "Open a saved take (.take.zip)", onclick: () => takeInput.click() })),
                takeInput, this.recInfo);
+    const outputButton = button("Camera / output", { title: "Configure camera, video and data output", onclick: cb.onExportSetup });
+    outputButton.id = 'capture-output-settings'; outputButton.setAttribute('aria-haspopup', 'dialog');
+    rec.append(el('div.row', null, outputButton));
 
     // remote-controller moves of the active policy (505 / 805 fight modes, 801/802 speed levels); hidden
     // when none. Placed below the fixed controls so those never shift when a policy brings moves.
     this.remoteEl = el("section.blk", { style: "display:none" });
     root.append(this.remoteEl);
+    this.liveSections.push(this.remoteEl);
 
     // kinematic reference clip (mimic)
     const clip = block(root, "Reference clip", "kinematic, no physics");
     clip.dataset.workspace = 'capture';
+    this.liveSections.push(clip);
     const fileInput = el("input", { type: "file", accept: ".csv,.txt", style: "display:none" });
     const fpsInput = el("input", { type: "number", value: "30", min: "1", title: "Clip frame rate",
                                    "aria-label": "Clip frame rate (fps)" });
@@ -317,6 +336,7 @@ export class Panel {
       // Each root includes its original hidden select and all gallery listeners.
       choices.append(el("div.scene-choice", null, label, picker.root));
     }
+    this.liveSections.push(choices);
     rec.querySelector(".blk-h")!.remove();
     rec.className = "scene-capture";
     rec.removeAttribute("data-workspace");
@@ -334,6 +354,44 @@ export class Panel {
     }
     tools.append(toolsBody);
     root.append(tools);
+    this.liveSections.push(this.mgrEl.querySelector<HTMLElement>('.pm-body')!);
+    this.setReviewScope(false);
+  }
+
+  /** Recorded tracks cannot be re-simulated by changing live controls. */
+  setReviewScope(reviewing: boolean): void {
+    this.reviewing = reviewing;
+    const reason = reviewing ? 'LIVE · Recorded motion is fixed. Close timeline to change live settings.' : 'LIVE';
+    this.simulationScope.textContent = reason;
+    for (const section of this.liveSections) {
+      let label = section.querySelector<HTMLElement>(':scope > .live-scope');
+      if (!label) { label = el('div.sub.live-scope', { style: 'grid-column:1 / -1' }); section.prepend(label); }
+      label.textContent = reason;
+      for (const control of section.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input, select, button')) {
+        if (reviewing) {
+          if (!this.liveDisabled.has(control)) this.liveDisabled.set(control, control.disabled);
+          control.disabled = true;
+        } else if (this.liveDisabled.has(control)) {
+          control.disabled = this.liveDisabled.get(control)!;
+          this.liveDisabled.delete(control);
+        }
+      }
+    }
+    for (const control of this.liveControls) {
+      if (reviewing) {
+        if (!this.liveDisabled.has(control)) this.liveDisabled.set(control, control.disabled);
+        control.disabled = true;
+        control.setAttribute('aria-description', reason);
+      } else {
+        if (this.liveDisabled.has(control)) {
+          control.disabled = this.liveDisabled.get(control)!;
+          this.liveDisabled.delete(control);
+        }
+        control.removeAttribute('aria-description');
+      }
+    }
+    this.robotPicker.sync(); this.terrainPicker.sync(); this.policyPicker.sync();
+    this.flashlightBtn.title = reviewing ? 'SHOT · Camera flashlight' : 'LIVE · Camera flashlight (F)';
   }
 
   /** Buttons for the active policy's remote actions, grouped and named (status.actions); each shows
@@ -357,6 +415,7 @@ export class Panel {
       }
       this.remoteEl.append(el("div.mv-group", null, el("h3", null, g.group), grid));
     }
+    this.setReviewScope(this.reviewing);
   }
 
   /** Modal note shown when a policy that needs special control is selected. */
@@ -508,6 +567,7 @@ export class Panel {
                                 el("span", null, String(list.length))));
       for (const p of list.sort((a, b) => a.id.localeCompare(b.id))) this.packListEl.append(this.packCard(p));
     }
+    this.setReviewScope(this.reviewing);
   }
 
   private packCard(p: PackInfo): HTMLElement {
