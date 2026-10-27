@@ -138,6 +138,12 @@ Policy animations require captures from the exact robot and checkpoint, not
 motion inferred from a policy name. Where no such capture exists, the gallery
 labels the robot-only picture rather than implying policy playback.
 
+[`generate-policy-previews.cjs`](scripts/generate-policy-previews.cjs) captures
+controller motion from your running build. Set `BASE_URL` and a private
+`PREVIEW_OUTPUT`; supply an approved pack job with its SHA-256, exact robot and
+policy, frame count/rate and attribution. The helper records actual simulation
+timestamps. Publish only the approved GIF, still and attribution—not its receipts.
+
 ### Robot policies
 
 Import your compatible policy ZIP through **Controls → Play → Packs →
@@ -147,6 +153,10 @@ auxiliary networks or reference data required by the driver. A bundle is a ZIP
 of pack ZIPs. The manifest and parser are defined in
 [`src/packs/index.ts`](src/packs/index.ts); the runtime is not a general-purpose
 loader for arbitrary neural networks.
+
+Some motion clips run once, then switch to their configured next policy.
+Re-select a clip to play it again; a different active controller does not
+necessarily mean the selection failed.
 
 For an optional hosted R1 catalog, provide your own compatible R1 bundle before
 building, replacing the example input path with your file:
