@@ -8,9 +8,8 @@ import type { PackInfo, PolicyInfo } from "../sim/protocol";
 import { TERRAINS, type MapEntry, type TerrainName } from "../sim/terrain";
 import { policyPresentation } from './policy-names';
 import { TerrainPicker } from './terrain-picker';
-import { SearchPicker } from './search-picker';
 import { VisualPicker } from './visual-picker';
-import { previewImage, staticPreviewOptions } from './preview-catalog';
+import { previewImage, staticPreviewOptions, policyPreview } from './preview-catalog';
 
 export interface PanelCallbacks {
   onRobot(robot: string): void;
@@ -105,7 +104,7 @@ export class Panel {
   private terrainSel!: HTMLSelectElement;
   private terrainPicker!: TerrainPicker;
   private policySel!: HTMLSelectElement;
-  private policyPicker!:SearchPicker;
+  private policyPicker!:VisualPicker;
   private stateBtns = new Map<FsmState, HTMLButtonElement>();
   private stateDesc!: HTMLElement;
   private statusEl!: HTMLElement;
@@ -167,11 +166,10 @@ export class Panel {
     form.querySelector('label[for="sel-terrain"]')!.setAttribute('for', 'terrain-trigger');
     this.policySel = field("policy", "Policy", [], (v) => cb.onPolicy(v));
     this.policySel.setAttribute('aria-describedby', 'policy-description');
-    this.policyPicker=new SearchPicker(this.policySel,{id:'policy',label:'Policy',listLabel:'Policies',
-      placeholder:'Search policies…',category:'Policies',empty:'No matching policies.',descriptions:true,policyLabels:true});
-    this.policyPicker.input.setAttribute('aria-describedby','policy-description');
-    form.append(this.policyPicker.root);
-    form.querySelector('label[for="sel-policy"]')!.setAttribute('for','policy-search');
+    this.policyPicker=new VisualPicker(this.policySel,{id:'policy',label:'Policy',title:'Choose a policy',
+      preview:name=>policyPreview(name,this.robotSel.value)});
+    this.policyPicker.button.setAttribute('aria-describedby','policy-description');
+    form.querySelector('label[for="sel-policy"]')!.setAttribute('for','policy-trigger');
     setup.append(form);
     setup.append(el('div.sub', { id: 'policy-description', style: 'font-size:12px;color:var(--text-2);overflow-wrap:anywhere' }));
     root.append(setup);

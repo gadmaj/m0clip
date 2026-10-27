@@ -1,4 +1,6 @@
 import './visual-picker.css';
+import { previewMedia } from './preview-media';
+import { registerPreviewAsset } from '../loading/preview-assets';
 
 export interface VisualCatalogOption {
   value:string; label:string; thumbnail?:string; description?:string; disabled?:boolean;
@@ -43,7 +45,7 @@ export class VisualPicker {
   sync(preserveSearch=false){
     this.button.textContent=`${this.select.selectedOptions[0]?.label || this.config.label} ▦`;
     const thumbnail=this.select.selectedOptions[0]?.dataset.preview;
-    if(thumbnail){const image=document.createElement('img');image.crossOrigin='anonymous';image.loading='lazy';image.decoding='async';image.src=thumbnail;image.alt='';image.onerror=()=>{image.remove();this.button.append(' · Preview unavailable');};this.button.prepend(image);}
+    if(thumbnail){registerPreviewAsset(thumbnail);const image=document.createElement('img');image.crossOrigin='anonymous';image.loading='lazy';image.decoding='async';image.src=thumbnail;image.alt='';image.onerror=()=>{image.remove();this.button.append(' · Preview unavailable');};this.button.prepend(image);}
     this.button.disabled=this.select.disabled;
     if(this.dialog){
       if(preserveSearch&&!this.select.disabled&&this.refreshIncluded)this.refreshIncluded();
@@ -122,12 +124,12 @@ export class VisualPicker {
       const generation=this.generation;
       Promise.resolve().then(()=>{
         if(this.generation!==generation||this.dialog!==dialog||card.button.hidden)return null;
-        if(sourceMode&&card.option.dataset.preview){const image=document.createElement('img');image.alt='';image.crossOrigin='anonymous';image.loading='lazy';image.decoding='async';image.src=card.option.dataset.preview;image.onerror=()=>{if(this.generation===generation)card.slot.textContent='Preview unavailable';};return image;}
+        if(sourceMode&&card.option.dataset.preview)return previewMedia({still:card.option.dataset.preview});
         return this.config.preview(card.option.value,card.option.label);
       }).then(preview=>{if(!preview){card.loaded=false;return;}if(this.generation!==generation||this.dialog!==dialog){preview.remove();return;}card.slot.replaceChildren(preview);}).catch(()=>{if(this.generation===generation)card.slot.textContent='Preview unavailable';});
     };
     this.observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){const card=cards.find(c=>c.button===entry.target);if(card)loadPreview(card);}},{root:grid,rootMargin:'100px'});
-    const filter=()=>{const query=search?.value.trim().toLocaleLowerCase()??'';for(const card of cards){card.button.hidden=!`${card.option.label} ${card.option.value} ${card.group}`.toLocaleLowerCase().includes(query);if(!card.button.hidden)this.observer?.observe(card.button);}for(const group of groups)group.heading.hidden=group.buttons.every(b=>b.hidden);status.textContent='No matching options.';status.hidden=cards.some(c=>!c.button.hidden);};
+    const filter=()=>{const tokens=search?.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)??[];for(const card of cards){const text=`${card.option.label} ${card.option.value} ${card.group} ${card.option.title}`.toLocaleLowerCase();card.button.hidden=!tokens.every(token=>text.includes(token));if(!card.button.hidden)this.observer?.observe(card.button);}for(const group of groups)group.heading.hidden=group.buttons.every(b=>b.hidden);status.textContent='No matching options.';status.hidden=cards.some(c=>!c.button.hidden);};
     const renderIncluded=()=>{
       reset();navigation.hidden=true;
       for(const child of this.select.children){

@@ -114,6 +114,25 @@ The in-app Source model search uses the
 models retain their own authorship and terms; search results are not a license
 grant. Remote search also depends on its upstream services and CORS support.
 
+Character and policy galleries browse image previews without loading models or
+policy weights. Available turntables use prebuilt GIFs; reduced-motion mode uses
+separate PNG stills. A rest-pose turntable is not a motion or controller demo.
+Remote player models keep their upstream still pictures; browsing does not
+download unselected models or imply permission to publish new animations.
+
+To prepare previews for assets you already have permission to publish,
+[`generate-character-turntables.py`](scripts/generate-character-turntables.py)
+runs in Blender with an explicit `--job` JSON. The job supplies a new output
+directory, frame count/rate, and `characters` entries containing `id`, `input`,
+`sha256`, `approvedRuntimeAsset` and `attribution`. It renders a full camera orbit
+around each GLB's native rest pose. The encoder emits `turntable.gif` and
+`still.min.png`; GIF palette reduction is lossy, while PNG recompression preserves
+decoded pixels. Add only approved image URLs and captions to
+[`animated-preview-catalog.json`](src/ui/animated-preview-catalog.json).
+Policy animations require captures from the exact robot and checkpoint, not
+motion inferred from a policy name. Where no such capture exists, the gallery
+labels the robot-only picture rather than implying policy playback.
+
 ### Robot policies
 
 Import your compatible policy ZIP through **Controls → Play → Packs →

@@ -1,9 +1,9 @@
 'use strict';
 
-/** Generate the complete static gallery from a deployed gallery-enabled m0clip release.
- * BASE_URL=https://your-gallery-release.example PLAYWRIGHT_MODULE=/path/to/playwright node scripts/generate-previews.cjs
+/** Generate real scene images into explicit private staging.
+ * BASE_URL=https://your-gallery-release.example PREVIEW_OUTPUT=/private/new-directory PLAYWRIGHT_MODULE=/path/to/playwright node scripts/generate-previews.cjs
  * PREVIEW_ONLY is an explicit filename regex for repairing failed items; existing successes
- * remain in the manifest. Each scene owns one isolated Chrome process/storage profile.
+ * remain in the private manifest. Each scene owns one isolated Chrome process/storage profile.
  */
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -12,7 +12,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const exposeApp = require('./expose-app.cjs');
 const { chooseVisual } = require('./choose-visual.cjs');
 const root = path.resolve(__dirname, '..');
-const out = path.join(root, 'public/assets/previews');
+const out = process.env.PREVIEW_OUTPUT && path.resolve(process.env.PREVIEW_OUTPUT);
+if (!out || out.startsWith(path.join(root, 'public') + path.sep)) throw new Error('PREVIEW_OUTPUT must name private staging outside public assets');
 const base = process.env.BASE_URL;
 if (!base) throw new Error('BASE_URL must name a deployed gallery-enabled release');
 const width = 320, height = 240, timeout = 300000;
@@ -23,9 +24,12 @@ const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const selected = filename => !process.env.PREVIEW_ONLY || new RegExp(process.env.PREVIEW_ONLY).test(filename);
 
 async function launch(robot, terrain) {
+  const args = process.env.PREVIEW_CHROME_ARGS ? JSON.parse(process.env.PREVIEW_CHROME_ARGS)
+    : ['--no-sandbox', '--use-gl=angle', '--use-angle=gl', '--ignore-gpu-blocklist'];
+  if (!Array.isArray(args) || !args.every(value => typeof value === 'string')) throw new Error('PREVIEW_CHROME_ARGS must be a JSON string array');
   const browser = await chromium.launch({
-    headless: true, executablePath: process.env.CHROMIUM_PATH || '/usr/bin/google-chrome',
-    args: ['--no-sandbox', '--disable-dev-shm-usage', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
+    headless: process.env.PREVIEW_HEADLESS !== '0', executablePath: process.env.CHROMIUM_PATH || '/usr/bin/google-chrome',
+    args,
   });
   try {
     const context = await browser.newContext({ viewport: { width: 1280, height: 960 }, deviceScaleFactor: .25 });
@@ -107,7 +111,7 @@ async function capture(scene, request) {
   const result = await scene.page.evaluate(async ({ request, width, height }) => {
     const a = window.__app, v = a.view;
     const original = { colorway: 'grey', parts: {}, sourceBody: 'stock', modules: {} };
-    if (request.kind === 'robot' || request.kind === 'character' || request.kind === 'body' || request.kind === 'head') {
+    if (request.kind === 'robot' || request.kind === 'character' || request.kind === 'body' || request.kind === 'head' || request.kind === 'policy') {
       if (request.kind !== 'character') {
         v.setAppearance(original);
         await v.setSourceHead('stock');
@@ -157,14 +161,19 @@ async function capture(scene, request) {
       const distance = Math.max(size.z, size.x * .8, size.y) / (2 * Math.tan(camera.fov * Math.PI / 360)) * 1.5;
       camera.position.copy(center).add(center.clone().set(1, -1.45, .6).normalize().multiplyScalar(distance));
       camera.lookAt(center);
+      if (request.angle !== undefined) {
+        camera.position.copy(center).add(center.clone().set(Math.cos(request.angle), Math.sin(request.angle), .3).normalize().multiplyScalar(distance));
+        camera.lookAt(center);
+      }
     }
     camera.updateMatrixWorld(true);
     v.beginOffscreen(width, height);
     try {
       v.renderWith(camera);
       if (v.renderer.getContext().isContextLost()) throw new Error('WebGL context lost during capture');
-      const data = v.renderer.domElement.toDataURL('image/webp', .88);
-      if (!data.startsWith('data:image/webp;base64,')) throw new Error('Chrome did not encode WebP');
+      const format = request.format === 'png' ? 'png' : 'webp';
+      const data = v.renderer.domElement.toDataURL(`image/${format}`, .88);
+      if (!data.startsWith(`data:image/${format};base64,`)) throw new Error(`Chrome did not encode ${format}`);
       const bitmap = await createImageBitmap(await (await fetch(data)).blob());
       const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height;
       const context = canvas.getContext('2d'); context.drawImage(bitmap, 0, 0); bitmap.close();
@@ -181,12 +190,14 @@ async function capture(scene, request) {
   }, { request, width, height });
   if (scene.errors.length) throw new Error(scene.errors.join('; '));
   const bytes = Buffer.from(result.data.split(',')[1], 'base64'); delete result.data;
-  if (bytes.toString('ascii', 0, 4) !== 'RIFF' || bytes.toString('ascii', 8, 12) !== 'WEBP') throw new Error('Encoded file is not WebP');
+  if (request.format !== 'png' && (bytes.toString('ascii', 0, 4) !== 'RIFF' || bytes.toString('ascii', 8, 12) !== 'WEBP')) throw new Error('Encoded file is not WebP');
   await fs.writeFile(path.join(out, request.filename), bytes);
   return { ...request, ...result, bytes: bytes.length, sha256: hash(bytes), scene: scene.identity, release: scene.provenance, errors: [] };
 }
 
-(async () => {
+module.exports = { launch, capture };
+
+if (require.main === module) (async () => {
   await fs.mkdir(out, { recursive: true });
   const maps = JSON.parse(await fs.readFile(path.join(root, 'public/assets/maps/index.json'), 'utf8')).maps;
   const groups = robots.map(robot => ({ robot, terrain: 'flat', requests: [

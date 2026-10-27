@@ -1,0 +1,15 @@
+{
+  "characters": {
+    "gingerbread-man": {
+      "still": "/assets/previews/animated/gingerbread-man/still.min.png",
+      "animation": "/assets/previews/animated/gingerbread-man/turntable.gif",
+      "caption": "360° view · rest pose"
+    },
+    "psx-horror-entity": {
+      "still": "/assets/previews/animated/psx-horror-entity/still.min.png",
+      "animation": "/assets/previews/animated/psx-horror-entity/turntable.gif",
+      "caption": "360° view · rest pose"
+    }
+  },
+  "policies": {}
+}
