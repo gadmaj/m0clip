@@ -16,6 +16,7 @@ export function previewImage(kind:'robot'|'character'|'body'|'head'|'map'|'terra
 /** Attach only cheap static thumbnail URLs; gallery rendering stays lazy. */
 export function staticPreviewOptions(select:HTMLSelectElement,kind:'robot'|'terrain'):void {
   for(const option of select.options){
+    if(option.value.startsWith('map:local-')){delete option.dataset.preview;continue;}
     const name=kind==='robot'?`robot-${option.value}`:option.value.startsWith('map:')?`map-${option.value.slice(4)}`:`terrain-${option.value}`;
     option.dataset.preview=`/assets/previews/${encodeURIComponent(name)}.webp`;
   }

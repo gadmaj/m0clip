@@ -14,10 +14,10 @@ import { eventList, fmtTime, Timeline, type ViewMode } from "./record/timeline";
 import { download, capturePng, stamp } from "./render/recorder";
 import { SceneView, type Appearance, type HeadVisual } from "./render/scene";
 import { SceneCamera } from './render/scene-camera';
-import type { FromWorker, InspectMsg, RenderModel, StatusMsg, ToWorker } from "./sim/protocol";
+import type { FromWorker, InspectMsg, RenderModel, StatusMsg, ToWorker, SceneIdentity } from "./sim/protocol";
 import type { FsmState } from "./sim/fsm";
 import { FrameGeometryBuffer } from './sim/geometry-frames';
-import { isTerrain, listMaps, mapId, MAPS_DIR, type TerrainName } from "./sim/terrain";
+import { isTerrain, listMaps, mapId, type TerrainName } from "./sim/terrain";
 import { Panel, type StatusRow } from "./ui/panel";
 import { LookPanel, type MapLight, type LookState } from "./ui/look";
 import { ExplorePanel, sharedView, viewLink, type SavedView } from "./ui/explore";
@@ -32,7 +32,7 @@ import { ShotLibrary, type SavedShot } from './record/library';
 import { ShotLibraryDialog } from './ui/shot-library';
 import { PhotoLibrary } from './record/photos';
 import { RecordingRecovery, type RecordingCheckpointWriter } from './record/recovery';
-import { storageErrorMessage } from './record/storage';
+import { storageErrorMessage, sameIdentity } from './record/storage';
 import { characterOptions } from './ui/preview-catalog';
 import type { SceneDisplay } from './render/display';
 import { effectiveVisualState, type ShotLight } from './record/post';
@@ -41,6 +41,9 @@ import { OptionalVisualAssetError, planVisualAssets } from './loading/visual-pla
 import { resolveLaunchVisualSelection, type ResolvedLaunchVisualSelection } from './loading/visual-selection';
 import type { StartupAssetCatalogue, VisualAssetPlan, WorkerAssetPlan } from './loading/asset-plan';
 import { discardPreparedPmodelCharacters } from './characters/prepared-pmodel';
+import { mapSource, validLocalMap, type MapSource, type LocalMapIdentity } from './maps/source';
+import { openLocalMap } from './ui/local-map';
+import type { PreparedTerrainVisual } from './render/scene';
 
 /** Robot family: r1 + r1_air (EDU 24-DOF / Air 20-DOF) share one UI slot, g1 + g1_air (EDU 29-DOF / Air 23-DOF) one UI
  * slot; go2 is its own. */
@@ -124,7 +127,10 @@ function formatInspect(m: InspectMsg): string {
 }
 
 interface ViewRestoreRequest {
-  id:number;view:SavedView;navigating:boolean;resolve:()=>void;reject:(error:Error)=>void;
+  id:number;view:SavedView;navigating:boolean;heldBefore:boolean;resolve:()=>void;reject:(error:Error)=>void;
+}
+interface SceneChangeOptions {
+  signal?:AbortSignal;onCommit?:()=>void;robot?:string;validate?:(scene:SceneIdentity)=>void;
 }
 interface StoredTakeState {
   id:string;name:string;model:RenderModel;created:boolean;writing:boolean;dirty:boolean;
@@ -142,8 +148,14 @@ interface WorkspaceCamera {
   mode: ViewMode;
 }
 class App {
+  private sessionMaps=new Map<string,{identity:LocalMapIdentity;source:WeakRef<MapSource>}>();
+  private liveMapSource:MapSource|null=null;
+  private takeSources=new WeakMap<Take,MapSource>();
+  private mapRequest=0;
+  private mapPreparing=false;
+  private pendingMap:{id:number;terrain:TerrainName;source:MapSource|null;stage:PreparedTerrainVisual|null;resolve:()=>void;reject:(error:unknown)=>void;committing:boolean;onCommit?:()=>void;validate?:(scene:SceneIdentity)=>void}|null=null;
   /** Modal surfaces own keyboard, pointer and gamepad input. */
-  private get inputBlocked() { return launch.active || !!this.help?.isOpen || !!this.shotLibrary?.isOpen || VisualPicker.active; }
+  private get inputBlocked() { return launch.active || this.mapPreparing || !!this.pendingMap || !!document.querySelector('dialog[data-local-map][open]') || !!this.help?.isOpen || !!this.shotLibrary?.isOpen || VisualPicker.active; }
   private help!: HelpDialog;
   private modalKeys = new Set<string>();
   private initialViewRestore: Promise<void> = Promise.resolve();
@@ -175,6 +187,8 @@ class App {
   private heldView = false;
   private viewRestoreSequence=0;
   private pendingViewRestore:ViewRestoreRequest|null=null;
+  private viewRestoreAbort:AbortController|null=null;
+  private viewRestoreWork:Promise<void>|null=null;
   private placingRobot = false;
   private placementPending = false;
   private placementPoint: THREE.Vector3 | null = null;
@@ -295,21 +309,18 @@ class App {
   constructor() {
     this.panel = new Panel(document.getElementById("panel")!,
                            document.getElementById("policy-manager")!, [], {
-      onRobot: (r) => { if(this.timeline.isOpen||this.exporting)return; this.cancelScreenshot(); this.cancelViewRestore(); if (this.noclip) this.setNoclip(false); this.heldView = false; this.send({ t: "robot", robot: r }); },
-      onTerrain: (t) => {
-        if(this.timeline.isOpen||this.exporting)return;
+      onRobot: (r) => {
+        if(this.timeline.isOpen||this.exporting||(this.mapPreparing&&!this.viewRestoreAbort))return;
         this.cancelScreenshot();
-        this.cancelViewRestore();
-        if (this.noclip) this.setNoclip(false);
-        this.heldView = false;
-        const url = new URL(location.href);
-        if (url.hash.startsWith('#view=')) url.hash = '';
-        if (url.searchParams.has('map')) {
-          if (t.startsWith('map:')) url.searchParams.set('map', t.slice(4));
-          else url.searchParams.delete('map');
-        }
-        history.replaceState(null, '', url);
-        this.send({ t: "terrain", terrain: t });
+        void this.cancelViewRestore().then(()=>{if(this.noclip)this.setNoclip(false);this.heldView=false;this.send({t:'robot',robot:r});});
+      },
+      onTerrain: (t) => {
+        if(this.timeline.isOpen||this.exporting||(this.mapPreparing&&!this.viewRestoreAbort))return;
+        this.cancelScreenshot();
+        void this.cancelViewRestore().then(()=>{
+          if(this.noclip)this.setNoclip(false);this.heldView=false;
+          return this.selectTerrain(t);
+        }).catch(error=>{if(!(error instanceof DOMException&&error.name==='AbortError'))this.panel.showNotice('Map not loaded',error instanceof Error?error.message:String(error));});
       },
       onPolicy: (name) => { if(this.timeline.isOpen||this.exporting)return; this.logInput("policy", name); this.send({ t: "policy", name }); },
       onState: (s) => this.setState(s),
@@ -322,6 +333,12 @@ class App {
       onExportSetup: () => this.openExport("video"),
       onOpenShots:()=>{void this.openShots();},
       onLoadTake: (file) => void this.openTakeFile(file),
+      onLocalMap: async file=>{
+        if(this.rec||this.recordStarting||this.timeline.isOpen||this.exporting||(this.mapPreparing&&!this.viewRestoreAbort))throw new Error('Finish the current recording, review or export before loading a map.');
+        await this.cancelViewRestore();
+        try{await openLocalMap(file,undefined,(source,signal,onCommit)=>this.changeTerrain(`map:${source.id}`,source,{signal,onCommit}));}
+        catch(error){if(!(error instanceof DOMException&&error.name==='AbortError'))throw error;}
+      },
       onLoadCsv: (file, fps) => this.loadCsv(file, fps),
       onStopPlayback: () => this.send({ t: "stopPlayback" }),
       onImportPack: (file) => this.importPack(file),
@@ -410,7 +427,7 @@ class App {
     let controlsBeforeShots=true,openedStoredShot=false;
     this.shotLibrary=new ShotLibraryDialog(document.body,{
       library:this.shotStore,photos:this.photoStore,recoveries:this.recordingRecovery,
-      open:saved=>{this.openStoredShot(saved);openedStoredShot=true;},
+      open:async(saved,signal)=>{await this.openStoredShot(saved,signal);openedStoredShot=true;},
       deleted:id=>{
         const state=this.take&&this.storedTakes.get(this.take);
         if(state?.id===id){state.deleted=true;clearTimeout(state.previewTimer);this.updateShotSaveStatus(this.take!,state);}
@@ -485,7 +502,11 @@ class App {
   /** Consume the in-memory launch choice; no storage-based launch message bus. */
   private async start() {
     const prefs = loadPrefs(), selection = launch.selection;
+    if(selection.localSource){const source=this.liveMapSource=selection.localSource;if(source.identity)this.sessionMaps.set(source.id,{identity:source.identity,source:new WeakRef(source)});selection.localSource=undefined;}
+    const requestedSource=this.resolveTerrainSource(selection.terrain,selection.preserveView?sharedView()?.localMap:undefined);
+    this.liveMapSource=requestedSource instanceof Promise?await requestedSource:requestedSource;
     const maps = await listMaps();
+    for(const {identity} of this.sessionMaps.values())maps.push(identity);
     if (selection.terrain.startsWith('map:') && !maps.some(map => `map:${map.id}` === selection.terrain)) {
       maps.push({ id: selection.terrain.slice(4), name: selection.terrain.slice(4), game: 'Selected map' });
     }
@@ -493,7 +514,7 @@ class App {
     let shared = selection.preserveView ? sharedView() : null;
     const navigation = new URL(location.href);
     if (!selection.preserveView && navigation.hash.startsWith('#view=')) navigation.hash = '';
-    if (selection.terrain.startsWith('map:')) navigation.searchParams.set('map', selection.terrain.slice(4));
+    if (selection.terrain.startsWith('map:')&&!selection.terrain.startsWith('map:local-')) navigation.searchParams.set('map', selection.terrain.slice(4));
     else navigation.searchParams.delete('map');
     history.replaceState(null, '', navigation);
     if (selection.character) {
@@ -509,7 +530,7 @@ class App {
       void this.initialViewRestore.catch(error => this.failLaunchVisuals(`Shared view could not load: ${error instanceof Error ? error.message : error}`));
     }
     const catalogue = this.startupCatalogue = await loadStartupCatalogue();
-    this.send({ t: "init", robot: selection.robot, terrain: selection.terrain, loadingId: launch.loadingId, catalogue,
+    this.send({ t: "init", robot: selection.robot, terrain: selection.terrain, localMap:mapSource(selection.terrain)?.payload, loadingId: launch.loadingId, catalogue,
       robotExplicit:selection.robotChanged||selection.preserveView,
       policy: selection.robotChanged || selection.robot !== prefs.robot ? undefined : prefs.policy });
     if (this.pendingViewRestore) this.send({ t: 'viewReady', request: this.pendingViewRestore.id });
@@ -562,9 +583,74 @@ class App {
     }
   }
 
+  sourceForTerrain(terrain:TerrainName):MapSource|null {return mapId(terrain)===this.liveMapSource?.id?this.liveMapSource:mapSource(terrain);}
   private send(m: ToWorker) {
-    if ((this.timeline?.isOpen || this.exporting) && LIVE_ONLY_MESSAGES[m.t]) return;
+    if ((this.timeline?.isOpen || this.exporting || this.mapPreparing || this.pendingMap) && LIVE_ONLY_MESSAGES[m.t]) return;
     this.worker.postMessage(m);
+  }
+  private async selectTerrain(terrain:TerrainName):Promise<void>{
+    this.panel.setTerrain(this.model?.terrain??this.panel.terrain);
+    const id=mapId(terrain),local=id&&this.sessionMaps.get(id);
+    if(local&&!local.source.deref()){
+      await openLocalMap(undefined,local.identity,(source,signal,onCommit)=>this.changeTerrain(terrain,source,{signal,onCommit}));
+    }else await this.changeTerrain(terrain);
+  }
+
+  /** Rendering and native compilation both finish before replacing the active map. */
+  private async changeTerrain(terrain:TerrainName,source=this.sourceForTerrain(terrain),options:SceneChangeOptions={}):Promise<void> {
+    const {signal,onCommit,robot,validate}=options;
+    if((source?.id??null)!==mapId(terrain))throw new Error('The selected map source does not match the requested terrain.');
+    if(this.mapPreparing||this.pendingMap)throw new Error('A map is already loading.');
+    this.mapPreparing=true;
+    try{
+    const previous=this.model?.terrain??this.panel.terrain;
+    this.panel.setTerrain(previous);
+    const id=++this.mapRequest;
+    this.stopAndRearm();this.cancelScreenshot();
+    signal?.throwIfAborted();
+    const stage=terrain===this.mapVisualTerrain&&this.view.mapSource?.id===source?.id
+      ?null:await this.view.stageTerrainVisual(source);
+    if(signal?.aborted){stage?.dispose();signal.throwIfAborted();}
+    const {promise,resolve,reject}=Promise.withResolvers<void>();
+    const pending=this.pendingMap={id,terrain,source,stage,resolve,reject,committing:false,onCommit,validate};
+    const cancel=()=>{if(this.pendingMap!==pending||pending.committing)return;this.pendingMap=null;stage?.dispose();this.worker.postMessage({t:'cancelTerrain'});this.overlay.classList.add('hidden');reject(new DOMException('Map loading cancelled.','AbortError'));};
+    signal?.addEventListener('abort',cancel,{once:true});
+    try{
+      this.worker.postMessage({t:'terrain',terrain,robot,request:id,localMap:source?.payload});
+      await promise;
+    }catch(error){
+      if(this.pendingMap===pending){this.pendingMap=null;stage?.dispose();this.worker.postMessage({t:'cancelTerrain'});this.overlay.classList.add('hidden');}
+      throw error;
+    }finally{signal?.removeEventListener('abort',cancel);}
+    }finally{this.mapPreparing=false;}
+  }
+
+  /** Existing sources stay synchronous so the initial shared-view worker barrier is installed before init. */
+  private resolveTerrainSource(terrain:TerrainName,identity?:LocalMapIdentity,signal?:AbortSignal):MapSource|null|Promise<MapSource> {
+    if(identity&&!validLocalMap(identity,terrain))throw new Error('The saved local map identity is invalid.');
+    try{return this.sourceForTerrain(terrain);}
+    catch(error){
+      if(!terrain.startsWith('map:local-'))throw error;
+      const id=terrain.slice(4),fingerprint=id.slice(6);
+      if(!/^[a-f0-9]{64}$/.test(fingerprint))throw new Error('Choose a verified map bundle before restoring this view.');
+      const expected=identity??this.sessionMaps.get(id)?.identity??{id,fingerprint,name:'Local map',game:'Local'};
+      return openLocalMap(undefined,expected,undefined,signal).then(source=>{
+        signal?.throwIfAborted();
+        this.sessionMaps.set(source.id,{identity:expected,source:new WeakRef(source)});
+        return source;
+      });
+    }
+  }
+
+  private async attachTakeMap(take:Take,signal?:AbortSignal):Promise<void> {
+    const meta=take.meta;
+    if(!meta.terrain.startsWith('map:local-'))return;
+    if(!validLocalMap(meta.localMap,meta.terrain))throw new Error('This take has no valid local map identity. Re-record it with its original map.');
+    const resolved=this.resolveTerrainSource(meta.terrain as TerrainName,meta.localMap,signal);
+    const source=resolved instanceof Promise?await resolved:resolved;
+    if(!source)throw new Error('The take’s local map is unavailable.');
+    this.takeSources.set(take,source);
+    this.panel.addLocalMap(source.id,meta.localMap.name);
   }
 
   private setHoist(on: boolean) {
@@ -859,43 +945,95 @@ class App {
   }
 
   private captureView(): SavedView {
-    if(this.pendingViewRestore)throw new Error('Wait for the view to finish restoring before saving or sharing it.');
+    if(this.pendingViewRestore||this.viewRestoreAbort)throw new Error('Wait for the view to finish restoring before saving or sharing it.');
     const p = this.view.camera.position, t = this.view.controls.target, appearance = this.view.getAppearance();
     return { version: 1, robot: this.viewModel?.robot ?? this.model?.robot ?? this.status?.robot ?? 'r1', terrain: this.viewModel?.terrain ?? this.panel.terrain,
+      localMap:this.sourceForTerrain(this.viewModel?.terrain??this.panel.terrain)?.identity,
       position: [p.x, p.y, p.z], target: [t.x, t.y, t.z], fov: this.view.camera.fov,
       display: this.explore.getDisplay(), flashlight: this.flashlight, look: this.look.getState(),
       appearance,sourceHead:(appearance.sourceBody??'stock')==='stock'&&this.view.getHeadVisualState().available?this.view.getHeadVisual():'stock',
       orientation:this.view.camera.quaternion.toArray(),noclip:this.noclip,flight:{speed:this.flight.speed,hover:this.flight.hover} };
   }
 
-  private restoreView(view: SavedView, navigate = true):Promise<void> {
+  private restoreView(view:SavedView,navigate=true):Promise<void> {
     if(this.rec||this.recordStarting)return Promise.reject(new Error('Stop recording before restoring a view.'));
     if(this.exporting)return Promise.reject(new Error('Wait for the export to finish before restoring a view.'));
     if(this.timeline.isOpen)return Promise.reject(new Error('Close the timeline before restoring a view.'));
-    this.cancelScreenshot();
-    const replaceNavigation=this.pendingViewRestore?.navigating??false;
-    this.pendingViewRestore?.reject(new DOMException('A newer view was selected.','AbortError'));
-    const id=++this.viewRestoreSequence;
-    const promise=new Promise<void>((resolve,reject)=>{this.pendingViewRestore={id,view:structuredClone(view),navigating:true,resolve,reject}});
-    this.cancelPlacement();this.flight?.stop();
-    this.heldView=true;
-    if(view.noclip)this.view.controls.enabled=false;
-    this.applyViewCamera(view);
-    if(navigate) {
-      this.stopAndRearm();
-      if(replaceNavigation||this.viewModel?.robot!==view.robot)this.send({t:'robot',robot:view.robot});
-      if(replaceNavigation||this.panel.terrain!==view.terrain){this.panel.setTerrain(view.terrain);this.send({t:'terrain',terrain:view.terrain});}
-      history.replaceState(null,'',viewLink(view));
-      this.send({t:'viewReady',request:id});
-    }
-    return promise;
+    if(this.mapPreparing&&!this.viewRestoreAbort)return Promise.reject(new Error('Wait for the map to finish loading.'));
+    const previous=this.viewRestoreWork;
+    void this.cancelViewRestore();
+    const controller=this.viewRestoreAbort=new AbortController(),id=++this.viewRestoreSequence;
+    const work=this.runViewRestore(view,navigate,controller,id,previous);
+    this.viewRestoreWork=work;
+    const finished=()=>{if(this.viewRestoreWork===work)this.viewRestoreWork=null;};
+    void work.then(finished,finished);
+    return work;
   }
 
-  private cancelViewRestore() {
-    const request=this.pendingViewRestore;
-    if(!request)return;
-    this.pendingViewRestore=null;this.view.controls.enabled=!this.noclip;
-    request.reject(new DOMException('View restore canceled: the robot or map was changed.','AbortError'));
+  private async runViewRestore(view:SavedView,navigate:boolean,controller:AbortController,id:number,previous:Promise<void>|null):Promise<void> {
+    let request:ViewRestoreRequest|null=null,complete=false;
+    const heldBefore=this.heldView;
+    try{
+      if(previous)await previous.catch(()=>{});
+      controller.signal.throwIfAborted();
+      const restored=structuredClone(view);
+      const resolved=this.resolveTerrainSource(restored.terrain,restored.localMap,controller.signal);
+      const source=resolved instanceof Promise?await resolved:resolved;
+      controller.signal.throwIfAborted();
+      if(source?.identity){
+        restored.localMap={...source.identity};
+        this.panel.addLocalMap(source.id,source.identity.name);
+      }
+      const navigation=new URL(location.href);
+      if(source&&!source.isLocal)navigation.searchParams.set('map',source.id);
+      else navigation.searchParams.delete('map');
+      const href=viewLink(restored,navigation.href);
+      if(this.rec||this.recordStarting||this.exporting||this.timeline.isOpen)throw new Error('Finish the current recording, review or export before restoring a view.');
+      this.cancelScreenshot();
+      const completion=Promise.withResolvers<void>();
+      void completion.promise.catch(()=>{});
+      request={id,view:restored,navigating:true,heldBefore,resolve:completion.resolve,reject:completion.reject};
+      this.pendingViewRestore=request;
+      this.cancelPlacement();this.flight?.stop();this.heldView=true;
+      if(restored.noclip)this.view.controls.enabled=false;
+      if(!navigate)this.applyViewCamera(restored);
+      if(navigate){
+        this.stopAndRearm();
+        if(this.model?.terrain!==restored.terrain||this.viewModel?.robot!==restored.robot){
+          const robot=this.model?.robot!==restored.robot||this.viewModel?.robot!==restored.robot?restored.robot:undefined;
+          await this.changeTerrain(restored.terrain,source,{signal:controller.signal,robot,validate:scene=>{
+            controller.signal.throwIfAborted();
+            if(scene.terrain!==restored.terrain||scene.robot.split('_')[0]!==restored.robot.split('_')[0])
+              throw new Error('The requested robot or map could not be prepared.');
+          }});
+        }
+        controller.signal.throwIfAborted();
+        history.replaceState(null,'',href);
+        this.send({t:'viewReady',request:id});
+      }
+      await completion.promise;
+      complete=true;
+    }catch(error){
+      const failure=error instanceof Error?error:new Error(String(error));
+      if(this.pendingViewRestore===request)this.pendingViewRestore=null;
+      request?.reject(failure);
+      throw failure;
+    }finally{
+      if(this.viewRestoreAbort===controller){
+        this.viewRestoreAbort=null;
+        if(!complete){this.heldView=heldBefore;this.view.controls.enabled=!this.noclip;}
+      }
+    }
+  }
+
+  private cancelViewRestore():Promise<void> {
+    const request=this.pendingViewRestore,work=this.viewRestoreWork;
+    this.pendingViewRestore=null;
+    const error=new DOMException('View restore canceled: the robot or map was changed.','AbortError');
+    this.viewRestoreAbort?.abort(error);
+    if(request){this.heldView=request.heldBefore;request.reject(error);}
+    this.view.controls.enabled=!this.noclip;
+    return work?work.catch(()=>{}):Promise.resolve();
   }
 
   private applyViewCamera(view:SavedView) {
@@ -982,7 +1120,8 @@ class App {
   }
 
   private startRecording() {
-    if(this.pendingViewRestore){this.panel.setRecordInfo('Wait for the saved view to finish restoring.');return;}
+    if(this.mapPreparing||this.pendingMap){this.panel.setRecordInfo('Wait for the map to finish loading.');return;}
+    if(this.pendingViewRestore||this.viewRestoreAbort){this.panel.setRecordInfo('Wait for the saved view to finish restoring.');return;}
     if (this.recordStarting || this.rec || !this.model || this.exporting) return;
     if (this.timeline.isOpen) this.closeReview();
     if (this.dialog.isOpen) this.dialog.close();
@@ -994,6 +1133,8 @@ class App {
       if(generation!==this.viewBuildGeneration||this.model!==model||(model.terrain??this.panel.terrain)!==this.panel.terrain){
         this.panel.setRecordInfo('The scene changed. Press Record again when it has loaded.');return;
       }
+      const terrain=model.terrain??this.panel.terrain;
+      if(terrain.startsWith('map:local-')&&this.view.mapSource?.id!==mapId(terrain))throw new Error('Reattach the original map bundle before recording.');
       if (!this.exporting && !this.timeline.isOpen) this.beginRecording();
     }).catch(error => {
       this.panel.setRecordInfo(`Recording could not start: ${error instanceof Error ? error.message : error}`);
@@ -1010,7 +1151,7 @@ class App {
     const s = this.status;
     this.recModel = m;
     this.rec = new TakeRecorder({
-      robot: m.robot, model: s?.model, terrain: m.terrain??this.panel.terrain, sourceTime: this.view.getSourceTime(), appearance: this.view.getAppearance(), sourceHead: this.view.getSourceHead(), look: this.look.getState(), display: this.explore.getDisplay(), flashlight: this.flashlight, lights: this.view.getShotLights(), robotFade: this.view.getRobotFadeState(), policy: s?.policy ?? "-",
+      robot: m.robot, model: s?.model, terrain: m.terrain??this.panel.terrain, localMap:mapSource(m.terrain??this.panel.terrain)?.identity, sourceTime: this.view.getSourceTime(), appearance: this.view.getAppearance(), sourceHead: this.view.getSourceHead(), look: this.look.getState(), display: this.explore.getDisplay(), flashlight: this.flashlight, lights: this.view.getShotLights(), robotFade: this.view.getRobotFadeState(), policy: s?.policy ?? "-",
       created: new Date().toISOString(), ngeom: m.ngeom, nq: m.nq, baseQadr: m.baseQadr, hinges: m.hinges,
     }, this.liveGeometry.partition);
     this.logged = {};
@@ -1122,7 +1263,7 @@ class App {
     this.inspectorBody.replaceChildren(eventList(take, this.takeTitle, (t) => this.timeline.seek(t)));
   }
 
-  private closeReview() {
+  private closeReview(restoreMap=true) {
     if (this.exporting) return;
     this.cancelScreenshot();
     const stored=this.take&&this.storedTakes.get(this.take);
@@ -1143,7 +1284,7 @@ class App {
     this.shotPath = null;
     this.panel.setReviewScope(false);
     if (this.model && this.viewModel !== this.model) {
-      this.buildView(this.model);
+      this.buildView(this.model,restoreMap);
       this.viewModel = this.model;
       this.lastFrame = null;
     }
@@ -1293,7 +1434,7 @@ class App {
 
   private stage(): Stage {
     return {
-      prepare: async () => {await Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]);},
+      prepare: async () => {await Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]);if(this.take?.meta.localMap&&this.view.mapSource?.identity?.fingerprint!==this.take.meta.localMap.fingerprint)throw new Error('Reattach this take’s original map bundle before exporting.');},
       view: this.view, camera: this.exportCam,
       pose: (t) => this.poseTake(t),
       aim: (cam, t, aspect) => this.shotPath!.apply(cam, t, aspect),
@@ -1303,7 +1444,7 @@ class App {
   /** In the Shot view, orbiting the viewport re-frames the shot camera itself (azimuth, elevation,
    * distance), so a shot can be composed by hand and then fine-tuned in the export panel. */
   /** Build the scene for a model and re-apply the robot's paint (+ the map's own light). */
-  private buildView(desc: RenderModel) {
+  private buildView(desc: RenderModel,prepareMap=true) {
     this.cancelScreenshot();
     ++this.viewBuildGeneration;
     this.view.build(desc);
@@ -1321,7 +1462,7 @@ class App {
       this.launchCharacterApplied = true;
     }
     const terrain=desc.terrain??(desc===this.takeModel&&isTerrain(this.take?.meta.terrain)?this.take!.meta.terrain:this.panel.terrain);
-    this.prepareMapVisual(terrain);
+    if(prepareMap)this.prepareMapVisual(terrain);
   }
 
   /** Map work survives same-map robot rebuilds; only a new map owns its callbacks. */
@@ -1329,19 +1470,19 @@ class App {
     if (terrain === this.mapVisualTerrain) return;
     this.mapVisualTerrain = terrain;
     const generation = ++this.mapVisualGeneration, current = () => generation === this.mapVisualGeneration;
-    const id = mapId(terrain);
+    const id = mapId(terrain), source=this.sourceForTerrain(terrain);
     const loading = document.getElementById('map-loading')!;
     const message = loading.querySelector('span')!, retry = loading.querySelector('button')!;
     const loadVisual=()=>{
       if(!current())return;
       let failed=false;
       this.look.setMapLight(null);
-      if(id)void fetch(`${MAPS_DIR}/${id}/manifest.json`).then(r=>r.json())
+      if(source)void source.json<{light?:MapLight}>('manifest.json')
         .then((m:{light?:MapLight})=>{if(current())this.look.setMapLight(m.light??null)})
         .catch(()=>{if(current())this.look.setMapLight(null)});
       loading.hidden = !id; retry.hidden = true;
       message.textContent = 'Loading map visuals…';
-      void this.view.setTerrainVisual(id ? `${MAPS_DIR}/${id}/visual.glb` : null, (phase, loaded, total) => {
+      void this.view.setTerrainVisual(source, (phase, loaded, total) => {
         if (!current()||failed) return;
         const size = loaded ? ` · ${Math.ceil(loaded / 1_000_000)}${total ? ` / ${Math.ceil(total / 1_000_000)}` : ''} MB` : '';
         const text = `${phase === 'preparing materials' ? 'Preparing map materials' : `Loading ${phase}`}…${size}`;
@@ -1357,7 +1498,7 @@ class App {
           loading.hidden = false; message.textContent = 'Map visuals could not load. Try again.'; retry.hidden = false;
           launch.fail(`Map visuals could not load: ${error instanceof Error ? error.message : error}`);
           // Retry only map assets: keep the current robot pose and recorded appearance.
-          retry.onclick = () => { if(current())void this.view.setTerrainVisual(null).then(()=>{if(current())loadVisual()}); };
+          retry.onclick = () => { if(current())loadVisual(); };
         });
     };
     loadVisual();
@@ -1432,14 +1573,24 @@ class App {
     try {
       const take = await loadTake(await file.arrayBuffer());
       if (this.exporting || this.recordStarting) return;
-      const m = this.model, meta = take.meta;
-      if (!m || m.robot !== meta.robot || m.ngeom !== meta.ngeom || m.nq !== meta.nq || (m.terrain??this.panel.terrain) !== meta.terrain) {
-        this.panel.showNotice("Different scene loaded",
-          `${file.name} was recorded on ${meta.model ?? meta.robot} with the ${meta.terrain} terrain ` +
-          `(${meta.ngeom} geoms). Load that robot model and terrain first (the policy decides between ` +
-          `variants such as EDU and Air), then open the take again.`);
+      const meta=take.meta,active=this.model;
+      if(!active||active.robot!==meta.robot){
+        this.panel.showNotice('Different scene loaded',`Load ${meta.model??meta.robot} before opening ${file.name}. The active scene has not changed.`);
         return;
       }
+      const validate=(scene:SceneIdentity)=>{
+        if(!sameIdentity(meta,scene))throw new Error(`This take needs ${meta.model??meta.robot} on ${meta.terrain} (${meta.ngeom} geoms). Load the original model and map, then open it again. The active scene has not changed.`);
+        if(this.exporting||this.recordStarting)throw new Error('Finish preparing the current capture before opening a take.');
+      };
+      if(meta.localMap&&active.terrain!==meta.terrain){
+        await this.attachTakeMap(take);
+        await this.changeTerrain(meta.terrain as TerrainName,this.takeSources.get(take),{validate});
+      }else{
+        validate(active);
+        await this.attachTakeMap(take);
+        validate(this.model??active);
+      }
+      const m=this.model!;
       if (this.rec) this.stopRecording();
       if (this.timeline.isOpen) this.closeReview();
       this.take = take;
@@ -1456,9 +1607,10 @@ class App {
   }
 
   private shotLibraryBlocked():string|null {
+    if(this.mapPreparing||this.pendingMap)return 'Wait for the map to finish loading.';
     if(this.rec||this.recordStarting)return 'Stop recording before opening Shots.';
     if(this.exporting)return 'Wait for the export to finish.';
-    if(this.pendingViewRestore)return 'Wait for the saved view to finish restoring.';
+    if(this.pendingViewRestore||this.viewRestoreAbort)return 'Wait for the saved view to finish restoring.';
     return null;
   }
 
@@ -1473,10 +1625,19 @@ class App {
     }finally{this.openingShotLibrary=false;}
   }
 
-  private openStoredShot(saved:SavedShot) {
+  private async openStoredShot(saved:SavedShot,signal?:AbortSignal) {
     const blocked=this.shotLibraryBlocked();
     if(blocked)throw new Error(blocked);
-    if(this.timeline.isOpen)this.closeReview();
+    await this.attachTakeMap(saved.take,signal);
+    signal?.throwIfAborted();
+    const terrain=saved.take.meta.terrain;
+    const lightSource=isTerrain(terrain)&&terrain!==this.mapVisualTerrain?this.sourceForTerrain(terrain):null;
+    const light=lightSource?await lightSource.json<{light?:MapLight}>('manifest.json'):null;
+    signal?.throwIfAborted();
+    const stage=isTerrain(terrain)&&terrain!==this.mapVisualTerrain?await this.view.stageTerrainVisual(this.sourceForTerrain(terrain)):null;
+    if(signal?.aborted){stage?.dispose();signal.throwIfAborted();}
+    if(this.timeline.isOpen)this.closeReview(false);
+    if(stage){stage.commit();this.mapVisualTerrain=terrain as TerrainName;++this.mapVisualGeneration;document.getElementById('map-loading')!.hidden=true;this.look.setMapLight(light?.light??null);}
     this.take=saved.take;this.takeModel=saved.model;this.takeTitle=saved.info.name;
     const state:StoredTakeState={id:saved.info.id,name:saved.info.name,model:saved.model,created:true,
       writing:false,dirty:false,failed:false,deleted:false,previewDirty:!saved.info.thumbnail,previewReady:false,previewFailed:false,previewVersion:0};
@@ -1488,6 +1649,7 @@ class App {
   }
 
   private rememberTake(take:Take,model:RenderModel,name:string,recovery?:RecordingCheckpointWriter) {
+    if(take.meta.localMap){const source=this.sourceForTerrain(take.meta.terrain as TerrainName);if(source)this.takeSources.set(take,source);}
     const state:StoredTakeState={id:recovery?.id??crypto.randomUUID(),name,model,created:false,writing:false,
       dirty:true,failed:false,deleted:false,previewDirty:true,previewReady:false,previewFailed:false,previewVersion:0,recovery};
     this.storedTakes.set(take,state);
@@ -1685,9 +1847,48 @@ class App {
     switch (m.t) {
       case 'loadingPlan': void this.prepareStartupAssets(m.plan); return;
       case 'loading': return launch.receiveTransfers(m.generation, m.updates);
+      case 'terrainPrepared': {
+        const pending=this.pendingMap;
+        if(!pending||pending.id!==m.request)return;
+        try{
+          if(m.scene.terrain!==pending.terrain)throw new Error('The prepared map does not match the requested scene.');
+          pending.validate?.(m.scene);
+        }catch(error){
+          this.pendingMap=null;pending.stage?.dispose();this.worker.postMessage({t:'cancelTerrain'});
+          this.overlay.classList.add('hidden');pending.reject(error);return;
+        }
+        pending.committing=true;pending.onCommit?.();
+        this.worker.postMessage({t:'terrain',terrain:pending.terrain,request:pending.id,commit:true});
+        return;
+      }
+      case 'terrainFailed': {
+        const pending=this.pendingMap;if(!pending||pending.id!==m.request)return;
+        this.pendingMap=null;pending.stage?.dispose();pending.reject(new Error(m.msg));
+        this.overlay.classList.add('hidden');this.panel.setTerrain(this.model?.terrain??'flat');return;
+      }
       case "model":
-        // a rebuild mid-recording ends the take there: its frames belong to the old model
+        // End a recording before replacing its map; review continues owning the recorded world.
         if (this.rec) this.stopRecording("Stopped when the scene was rebuilt.");
+        if(this.pendingMap&&m.desc.terrain===this.pendingMap.terrain){
+          const pending=this.pendingMap;this.pendingMap=null;
+          if(this.timeline.isOpen)pending.stage?.dispose();
+          else{pending.stage?.commit();this.mapVisualTerrain=pending.terrain;++this.mapVisualGeneration;document.getElementById('map-loading')!.hidden=true;}
+          this.liveMapSource=pending.source;
+          if(pending.source?.identity){this.sessionMaps.set(pending.source.id,{identity:pending.source.identity,source:new WeakRef(pending.source)});this.panel.addLocalMap(pending.source.id,pending.source.identity.name);}
+          this.panel.setTerrain(pending.terrain);
+          const url=new URL(location.href);
+          if(url.hash.startsWith('#view='))url.hash='';
+          if(pending.source&&!pending.source.isLocal)url.searchParams.set('map',pending.source.id);
+          else url.searchParams.delete('map');
+          history.replaceState(null,'',url);
+          if(!this.timeline.isOpen){
+            this.look.setMapLight(null);
+            const generation=this.mapVisualGeneration;
+            if(pending.source)void pending.source.json<{light?:MapLight}>('manifest.json').then(m=>{if(generation===this.mapVisualGeneration)this.look.setMapLight(m.light??null);}).catch(()=>{if(generation===this.mapVisualGeneration)this.look.setMapLight(null);});
+          }
+          pending.resolve();
+        }
+        this.liveMapSource=this.sourceForTerrain(m.desc.terrain??'flat');
         if (launch.active) {
           this.resolveFirstFrame?.();
           this.firstSimulationFrame = new Promise<void>(resolve => { this.resolveFirstFrame = resolve; });
@@ -1951,9 +2152,10 @@ class App {
   }
 
   private async takeScreenshot(){
+    if(this.mapPreparing||this.pendingMap){this.panel.setScreenshotState(false,'Wait for the map to finish loading.');return;}
     if(this.screenshotPending)return;
     if(this.exporting){this.panel.setScreenshotState(false,'Wait for the export to finish, then take a screenshot.');return}
-    if(this.pendingViewRestore){this.panel.setScreenshotState(false,'Wait for the saved view to finish restoring, then take a screenshot.');return}
+    if(this.pendingViewRestore||this.viewRestoreAbort){this.panel.setScreenshotState(false,'Wait for the saved view to finish restoring, then take a screenshot.');return}
     const model=this.viewModel,review=this.timeline.isOpen,take=this.take,mode=this.timeline.mode;
     if(!model||!review&&(!this.lastFrame||model!==this.model||!this.overlay.classList.contains('hidden')||(model.terrain??this.panel.terrain)!==this.panel.terrain)){
       this.panel.setScreenshotState(false,'Wait for the scene to finish loading, then take a screenshot.');return;
@@ -1971,11 +2173,12 @@ class App {
     try{
       await Promise.race([Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]),aborted]);
       if(!current()){this.cancelScreenshot();return}
+      const terrain=model.terrain??(review&&isTerrain(take?.meta.terrain)?take!.meta.terrain:this.panel.terrain);
+      if(terrain.startsWith('map:local-')&&this.view.mapSource?.id!==mapId(terrain)){message='Reattach the original map bundle, then try Screenshot again.';return;}
       phase='capture';
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       restoreHighlights=this.view.suspendHighlights();
       if(review&&this.take)this.reviewFrame(0);else this.drawLiveFrame();
-      const terrain=model.terrain??(review&&isTerrain(take?.meta.terrain)?take!.meta.terrain:this.panel.terrain);
       const filename=`${mapId(terrain)??terrain}_${model.robot}_${stamp()}.png`;
       const created=new Date().toISOString();
       const blob=await Promise.race([capturePng(this.view.renderer.domElement),aborted]);

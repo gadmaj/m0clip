@@ -5,9 +5,11 @@ import { DEFAULT_DISPLAY, normalizeDisplay, validDisplay, type SceneDisplay } fr
 import { validAppearance } from './view-appearance';
 import type { LookState } from './look';
 import { compatibleBody } from '../characters/catalog';
+import {validLocalMap,type LocalMapIdentity} from '../maps/source';
 
 export interface SavedView {
   version: 1; robot: string; terrain: TerrainName;
+  localMap?:LocalMapIdentity;
   position: [number, number, number]; target: [number, number, number]; fov: number;
   display: SceneDisplay; flashlight: boolean; look: LookState;
   // Optional additions keep version-1 bookmarks and links usable.
@@ -20,8 +22,9 @@ type Bookmark={name:string;view:SavedView};
 const TERRAIN_NAMES:Record<string,string>={flat:'Flat ground',rough:'Rough ground',slope:'Slope',stairs:'Stairs',park:'Park'};
 const viewLocation=(view:SavedView)=>{
   const id=view.terrain.slice(4);
-  const terrain=view.terrain.startsWith('map:')?(/\.bsp$/i.test(id)?id:id+'.bsp')
-    :(TERRAIN_NAMES[view.terrain]??view.terrain);
+  const terrain=view.terrain.startsWith('map:local-')?(view.localMap?.name??'Local map')
+    :view.terrain.startsWith('map:')?(/\.bsp$/i.test(id)?id:id+'.bsp')
+      :(TERRAIN_NAMES[view.terrain]??view.terrain);
   return `${terrain} · ${view.robot.replace(/_/g,' ').toUpperCase()}`;
 };
 const vector = (v: unknown): v is [number, number, number] => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
@@ -41,6 +44,7 @@ export function validView(v: unknown): v is SavedView {
   if(s.orientation!==undefined&&(!Array.isArray(s.orientation)||s.orientation.length!==4||!s.orientation.every(Number.isFinite)
     ||Math.abs(s.orientation.reduce((n,v)=>n+v*v,0)-1)>.001))return false;
   if(s.flight!==undefined&&(!s.flight||typeof s.flight.hover!=='boolean'||!Number.isFinite(s.flight.speed)||s.flight.speed<1||s.flight.speed>200))return false;
+  if(s.localMap!==undefined&&!validLocalMap(s.localMap,s.terrain))return false;
   const l = s.look.custom;
   return !!l && typeof l.shadows === 'boolean' && ['sunAzimuth', 'sunElevation', 'sunIntensity', 'sunColor',
     'ambient', 'skyColor', 'groundColor', 'fill', 'reflections', 'exposure', 'background']

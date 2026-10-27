@@ -93,6 +93,25 @@ Consult [`import_source_bsp.py`](scripts/import_source_bsp.py) for its arguments
 and mount definitions before selecting a source. Do not assume a converted map
 reproduces every prop, material or gameplay entity.
 
+### Local map bundles
+
+Package a converted map directory without adding it to your hosted catalog:
+
+```sh
+node scripts/package_map.mjs public/assets/maps/my_map \
+  --output my_map.map.zip --name "My map" --game "Source"
+```
+
+The packager requires Linux with `/proc/self/fd` and rejects symlinked input
+directories or files. It includes the selected visuals, textures and physics,
+checks their contents, and never overwrites an existing ZIP. The resulting
+bundle is portable; the browser does not need Linux.
+
+Choose **Open map bundle…** in the map gallery. Files are checked locally, not
+uploaded. Local maps last for the tab's session. Saved takes and views remember
+the map's identity, not its files: after reloading, reattach the same bundle.
+Raw BSP, GMA and VPK files are not browser import formats yet.
+
 ### Characters
 
 Imported characters need geometry, textures, attribution and a compatible rig

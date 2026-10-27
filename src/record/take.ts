@@ -14,6 +14,7 @@ import type { LookState } from '../ui/look';
 import { validLook, validShotEdits, validShotLights, type ShotEdits, type ShotLight } from './post';
 import type { Shot } from './shot';
 import { GEOM_STRIDE, GeometryTrack, validGeometryPartition, validGeometryData, matToQuat, quatToMat, nlerp, type GeometryPartition } from '../core/geometry';
+import { validLocalMap, type LocalMapIdentity } from '../maps/source';
 
 export type TakeEventKind = "state" | "policy" | "move" | "reset" | "hoist" | "clip" | "noclip";
 export interface TakeEvent { t: number; kind: TakeEventKind; label: string }
@@ -31,6 +32,7 @@ export interface TakeMeta {
   robot: string;            // exact robot variant the model was compiled for (r1, r1_air, g1, ...)
   model?: string;           // display name of the variant ("R1 EDU · 24-DOF")
   terrain: string;
+  localMap?: LocalMapIdentity;
   sourceTime?: number;      // map animation / lighting clock at the start of the take
   appearance?: Appearance;   // fixed paint and robot illumination for this take
   sourceHead?: 'stock' | 'ghost'; // optional cosmetic geometry; older takes use the stock head
@@ -396,6 +398,8 @@ export async function loadTake(data: ArrayBuffer): Promise<Take> {
   if (head.format !== FORMAT) throw new Error("not a take file");
   if (head.version !== 1 && head.version !== 2) throw new Error('take file: unsupported version');
   const meta = head.meta as TakeMeta, n = Number(head.frames);
+  if ((meta.terrain.startsWith('map:local-') || meta.localMap !== undefined) && !validLocalMap(meta.localMap,meta.terrain))
+    throw new Error('take file: invalid local map identity');
   if (meta.look !== undefined && !validLook(meta.look)) throw new Error('take file: invalid recorded look');
   if (meta.display !== undefined && !validDisplay(meta.display)) throw new Error('take file: invalid recorded display');
   if (meta.flashlight !== undefined && typeof meta.flashlight !== 'boolean') throw new Error('take file: invalid recorded flashlight');

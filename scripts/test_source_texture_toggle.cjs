@@ -14,7 +14,7 @@ const{fixture,png}=require('./source_material_fixture.cjs');
  const results={};
  for(mode of['cutout-bare','cutout-generic','animated','animated-cutout','reflect-detail','emissive-detail','phong-base-mask']){
   results[mode]=await page.evaluate(async mode=>{
-   const a=window.__app,v=a.view;await v.setTerrainVisual('/assets/maps/nt_ghost_ctg/visual.glb?probe='+mode);v.setSourceLighting(true);v.sourceColorMap=false;v.sourceAmbient.linearOutput.value=1;v.setSourceTime(0);
+   const a=window.__app,v=a.view;await v.setTerrainVisual(null);await v.setTerrainVisual(window.__app.sourceForTerrain('map:nt_ghost_ctg'));v.setSourceLighting(true);v.sourceColorMap=false;v.sourceAmbient.linearOutput.value=1;v.setSourceTime(0);
    v.flashlight.cookie.value.colorSpace='';v.flashlight.cookie.value.needsUpdate=true;v.setFlashlight(false);a.explore.setDisplay({...a.explore.getDisplay(),textures:true,robot:false});
    const camera=v.camera;camera.position.set(0,0,0);camera.quaternion.set(0,0,0,1);camera.fov=60;camera.aspect=1;camera.updateProjectionMatrix();
    const material=[v.terrainMaterials[0].source].flat()[0],map=material.map,canvas=document.createElement('canvas');canvas.width=64;canvas.height=64;const ctx=canvas.getContext('2d');

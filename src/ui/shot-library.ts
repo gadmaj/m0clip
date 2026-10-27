@@ -11,7 +11,7 @@ export interface ShotLibraryHost {
   library: ShotLibrary;
   photos: PhotoLibrary;
   recoveries: RecordingRecovery;
-  open: (saved: SavedShot) => void;
+  open: (saved: SavedShot, signal: AbortSignal) => void | Promise<void>;
   deleted: (id: string) => void;
   blocked: () => string | null;
   modalChanged: (open: boolean) => void;
@@ -19,7 +19,7 @@ export interface ShotLibraryHost {
 
 type Entry = { kind: 'take'; info: SavedShotInfo } | { kind: 'photo'; info: SavedPhotoInfo } | { kind: 'recovery'; info: RecordingRecoveryInfo };
 type Card = { entry: Entry; root: HTMLElement; preview: HTMLElement; loaded: boolean };
-type Operation = { session: number; kind: 'open' | 'backup' | 'delete' };
+type Operation = { session: number; kind: 'open' | 'backup' | 'delete'; controller:AbortController };
 
 function button(text: string, action: () => void, className = 'btn'): HTMLButtonElement {
   const result = document.createElement('button');
@@ -155,6 +155,7 @@ export class ShotLibraryDialog {
   private finishClose(): void {
     if (!this.active) return;
     this.active = false; ++this.session; ++this.listRequest;
+    this.operation?.controller.abort();
     this.loading = false; this.pendingRefresh = false; this.deleting = null; this.deleteOpener = null;
     this.confirmation.hidden = true; this.grid.hidden = false;
     this.clearPhoto(); this.search.hidden = false; this.refreshButton.hidden = false;
@@ -345,7 +346,7 @@ export class ShotLibraryDialog {
   private async run(kind: Operation['kind'], entry: Entry | null): Promise<void> {
     if (!entry || !this.canAct()) return;
     const { info } = entry;
-    const operation: Operation = { session: this.session, kind };
+    const operation: Operation = { session: this.session, kind, controller:new AbortController() };
     this.operation = operation;
     const format = entry.kind === 'photo' ? 'PNG' : 'ZIP';
     this.setStatus(kind === 'delete' ? 'Deleting shot…' : kind === 'backup' ? `Preparing ${format}…` : 'Opening shot…');
@@ -388,7 +389,8 @@ export class ShotLibraryDialog {
         if (entry.kind === 'recovery' && this.isOpen) this.pendingRefresh = true;
         if (!this.current(operation.session)) return;
         const reason = this.host.blocked(); if (reason) throw new Error(reason);
-        this.host.open(saved); this.close();
+        await this.host.open(saved,operation.controller.signal);
+        if(this.current(operation.session))this.close();
       }
     } catch (error) {
       if (this.current(operation.session)) {

@@ -31,14 +31,14 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    console.log(`Loading ${id}`);
    const manifest=JSON.parse(await fs.readFile(path.join(root,id,'manifest.json'),'utf8'));
    assert.ok(manifest.props?.restored>0,`${id}: full prop upgrade required`);
-   await page.evaluate(id=>{const a=window.__app;window.__previousMaterials=a.view.sourceMaterials;a.panel.setTerrain('map:'+id);a.send({t:'terrain',terrain:'map:'+id})},id);
+   await page.evaluate(async id=>{const a=window.__app;window.__previousMaterials=a.view.sourceMaterials;await a.changeTerrain('map:'+id)},id);
    try { await page.waitForFunction(id=>{
     const overlay=document.querySelector('#overlay'),message=document.querySelector('#overlay-msg');
     if(!overlay.classList.contains('hidden')&&message.dataset.kind==='error')throw new Error(message.textContent);
     const a=window.__app;return a.model?.terrain==='map:'+id&&a.viewModel?.terrain==='map:'+id&&a.view.terrainObject
-     &&a.view.terrainUrl?.endsWith('/'+id+'/visual.glb')&&document.querySelector('#overlay').classList.contains('hidden')&&document.querySelector('#map-loading').hidden;
+     &&a.view.mapSource?.id===id&&document.querySelector('#overlay').classList.contains('hidden')&&document.querySelector('#map-loading').hidden;
    },id,{timeout:240000}); }catch(error) {
-    const state=await page.evaluate(()=>{const a=window.__app;return{live:a?.model?.terrain,view:a?.viewModel?.terrain,url:a?.view.terrainUrl,terrain:!!a?.view.terrainObject,overlay:document.querySelector('#overlay')?.outerHTML,mapLoading:document.querySelector('#map-loading')?.outerHTML}});
+    const state=await page.evaluate(()=>{const a=window.__app;return{live:a?.model?.terrain,view:a?.viewModel?.terrain,source:a?.view.mapSource?.id,terrain:!!a?.view.terrainObject,overlay:document.querySelector('#overlay')?.outerHTML,mapLoading:document.querySelector('#map-loading')?.outerHTML}});
     console.error(JSON.stringify({map:id,state,errors}));throw error;
    }
    console.log(`Rendering ${id}`);

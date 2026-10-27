@@ -2,8 +2,9 @@
 import type { TakeMeta, TakeEvent } from './take';
 import { validLook, validShotEdits, validShotLights } from './post';
 import { validDisplay } from '../render/display';
-import type { RenderModel } from '../sim/protocol';
+import type { RenderModel, SceneIdentity } from '../sim/protocol';
 import { denseGeometryPartition, validGeometryData, type GeometryData, type GeometryPartition } from '../core/geometry';
+import { validLocalMap } from '../maps/source';
 
 export interface TrackSpanData {
   t: Float64Array; geom: Float32Array; qpos: Float32Array; cmd: Float32Array;
@@ -49,6 +50,7 @@ export function rememberScene(scene: SceneRecord): void {
 }
 export function validMeta(meta: TakeMeta): boolean {
   return object(meta) && typeof meta.robot === 'string' && !!meta.robot && typeof meta.terrain === 'string' && !!meta.terrain
+    && (!(meta.terrain.startsWith('map:local-') || meta.localMap !== undefined) || validLocalMap(meta.localMap,meta.terrain))
     && typeof meta.policy === 'string' && date(meta.created) && integer(meta.ngeom) && meta.ngeom > 0 && integer(meta.nq)
     && Number.isInteger(meta.baseQadr) && (meta.baseQadr === -1 || meta.baseQadr >= 0 && meta.baseQadr + 7 <= meta.nq)
     && Array.isArray(meta.hinges) && meta.hinges.every(h => object(h) && typeof h.name === 'string' && integer(h.qadr) && h.qadr < meta.nq)
@@ -58,7 +60,7 @@ export function validMeta(meta: TakeMeta): boolean {
     && (meta.lights === undefined || validShotLights(meta.lights))
     && (meta.look === undefined || validLook(meta.look)) && (meta.edits === undefined || validShotEdits(meta.edits, meta.robot));
 }
-export function sameIdentity(a: TakeMeta, b: TakeMeta | RenderModel): boolean {
+export function sameIdentity(a: TakeMeta, b: TakeMeta | SceneIdentity): boolean {
   return a.robot === b.robot && (b.terrain === undefined || a.terrain === b.terrain) && a.ngeom === b.ngeom && a.nq === b.nq
     && a.baseQadr === b.baseQadr && Array.isArray(b.hinges) && a.hinges.length === b.hinges.length
     && a.hinges.every((h, i) => h.name === b.hinges[i].name && h.qadr === b.hinges[i].qadr);

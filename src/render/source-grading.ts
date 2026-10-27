@@ -1,3 +1,4 @@
+import type { MapSource } from '../maps/source';
 /** noclip SourceColorCorrection and color_correction.calcWeight (MIT, LICENSE.noclip). */
 export interface SourceColorLayer {
   origin: number[]; enabled: boolean; minfalloff: number; maxfalloff: number; data: Uint8Array;
@@ -29,12 +30,12 @@ export function sourceColorCorrectionLut(layers: Uint8Array[], weights: number[]
   return data;
 }
 
-export async function loadSourceColorLayers(manifest: {color_corrections?: (Omit<SourceColorLayer,'data'>&{file:string})[]}, base: URL) {
+export async function loadSourceColorLayers(manifest: {color_corrections?: (Omit<SourceColorLayer,'data'>&{file:string})[]}, source: MapSource) {
   return Promise.all((manifest.color_corrections??[]).map(async layer=>{
     if(!/^source-color-\d+\.rgb$/.test(layer.file)||!Array.isArray(layer.origin)||layer.origin.length!==3
       ||!layer.origin.every(Number.isFinite)||!Number.isFinite(layer.minfalloff)||!Number.isFinite(layer.maxfalloff)
       ||typeof layer.enabled!=='boolean')throw new Error('Invalid Source color-correction metadata');
-    const response=await fetch(new URL(layer.file,base));
+    const response=await source.read(layer.file);
     if(!response.ok)throw new Error('Source color-correction table failed to load');
     const data=new Uint8Array(await response.arrayBuffer());
     if(data.length<32*32*32*3)throw new Error('Source color-correction table is truncated');

@@ -31,7 +31,7 @@ function requireVisualSizes(catalogue: StartupAssetCatalogue, urls: readonly str
 /** Load-only module. Do not import from the selection shell: native preparation uses Three. */
 export async function planVisualAssets(selection: VisualAssetSelection, catalogue: StartupAssetCatalogue): Promise<VisualAssetPlan> {
   const roots = [FLASHLIGHT_URL];
-  if (selection.terrain.startsWith('map:')) {
+  if (selection.terrain.startsWith('map:') && !selection.terrain.startsWith('map:local-')) {
     const id = selection.terrain.slice(4);
     const map = catalogue.mapVisuals[id];
     if (!map) throw new Error(`The startup catalogue has no visual closure for map ${id}.`);

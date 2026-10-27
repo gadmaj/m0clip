@@ -17,7 +17,7 @@ const assert=require('node:assert/strict'),{chromium}=require(process.env.PLAYWR
  await page.goto(base+'/__policy-lifetime');await page.evaluate(()=>{
   window.frames=0;window.terrain='';window.workerErrors=[];window.replies={};window.request=0;
   window.worker=new Worker('/src/worker/sim.worker.ts?worker_file&type=module',{type:'module'});
-  worker.onmessage=({data:m})=>{if(m.request!==undefined)replies[m.request]=m;if(m.t==='model')terrain=m.desc.terrain;if(m.t==='error')workerErrors.push(m.msg);if(m.t==='frame'){frames++;if(!m.qpos.every(Number.isFinite))workerErrors.push('Non-finite frame')}};
+  worker.onmessage=({data:m})=>{if(m.t==='terrainPrepared')worker.postMessage({t:'terrain',terrain:m.scene.terrain,request:m.request,commit:true});if(m.request!==undefined)replies[m.request]=m;if(m.t==='model')terrain=m.desc.terrain;if(m.t==='error'||m.t==='terrainFailed')workerErrors.push(m.msg);if(m.t==='frame'){frames++;if(!m.qpos.every(Number.isFinite))workerErrors.push('Non-finite frame')}};
   worker.postMessage({t:'init',robot:'r1',terrain:'flat'});
  });
  const rpc=async(t)=>{const request=await page.evaluate(t=>{const request=++window.request;worker.postMessage({t,request});return request},t);await page.waitForFunction(request=>replies[request],request,{timeout:120000});return page.evaluate(request=>replies[request],request)};
@@ -26,7 +26,7 @@ const assert=require('node:assert/strict'),{chromium}=require(process.env.PLAYWR
  await paused();const initial=await rpc('test:stats'),reference=await rpc('test:probe');assert.ok(!reference.error&&reference.values.length===24);
  const rows=[];
  for(const terrain of ['rough','slope','stairs','park','flat']){
-  const before=await page.evaluate(terrain=>{const frames=window.frames;worker.postMessage({t:'pause',on:false});worker.postMessage({t:'terrain',terrain});return frames},terrain);
+  const before=await page.evaluate(terrain=>{const frames=window.frames;worker.postMessage({t:'pause',on:false});worker.postMessage({t:'terrain',terrain,request:++window.request});return frames},terrain);
   await page.waitForFunction(({terrain,before})=>window.terrain===terrain&&frames>before,{terrain,before},{timeout:120000});
   await paused();const stats=await rpc('test:stats'),probe=await rpc('test:probe');assert.deepEqual(probe.values,reference.values);rows.push({terrain,created:stats.created,released:stats.released});
  }

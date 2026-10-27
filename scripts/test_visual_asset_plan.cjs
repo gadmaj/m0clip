@@ -46,6 +46,9 @@ const { build } = require('esbuild');
     let plan = await planVisualAssets(selection, catalogue);
     sameSet(plan.urls, [cookie, manifest, world, props, image, style]);
     assert.equal(new Set(plan.urls).size, plan.urls.length, 'Shared texture entity is budgeted once');
+    const local = await planVisualAssets({ ...selection, terrain: 'map:local-' + 'a'.repeat(64) }, catalogue);
+    sameSet(local.urls, [cookie]);
+    assert.equal(plannedAssets(catalogue, local.urls, local.prepared).reduce((bytes,asset)=>bytes+asset.bytes,0),17,'A local map changes no HTTP download maximum');
     const progress = new SceneProgress();
     for (let index = 0; index < 2; index++) {
       const selected = await planVisualAssets({ ...selection, terrain: 'flat' }, catalogue);

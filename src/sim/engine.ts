@@ -11,9 +11,10 @@
 import type { MainModule, MjModel, MjData } from "mujoco";
 import { gunzipSync } from "fflate";
 import { fetchAsset } from '../core/prepared-assets';
+import type { MapSource } from '../maps/source';
 
 interface BundleManifest { files: string[]; gzipFiles?: string[] }
-interface ExtraBundle { dir: string; mount: string }
+interface ExtraBundle { source: MapSource; mount: string }
 export interface PreparedEngine {
   modelDir: string;
   scene: string;
@@ -122,13 +123,13 @@ export class Engine {
     const result: PreparedEngine = { modelDir, scene, manifest,
       urls: [indexUrl, ...manifest.files.map(rel => `${modelDir}/${rel}${compressed.has(rel) ? '.gz' : ''}`)] };
     if (extra) {
-      const url = `${extra.dir}/manifest.json`;
-      const map = await fetchMetadata(url);
-      if (!map.ok || !(map.headers.get('content-type') ?? '').includes('json'))
-        throw new Error(`map bundle not found: ${extra.dir} (run scripts/import_source_bsp.py)`);
+      const map = await extra.source.read('manifest.json', fetchMetadata);
+      if (!map.ok) throw new Error(`Map manifest failed: ${extra.source.id}`);
       const mapManifest: BundleManifest = await map.json();
+      if (!Array.isArray(mapManifest.files) || !mapManifest.files.includes('map.xml')) throw new Error('Map physics manifest must include map.xml.');
+      for (const path of mapManifest.files) extra.source.path(path);
       result.extra = { ...extra, manifest: mapManifest };
-      result.urls.push(url, ...mapManifest.files.map(rel => `${extra.dir}/${rel}`));
+      if (!extra.source.isLocal) result.urls.push(extra.source.httpUrl('manifest.json'), ...mapManifest.files.map(rel => extra.source.httpUrl(rel)));
     }
     return result;
   }
@@ -176,29 +177,48 @@ export class Engine {
         mj.FS.writeFile(`${root}/${rel}`, body);
       }
     });
-    if (bundle.extra) await Engine.mountExtra(mj, bundle.extra);
-    console.log(`[engine] bundle written (${manifest.files.length} files), compiling`);
-    const model = mj.MjModel.mj_loadXML(`${root}/${scene}`);
-    console.log(`[engine] model compiled: nq=${model.nq} ngeom=${model.ngeom}`);
-    const data = new mj.MjData(model);
-    mj.mj_forward(model, data);
-    return new Engine(mj, model, data, modelDir);
+    try {
+      if (bundle.extra) await Engine.mountExtra(mj, bundle.extra);
+      console.log(`[engine] bundle written (${manifest.files.length} files), compiling`);
+      const model = mj.MjModel.mj_loadXML(`${root}/${scene}`);
+      if(!model)throw new Error('MuJoCo could not compile the selected scene.');
+      try {
+        console.log(`[engine] model compiled: nq=${model.nq} ngeom=${model.ngeom}`);
+        const data = new mj.MjData(model);
+        mj.mj_forward(model, data);
+        return new Engine(mj, model, data, modelDir);
+      } catch(error) {model.delete();throw error;}
+    } finally {
+      // Compiled models own native geometry; local imports must not retain another file copy in MEMFS.
+      if(bundle.extra?.source.isLocal){
+        const {mount,manifest:map}=bundle.extra,dirs=new Set<string>();
+        for(const rel of map.files){
+          try{mj.FS.unlink(`${mount}/${rel}`);}catch{/* A failed mount may not have written this leaf. */}
+          let dir=rel.includes('/')?rel.slice(0,rel.lastIndexOf('/')):'';
+          while(dir){dirs.add(`${mount}/${dir}`);dir=dir.includes('/')?dir.slice(0,dir.lastIndexOf('/')):'';}
+        }
+        for(const dir of [...dirs].sort((a,b)=>b.length-a.length)){try{mj.FS.rmdir(dir);}catch{/* Remove only empty owned directories. */}}
+        try{mj.FS.rmdir(mount);}catch{/* The failed mount may not have created its root. */}
+      }
+    }
   }
 
   /** Write a second bundle (a terrain map: manifest.json + files) into MEMFS at `mount`; its XML
    * refers to its own files as MAPDIR/…, rewritten here to the absolute mount path. */
   private static async mountExtra(mj: MainModule, bundle: ExtraBundle & { manifest: BundleManifest }) {
-    const { dir, mount, manifest: man } = bundle;
+    const { source, mount, manifest: man } = bundle;
     mkdirTree(mj.FS, mount);
     await mountFiles(man.files, async (rel) => {
-      const r = await fetchAsset(`${dir}/${rel}`);
-      if (!r.ok) throw new Error(`map file missing: ${dir}/${rel} (${r.status})`);
+      const r = await source.read(rel);
+      if (!r.ok) throw new Error(`Map file missing: ${rel} (${r.status})`);
       return rel.endsWith(".xml")
         ? r.text()
         : new Uint8Array(await r.arrayBuffer());
     }, (rel, body) => {
+      const dir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '';
+      if (dir) mkdirTree(mj.FS, `${mount}/${dir}`);
       mj.FS.writeFile(`${mount}/${rel}`,
-        typeof body === "string" ? body.replaceAll("MAPDIR/", `${mount}/`) : body);
+        typeof body === "string" ? body.replaceAll("MAPDIR/", `${mount}/`).replace(/(["'])MAPDIR\1/g,`$1${mount}$1`) : body);
     });
   }
 

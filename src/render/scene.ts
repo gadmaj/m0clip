@@ -41,11 +41,14 @@ import type { CharacterAsset, CharacterBody } from './characters/types';
 import type { GeometryTrack } from '../core/geometry';
 import { applyPartPaint, readPartPaint } from './paint-material';
 import { normalizeDisplay, type SceneDisplay } from './display';
+import type { MapSource } from '../maps/source';
+export interface PreparedTerrainVisual { commit(): void; dispose(): void }
 
 import { renderPreview, antialiasingPreview, type PreviewRequest } from './previews';
 export type HeadVisual = "stock" | "ghost";
 export interface HeadVisualState { choice: HeadVisual; available: boolean; loading: boolean; error: string | null }
 interface SourceMapVisuals {
+  visual?:string;
   props?:{visual?:string};
   native_textures?:{visual?:string;props?:string};
 }
@@ -1319,7 +1322,9 @@ export class SceneView {
   }
 
   updateRobotLighting(x: number, y: number, z: number) { this.sourceAmbient.sample(x, y, z); }
-  private terrainUrl: string | null = null;
+  private terrainSource: MapSource | null = null;
+  private terrainRequestedId:string|null|undefined=undefined;
+  get mapSource():MapSource|null {return this.terrainSource;}
   private terrainRequest: Promise<void> = Promise.resolve();
   private terrainGeneration=0;
 
@@ -1328,56 +1333,61 @@ export class SceneView {
 
   /** Show a converted map's textured scene (null removes it). Its positions are already in the
    * MuJoCo frame, so it goes in as-is; the map's collision lives in MuJoCo, not here. */
-  setTerrainVisual(url: string | null, progress?: (phase: string, loaded: number, total: number) => void): Promise<void> {
-    if (url === this.terrainUrl) return this.terrainRequest;
-    this.terrainRequest = this.loadTerrainVisual(url, progress);
-    return this.terrainRequest;
+  setTerrainVisual(source: MapSource | null, progress?: (phase: string, loaded: number, total: number) => void): Promise<void> {
+    const id=source?.id??null;
+    if (id === this.terrainRequestedId) return this.terrainRequest;
+    this.terrainRequestedId=id;
+    const request = this.stageTerrainVisual(source, progress).then(stage => stage.commit()).catch(error=>{if(this.terrainRequest===request)this.terrainRequestedId=undefined;throw error;});
+    this.terrainRequest=request;
+    return request;
   }
 
-  private async loadTerrainVisual(url: string | null, progress?: (phase: string, loaded: number, total: number) => void) {
+  /** Prepare off-scene. A caller may compile physics before atomically installing this scene. */
+  async stageTerrainVisual(source: MapSource | null, progress?: (phase: string, loaded: number, total: number) => void): Promise<PreparedTerrainVisual> {
     const generation=++this.terrainGeneration,current=()=>generation===this.terrainGeneration;
     const report=(phase:string,loaded:number,total:number)=>{if(current())progress?.(phase,loaded,total)};
-    this.sourceMaterials.dispose();
-    const context=this.sourceMaterials=new SourceMaterials();
-    this.terrainUrl = url;
-    this.sourceColorMap=!!url&&new URL(url,location.href).pathname.endsWith('/nt_ghost_ctg/visual.glb');
-    this.configureCamera(this.camera);
-    this.sourceColor.reset();
-    this.sourceColor.setColorCorrections([]);
-    this.sourceSky3D = null; this.sourceSkyLights = [];
-    this.sourceVisibility = null;
-    this.sourceStyles = null;
-    this.sourceMixer?.stopAllAction();this.sourceMixer=null;
-    this.sourceSky=[];this.sourceSprites=[];this.sourceDetails=[];
-    this.sourceAmbient.styleValue = () => 1;
-    this.sourceAmbient.setData(null);
-    this.setSourceLighting(this.sourceLighting);
-    if (this.terrainVisual) {
-      this.scene.remove(this.terrainVisual);
-      this.terrainMaterials = [];
-      this.terrainVisual = null;
-    }
-    this.setSourceLighting(this.sourceLighting);
-    if (!url) return;
+    const context=new SourceMaterials();
+    const release=source?.retain();
+    if(release)context.own({dispose:release});
+    const clear=()=>{
+      this.sourceMaterials.dispose();this.sourceMaterials=context;this.terrainSource=source;
+      this.terrainRequestedId=source?.id??null;this.terrainRequest=Promise.resolve();
+      if(this.terrainVisual)this.scene.remove(this.terrainVisual);
+      this.terrainVisual=null;this.terrainMaterials=[];
+      this.sourceMixer?.stopAllAction();this.sourceMixer=null;
+      this.sourceSky=[];this.sourceSprites=[];this.sourceDetails=[];
+      this.sourceSky3D=null;this.sourceSkyLights=[];this.sourceVisibility=null;this.sourceStyles=null;
+      this.sourceAmbient.styleValue=()=>1;this.sourceAmbient.setData(null);
+      this.sourceColor.reset();this.sourceColor.setColorCorrections([]);
+      this.sourceColorMap=false;
+    };
+    if (!source) return {commit:()=>{if(!current()){context.dispose();return;}clear();this.configureCamera(this.camera);this.setSourceLighting(this.sourceLighting);},dispose:()=>context.dispose()};
     try {
-    const ambient = fetch(new URL('lighting.json', new URL(url, location.href)))
-      .then((r) => r.ok && r.headers.get('content-type')?.includes('json') ? r.json() as Promise<SourceAmbientData> : null)
-      .catch(() => null);
-    const styles = SourceLightStyles.load(new URL('lightstyles.json', new URL(url, location.href))).then(styles=>{
-      for(const texture of styles?.textures.values()??[])context.own(texture);return styles;
-    }).catch((e) => {
-      console.warn('Source light styles failed to load', e);
-      return null;
-    });
     const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
-    const loader = new GLTFLoader();
+    const ambient = source.has('lighting.json') ? source.read('lighting.json')
+      .then((r) => r.ok && r.headers.get('content-type')?.includes('json') ? r.json() as Promise<SourceAmbientData> : null)
+      .catch(error=>{if(source.isLocal)throw error;return null;}) : Promise.resolve(null);
+    const styles = SourceLightStyles.load(source).then(styles=>{
+      for(const texture of styles?.textures.values()??[])context.own(texture);return styles;
+    }).catch(error=>{if(source.isLocal)throw error;console.warn('Source light styles failed to load',error);return null;});
+    const manager=new THREE.LoadingManager();
+    const resourceErrors:string[]=[];
+    manager.onError=url=>resourceErrors.push(url);
+    manager.setURLModifier(source.resolveUrl);
+    const loader = new GLTFLoader(manager);
     const nativeTextures=new Map<GLTFParser,SourceNativeTextures>();
     loader.register(parser=>{
       const native=new SourceNativeTextures(parser,context,this.renderer);nativeTextures.set(parser,native);
       return native;
     });
     const load=async(path:string,phase:string)=>{
-      const result=await loader.loadAsync(path,e=>report(phase,e.loaded,e.total));
+      const response=await source.read(path);
+      if(!response.ok)throw new Error(`Map visual failed: ${path} (${response.status})`);
+      const bytes=await response.arrayBuffer();
+      report(source.isLocal?'local map resources':phase,bytes.byteLength,bytes.byteLength);
+      const base=source.isLocal?source.base:new URL(source.base,location.href).href;
+      const directory=path.includes('/')?path.slice(0,path.lastIndexOf('/')+1):'';
+      const result=await loader.parseAsync(bytes,base+directory);
       const native=nativeTextures.get(result.parser)!;
       const pending:Promise<void>[]=[];
       result.scene.traverse(object=>{if(object instanceof THREE.Mesh){
@@ -1390,29 +1400,23 @@ export class SceneView {
           }
         }
       }});
-      await Promise.all(pending);
+      await Promise.all(pending).catch(async error=>{await Promise.allSettled(pending);throw error;});
+      if(resourceErrors.length)throw new Error(`Map texture failed in ${path}: ${resourceErrors[0]}`);
       return result;
     };
-    const manifest = fetch(new URL('manifest.json', new URL(url, location.href))).then(r => r.json());
-    const colorLayers=manifest.then(m=>loadSourceColorLayers(m,new URL(url,location.href)));
+    const manifest = source.json<SourceMapVisuals & Parameters<typeof loadSourceColorLayers>[0] & {visibility?:string;source_renderer?:{version?:number}}>('manifest.json');
+    const colorLayers=manifest.then(m=>loadSourceColorLayers(m,source));
     const visibility = manifest.then(async (m: { visibility?: string }) => {
-      if (m.visibility !== 'visibility.json') return null;
-      const response = await fetch(new URL(m.visibility,new URL(url,location.href)));
-      if (!response.ok) throw new Error('Source visibility data failed to load');
-      return response.json() as Promise<SourceVisibilityData>;
+      if (!m.visibility) return null;
+      return source.json<SourceVisibilityData>(m.visibility);
     });
-    const visual=manifest.then((m:SourceMapVisuals)=>load(m.native_textures?.visual
-      ?new URL(m.native_textures.visual,new URL(url,location.href)).href:url,'map textures'));
-    const props = manifest
-      .then((m:SourceMapVisuals) => m.props?.visual === 'props.glb'
-        ? load(new URL(m.native_textures?.props??'props.glb', new URL(url, location.href)).href,'models') : null);
-    const [gltf, propGltf, visibilityData, mapManifest, grading] = await Promise.all([visual, props, visibility, manifest, colorLayers]);
+    const visual=manifest.then((m:SourceMapVisuals)=>load(m.native_textures?.visual??m.visual??'visual.glb','map textures'));
+    const props = manifest.then((m:SourceMapVisuals) => m.props?.visual
+      ? load(m.native_textures?.props??m.props.visual,'models') : null);
+    const work=[visual, props, visibility, manifest, colorLayers, styles, ambient] as const;
+    const [gltf, propGltf, visibilityData, mapManifest, grading, sourceStyles, ambientData] = await Promise.all(work).catch(async error=>{await Promise.allSettled(work);throw error;});
     report('preparing materials', 0, 0);
-    const sourceStyles = await styles;
-    if (!current()) return;
-    this.sourceColorMap=this.sourceColorMap||mapManifest.source_renderer?.version===1;
-    this.sourceColor.setColorCorrections(grading);
-    this.configureCamera(this.camera);
+    if (!current()) throw new DOMException('Map loading cancelled.','AbortError');
     let mixer:THREE.AnimationMixer|null=null;
     const sky:THREE.Mesh[]=[],sprites:THREE.Mesh[]=[],details:THREE.Mesh[]=[];
     if (propGltf?.animations.length) {
@@ -1520,8 +1524,8 @@ export class SceneView {
         })());
       }
     });
-    const [, ambientData] = await Promise.all([Promise.all(pending), ambient]);
-    if (!current()) return;
+    await Promise.all(pending).catch(async error=>{await Promise.allSettled(pending);throw error;});
+    if (!current()) throw new DOMException('Map loading cancelled.','AbortError');
     const mainVisibility=visibilityData?context.own(new SourceVisibility(visibilityData,gltf.scene)):null;
     let sky3D:SourceSky3D|null=null;
     let skyLights:[THREE.Light,THREE.Light][]=[];
@@ -1534,6 +1538,14 @@ export class SceneView {
       skyLights = [this.hemi,this.sun,this.fill].map(light => [light,light.clone()]);
       for (const [, light] of skyLights) sky3D.scene.add(light);
     }
+    let settled=false;
+    return {dispose:()=>{if(!settled){settled=true;context.dispose();}},commit:()=>{
+    if(settled)return;
+    settled=true;
+    if(!current()){context.dispose();return;}
+    clear();
+    this.sourceColorMap=mapManifest.source_renderer?.version===1||source.id==='nt_ghost_ctg';
+    this.sourceColor.setColorCorrections(grading);this.configureCamera(this.camera);
     this.sourceSky=sky;this.sourceSprites=sprites;this.sourceDetails=details;
     this.sourceMixer=mixer;this.sourceAnimationStart=performance.now();
     this.sourceVisibility=mainVisibility;this.sourceSky3D=sky3D;this.sourceSkyLights=skyLights;
@@ -1545,7 +1557,8 @@ export class SceneView {
     this.terrainVisual = gltf.scene;
     this.scene.add(gltf.scene);
     this.setDisplay(this.display);
-    }catch(error){context.dispose();if(current())throw error;}
+    }};
+    }catch(error){context.dispose();throw error;}
   }
 
   /** The terrain's textured visual (for scene exports), or null. */

@@ -12,17 +12,20 @@ import type { FsmState } from "./fsm";
 import type { TerrainName } from "./terrain";
 import type { FrameGeometryLayout } from './geometry-frames';
 import type { StartupAssetCatalogue, WorkerAssetPlan } from '../loading/asset-plan';
+import type { LocalMapPayload } from '../maps/source';
 
 // ---- main -> worker --------------------------------------------------
 export type ToWorker =
-  | { t: "init"; robot?: string; robotExplicit?: boolean; terrain?: TerrainName; policy?: string; loadingId?: number; catalogue?: StartupAssetCatalogue }  // explicit robot selection must not fall back to another model
+  | { t: "init"; robot?: string; robotExplicit?: boolean; terrain?: TerrainName; localMap?: LocalMapPayload; policy?: string; loadingId?: number; catalogue?: StartupAssetCatalogue }
   | { t: 'loadingProceed'; generation: number; token: string }
   | { t: "loadingFinished"; generation: number }
   | { t: "policy"; name: string }
   | { t: "cycle"; step: 1 | -1 }
   | { t: "state"; state: FsmState }
   | { t: "robot"; robot: string }
-  | { t: "terrain"; terrain: TerrainName }
+  | { t: "terrain"; terrain: TerrainName; robot?:string; localMap?: LocalMapPayload; request:number; commit?:false }
+  | { t: "terrain"; terrain: TerrainName; request:number; commit:true }
+  | { t: 'cancelTerrain' }
   | { t: "command"; cmd: Command }
   | { t: "reset" }
   | { t: "noclip"; on: boolean }
@@ -74,6 +77,8 @@ export interface RenderModel {
   baseQadr: number;        // floating-base qpos address, -1 when the model has none
   hinges: { name: string; qadr: number }[];   // every hinge joint, model order
 }
+/** The actual compiled compatibility boundary, available before replacing an active engine. */
+export type SceneIdentity = Pick<RenderModel,'robot'|'terrain'|'ngeom'|'nq'|'baseQadr'|'hinges'>;
 
 export interface PolicyInfo {
   name: string; family: string; dof: number; group: string;
@@ -130,6 +135,8 @@ export type FromWorker =
   | { t: 'robotPlaced' }
   | { t: 'robotPlacementFailed'; msg: string }
   | { t: "model"; desc: RenderModel; geometry: FrameGeometryLayout }
+  | { t: 'terrainPrepared'; request: number; scene:SceneIdentity }
+  | { t: 'terrainFailed'; request: number; msg: string }
   /** Geom rows are ascending original IDs excluding `model.geometry.fixedIds`; qpos is complete.
    * `clock` advances by each posted simulation step, preserving recorded time under load. */
   | { t: "frame"; xpos: Float32Array; xmat: Float32Array; baseX: number; baseY: number;

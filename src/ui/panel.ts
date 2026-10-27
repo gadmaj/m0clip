@@ -26,6 +26,7 @@ export interface PanelCallbacks {
   onExportSetup(): void;
   onOpenShots(): void;
   onLoadTake(file: File): void;
+  onLocalMap?(file: File): Promise<void>;
   onLoadCsv(file: File, fps: number): void;
   onStopPlayback(): void;
   onImportPack(file: File): void;
@@ -168,7 +169,7 @@ export class Panel {
     this.robotPicker = new VisualPicker(this.robotSel,{id:'robot',label:'Robot',preview:value=>previewImage('robot',value)});
     form.querySelector('label[for="sel-robot"]')!.setAttribute('for','robot-trigger');
     this.terrainSel = field("terrain", "Map", TERRAINS, (v) => cb.onTerrain(v as TerrainName));
-    this.terrainPicker = new TerrainPicker(this.terrainSel);
+    this.terrainPicker = new TerrainPicker(this.terrainSel,cb.onLocalMap);
     form.append(this.terrainPicker.root);
     form.querySelector('label[for="sel-terrain"]')!.setAttribute('for', 'terrain-trigger');
     this.policySel = field("policy", "Policy", [], (v) => cb.onPolicy(v));
@@ -587,6 +588,10 @@ export class Panel {
   get terrain(): TerrainName { return this.terrainSel.value as TerrainName; }
 
   setTerrain(t: TerrainName) { this.terrainSel.value = t; this.terrainPicker.sync(); }
+  addLocalMap(id:string,name:string) {
+    if(!Array.from(this.terrainSel.options).some(option=>option.value===`map:${id}`))this.terrainSel.add(new Option(`${name} · Local`, `map:${id}`));
+    this.terrainPicker.sync();
+  }
 
   /** Converted game maps as extra terrains, one group per game (value `map:<id>`). */
   setMaps(maps: MapEntry[]) {
@@ -597,7 +602,7 @@ export class Panel {
     for (const [game, list] of byGame) {
       const g = document.createElement("optgroup");
       g.label = game;
-      for (const m of list) g.appendChild(new Option(m.id.endsWith('.bsp') ? m.id : `${m.id}.bsp`, `map:${m.id}`));
+      for (const m of list) g.appendChild(new Option(m.id.startsWith('local-') ? `${m.name} · Local` : m.id.endsWith('.bsp') ? m.id : `${m.id}.bsp`, `map:${m.id}`));
       this.terrainSel.appendChild(g);
     }
     this.terrainSel.value = cur;

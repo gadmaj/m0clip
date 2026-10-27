@@ -12,6 +12,7 @@ export interface VisualPickerConfig {
   description?:(value:string)=>string;
   /** Called only after the user explicitly opens this mode. Results do not select anything. */
   catalog?:{label:string;load:(query:string,offset:number,signal:AbortSignal)=>Promise<VisualCatalogPage>};
+  intake?: {label:string;select:(file:File,signal:AbortSignal)=>Promise<void>};
 }
 /** A view over a canonical select, never a second selection model. */
 export class VisualPicker {
@@ -84,6 +85,12 @@ export class VisualPicker {
     if(this.config.search!==false||this.config.catalog){search=document.createElement('input'); search.type='search'; search.placeholder=`Search ${this.config.label.toLowerCase()}…`; search.setAttribute('aria-label',`Search ${this.config.label}`); dialog.append(search);}
     const grid=document.createElement('div'); grid.className='visual-picker-grid'; dialog.append(grid);
     const status=document.createElement('p');status.setAttribute('role','status');status.setAttribute('aria-live','polite');status.hidden=true;dialog.append(status);
+    if(this.config.intake){
+      const input=document.createElement('input');input.type='file';input.accept='.zip,application/zip';input.hidden=true;dialog.append(input);
+      const actions=document.createElement('div');actions.className='visual-picker-actions';header.after(actions);
+      const intake=action(this.config.intake.label,()=>input.click());actions.append(intake);
+      input.onchange=async()=>{const file=input.files?.[0];if(!file)return;this.cancelRequest();const request=this.request=new AbortController();intake.disabled=true;status.hidden=false;status.textContent='Reading map index…';try{await this.config.intake!.select(file,request.signal);if(this.dialog===dialog)this.close();}catch(error){if(this.dialog===dialog){status.textContent=error instanceof Error?error.message:String(error);intake.disabled=false;input.value='';}}};
+    }
     const navigation=document.createElement('div');navigation.className='visual-picker-actions';navigation.hidden=true;
     const previous=action('Previous',()=>{offset=Math.max(0,offset-(page?.limit??40));void loadSource();});
     const next=action('Next',()=>{offset+=(page?.limit??40);void loadSource();});
