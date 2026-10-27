@@ -86,7 +86,7 @@ async function openResource(root, name) {
     throw error;
   } finally { if (parent !== root) await parent.close(); }
 }
-async function document(root, name, signal, metadata) {
+async function document(root, name, signal, metadata, reserveXml) {
   signal?.throwIfAborted();
   const handle = await openResource(root, name);
   try {
@@ -98,6 +98,7 @@ async function document(root, name, signal, metadata) {
       offset = 20; size = header.readUInt32LE(12);
     }
     if (size > maxMetadata || offset + size > info.size) throw Error(`Oversized/truncated metadata: ${name}`);
+    if (name.endsWith('.xml')) reserveXml?.(size * 3 + 1024);
     const bytes = Buffer.alloc(size);
     let count = 0;
     while (count < size) {
@@ -116,6 +117,16 @@ async function document(root, name, signal, metadata) {
  * buildStartupCatalogue mapVisuals; manifest.files adds the actual physics input set. */
 async function closure(root, signal) {
   const metadata = new Map();
+  let xmlCharacters = 0;
+  let xmlAllocation = 0;
+  const xmlAllocationLimit = 64 * 1024 * 1024;
+  const reserveXml = bytes => {
+    signal?.throwIfAborted();
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > xmlAllocationLimit - xmlAllocation)
+      throw new RangeError('Map XML metadata allocation limit exceeded');
+    xmlAllocation += bytes;
+  };
+  const xmlOptions = { signal, maxAllocationBytes: xmlAllocationLimit, reserve: reserveXml };
   const manifest = await document(root, 'manifest.json', signal, metadata);
   const resources = new Set(['manifest.json', 'map.xml']), names = new Map();
   const add = (value, base = 'manifest.json', embedded = false) => {
@@ -125,8 +136,8 @@ async function closure(root, signal) {
   if (!Array.isArray(manifest.files) || !manifest.files.includes('map.xml')) throw Error('manifest.json files must include map.xml');
   const physics = new Set(manifest.files.map(path => pathName(path)));
   for (const path of physics) resources.add(path);
-  const rootXml = await document(root, 'map.xml', signal, metadata);
-  const rootElements = parseMapXml(rootXml, 'map.xml');
+  const rootXml = await document(root, 'map.xml', signal, metadata, reserveXml);
+  const rootElements = parseMapXml(rootXml, 'map.xml', xmlOptions);
   const compiler = rootElements.find(element => element.name === 'compiler')?.attributes ?? {};
   const native = manifest.native_textures === undefined ? {} : object(manifest.native_textures, 'native_textures');
   add(native.visual ?? manifest.visual ?? 'visual.glb');
@@ -156,8 +167,11 @@ async function closure(root, signal) {
       const styles = await document(root, path, signal, metadata);
       for (const page of Object.values(object(styles.pages, 'lightstyle pages'))) add(page, path);
     } else if (path.endsWith('.xml')) {
-      const elements = path === 'map.xml' ? rootElements : parseMapXml(await document(root, path, signal, metadata), path);
-      for (const edge of mapXmlReferences(elements, path, compiler)) {
+      const elements = path === 'map.xml' ? rootElements : parseMapXml(await document(root, path, signal, metadata, reserveXml), path, xmlOptions);
+      for (const edge of mapXmlReferences(elements, path, compiler, {
+        signal, maxExpandedCharacters: maxMetadata - xmlCharacters,
+        reserve(characters) { reserveXml(characters * 64 + 256); xmlCharacters += characters; },
+      })) {
         const file = reference(edge.value, edge.base);
         if (!physics.has(file)) throw Error(`Physics dependency ${file} (from ${path}) is absent from manifest.json files; regenerate the converted map's physics index`);
         resources.add(file);

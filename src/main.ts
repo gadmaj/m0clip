@@ -36,7 +36,7 @@ import { storageErrorMessage, sameIdentity } from './record/storage';
 import { characterOptions } from './ui/preview-catalog';
 import type { SceneDisplay } from './render/display';
 import { effectiveVisualState, type ShotLight } from './record/post';
-import { loadStartupCatalogue, plannedAssets } from './loading/catalogue';
+import { loadStartupCatalogue, plannedAssets, priorIntakeAssets } from './loading/catalogue';
 import { OptionalVisualAssetError, planVisualAssets } from './loading/visual-plan';
 import { resolveLaunchVisualSelection, type ResolvedLaunchVisualSelection } from './loading/visual-selection';
 import type { StartupAssetCatalogue, VisualAssetPlan, WorkerAssetPlan } from './loading/asset-plan';
@@ -568,8 +568,14 @@ class App {
         return;
       }
       const prepared = [...plan.prepared, ...visuals.prepared];
-      const assets = plannedAssets(catalogue, [...catalogue.runtime.page, ...plan.urls, ...visuals.urls,
-        ...prepared.map(asset => asset.url)], prepared);
+      // File intake can have already evaluated page dependencies before Load.
+      // Exclude only that page scope; independent worker/visual reads still count.
+      const priorPageAssets = priorIntakeAssets(catalogue, launch.priorLocalMapIntake,
+        performance.getEntriesByType('resource') as PerformanceResourceTiming[]);
+      const assets = [
+        ...plannedAssets(catalogue, catalogue.runtime.page, [], priorPageAssets),
+        ...plannedAssets(catalogue, [...plan.urls, ...visuals.urls, ...prepared.map(asset => asset.url)], prepared),
+      ];
       launch.freezeAssets(plan.generation, assets, prepared);
       this.send({ t: 'loadingProceed', generation: plan.generation, token: plan.token });
       this.prepareMapVisual(selection.terrain);

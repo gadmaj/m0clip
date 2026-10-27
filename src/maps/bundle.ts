@@ -49,6 +49,32 @@ function dependency(value: unknown, base: string): string | null {
   }
   return pathName(parts.join('/'));
 }
+interface BundlePathNode { file: boolean; children?: Map<string, BundlePathNode> }
+/** Visit each component once, without rebuilding complete ancestor prefixes. */
+function validateAncestors(paths: Iterable<string>, signal?: AbortSignal) {
+  const maxNodes = 262144;
+  let nodes = 1;
+  const root: BundlePathNode = { file: false };
+  for (const path of paths) {
+    aborted(signal);
+    let node = root, start = 0;
+    while (start < path.length) {
+      aborted(signal);
+      if (node.file) fail(`file/directory path conflict: ${path}`);
+      const slash = path.indexOf('/', start), end = slash < 0 ? path.length : slash;
+      const component = path.slice(start, end).toLowerCase();
+      let child = node.children?.get(component);
+      if (!child) {
+        if (nodes >= maxNodes) fail('resource path component limit exceeded');
+        nodes++; child = { file: false };
+        node.children ??= new Map(); node.children.set(component, child);
+      }
+      node = child; start = end + 1;
+    }
+    if (node.children?.size) fail(`file/directory path conflict: ${path}`);
+    node.file = true;
+  }
+}
 function view(bytes: Uint8Array) { return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); }
 async function read(file: Blob, start: number, length: number, signal?: AbortSignal) {
   aborted(signal);
@@ -113,10 +139,7 @@ async function directory(file: Blob, signal?: AbortSignal) {
   }
   if (pos !== size) fail('unexpected data in ZIP central directory');
   // A file cannot also be an ancestor directory of another file.
-  for (const path of entries.keys()) {
-    const parts = path.split('/');
-    while (parts.pop(), parts.length) if (entries.has(parts.join('/'))) fail(`file/directory path conflict: ${path}`);
-  }
+  validateAncestors(entries.keys(), signal);
   return { entries, offset };
 }
 const crcTable = Uint32Array.from({ length: 256 }, (_, n) => {
@@ -188,7 +211,7 @@ async function json(blob: Blob, path: string, signal?: AbortSignal): Promise<Rec
     return record(JSON.parse(text), path);
   } catch (error) { aborted(signal); fail(`invalid JSON in ${path}: ${error instanceof Error ? error.message : String(error)}`); }
 }
-function indexOf(value: Record<string, unknown>): MapBundleIndex {
+function indexOf(value: Record<string, unknown>, signal?: AbortSignal): MapBundleIndex {
   if (value.format !== 'm0clip-map' || value.version !== 1 || value.entry !== 'manifest.json') fail('unsupported m0clip-map.json format/version/entry (expected m0clip-map version 1)');
   for (const field of ['name', 'game']) if (typeof value[field] !== 'string' || !(value[field] as string).trim() || (value[field] as string).length > 256 || /[\u0000-\u001f\u007f]/.test(value[field] as string)) fail(`invalid bundle ${field}`);
   if (!Array.isArray(value.resources) || !value.resources.length || value.resources.length > 65534) fail('invalid resource list');
@@ -203,6 +226,7 @@ function indexOf(value: Record<string, unknown>): MapBundleIndex {
     return Object.freeze({ path, bytes: resource.bytes as number, sha256: resource.sha256 });
   });
   for (const required of ['manifest.json', 'map.xml']) if (!resources.some(resource => resource.path === required)) fail(`required resource is missing: ${required}`);
+  validateAncestors(names, signal);
   return Object.freeze({ format: 'm0clip-map', version: 1, name: value.name as string, game: value.game as string, entry: 'manifest.json', resources: Object.freeze(resources) });
 }
 async function inspect(file: Blob, signal?: AbortSignal) {
@@ -210,7 +234,7 @@ async function inspect(file: Blob, signal?: AbortSignal) {
   const zip = await directory(file, signal), entry = zip.entries.get(wrapper);
   if (!entry) fail(`${wrapper} is missing; choose a converted-map bundle`);
   if (entry.bytes > maxMetadata) fail(`${wrapper} is too large`);
-  const index = indexOf(await json(await extract(file, entry, zip.offset, signal), wrapper, signal));
+  const index = indexOf(await json(await extract(file, entry, zip.offset, signal), wrapper, signal), signal);
   for (const resource of index.resources) {
     const actual = zip.entries.get(resource.path);
     if (!actual) fail(`declared resource is missing: ${resource.path}`);
@@ -241,6 +265,23 @@ async function gltf(blob: Blob, path: string, signal?: AbortSignal) {
  * adding manifest.files (the independent physics closure). No directory scans. */
 async function validateDependencies(files: ReadonlyMap<string, Blob>, signal?: AbortSignal) {
   const manifest = await json(files.get('manifest.json')!, 'manifest.json', signal);
+  let xmlCharacters = 0;
+  let xmlAllocation = 0;
+  const xmlAllocationLimit = 64 * 1024 * 1024;
+  const reserveXml = (bytes: number) => {
+    aborted(signal);
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > xmlAllocationLimit - xmlAllocation)
+      throw new RangeError('Map XML metadata allocation limit exceeded');
+    xmlAllocation += bytes;
+  };
+  const xmlOptions = { signal, maxAllocationBytes: xmlAllocationLimit, reserve: reserveXml };
+  const xml = async (blob: Blob) => {
+    aborted(signal);
+    reserveXml(blob.size * 3 + 1024);
+    const text = await blob.text();
+    aborted(signal);
+    return text;
+  };
   const required = new Set<string>(['manifest.json', 'map.xml']);
   function add(value: unknown, base = 'manifest.json', embedded = false) {
     const path = dependency(value, base);
@@ -251,9 +292,9 @@ async function validateDependencies(files: ReadonlyMap<string, Blob>, signal?: A
   if (!Array.isArray(manifest.files) || !manifest.files.includes('map.xml')) fail('manifest.json files must include map.xml');
   const physics = new Set(manifest.files.map(pathName));
   for (const path of physics) add(path);
-  const rootXml = await files.get('map.xml')!.text();
+  const rootXml = await xml(files.get('map.xml')!);
   aborted(signal);
-  const rootElements = parseMapXml(rootXml, 'map.xml');
+  const rootElements = parseMapXml(rootXml, 'map.xml', xmlOptions);
   const compiler = rootElements.find(element => element.name === 'compiler')?.attributes ?? {};
   const native = manifest.native_textures === undefined ? {} : record(manifest.native_textures, 'native_textures');
   add(native.visual ?? manifest.visual ?? 'visual.glb');
@@ -284,10 +325,13 @@ async function validateDependencies(files: ReadonlyMap<string, Blob>, signal?: A
       const styles = await json(blob, path, signal);
       for (const page of Object.values(record(styles.pages, 'lightstyle pages'))) add(page, path);
     } else if (path.endsWith('.xml')) {
-      const text = path === 'map.xml' ? rootXml : await blob.text();
+      const text = path === 'map.xml' ? rootXml : await xml(blob);
       aborted(signal);
-      const elements = path === 'map.xml' ? rootElements : parseMapXml(text, path);
-      for (const reference of mapXmlReferences(elements, path, compiler)) {
+      const elements = path === 'map.xml' ? rootElements : parseMapXml(text, path, xmlOptions);
+      for (const reference of mapXmlReferences(elements, path, compiler, {
+        signal, maxExpandedCharacters: maxMetadata - xmlCharacters,
+        reserve(characters) { reserveXml(characters * 64 + 256); xmlCharacters += characters; },
+      })) {
         const file = dependency(reference.value, reference.base);
         if (file === null) fail(`embedded URI is not valid in ${path}`);
         if (!physics.has(file)) fail(`physics dependency ${file} (from ${path}) is absent from manifest.json files`);

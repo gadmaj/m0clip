@@ -10,10 +10,10 @@ import { VisualPicker } from './visual-picker';
 import { previewImage, staticPreviewOptions, characterOptions, characterDescription, sourceModelCatalog } from './preview-catalog';
 import { SceneProgress, downloadTime, type LoadingSnapshot } from '../loading/progress';
 import { observeTransfers, type TransferUpdate } from '../loading/transfers';
-import type { PlannedAsset } from '../loading/asset-plan';
+import type { PlannedAsset, PriorModuleIntake } from '../loading/asset-plan';
 import { registerPreviewAsset } from '../loading/preview-assets';
 import './launch.css';
-import { inspectLocalMap, loadLocalMap } from './local-map';
+import { inspectLocalMap, loadLocalMap, localMapIntakeState } from './local-map';
 import type { MapBundleIndex } from '../maps/bundle';
 import type { MapSource } from '../maps/source';
 
@@ -80,6 +80,7 @@ class LaunchController {
   private characterPicker?: VisualPicker;
   private progress = new SceneProgress();
   private loadGeneration = 0;
+  private preloadedLocalMap?: PriorModuleIntake;
   private progressTimer?: number;
   private stopTransfers?: () => void;
   private transferRoot!: HTMLElement;
@@ -121,6 +122,7 @@ class LaunchController {
 
   get active() { return this.showing; }
   get loadingId() { return this.loadGeneration; }
+  get priorLocalMapIntake() { return this.preloadedLocalMap; }
   onEnter(callback: () => void) { this.callbacks.push(callback); }
   onFailure(callback: () => void) { this.failureCallbacks.push(callback); }
   ownsKey(code: string) { return this.heldKeys.has(code); }
@@ -335,6 +337,9 @@ class LaunchController {
   }
 
   private startProgress() {
+    const started = performance.now(), intake = localMapIntakeState();
+    // Copy before Load's verification; later imports cannot rewrite this scope.
+    this.preloadedLocalMap = intake && { complete: intake.complete, before: started };
     for (const option of this.root.querySelectorAll<HTMLOptionElement>('option[data-preview]')) {
       if (option.dataset.preview) registerPreviewAsset(option.dataset.preview);
     }
@@ -345,11 +350,11 @@ class LaunchController {
     this.detailStatus.textContent = ''; this.detailReadiness.textContent = '';
     this.detailBytes.textContent = ''; this.detailCounts.textContent = '';
     this.detailsDirty = true;
-    this.loadGeneration = this.progress.begin(performance.now());
-    this.loadingStarted = performance.now();
+    this.loadGeneration = this.progress.begin(started);
+    this.loadingStarted = started;
     this.schedulePong();
     const generation = this.loadGeneration;
-    this.stopTransfers = observeTransfers(`page:${generation}`, updates => this.receiveTransfers(generation, updates));
+    this.stopTransfers = observeTransfers(`page:${generation}`, updates => this.receiveTransfers(generation, updates), started);
     this.progressTimer = window.setInterval(() => this.renderProgress(), 250);
   }
 

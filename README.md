@@ -107,6 +107,9 @@ directories or files. It includes the selected visuals, textures and physics,
 checks their contents, and never overwrites an existing ZIP. The resulting
 bundle is portable; the browser does not need Linux. Truncated compressed entries
 and entries with trailing compressed data are rejected.
+Inline physics data and repeated references to the same file are supported.
+Unsafe paths and excessively complex dependency metadata are rejected before
+the map becomes active.
 
 Choose **Open map bundle…** in the map gallery. Files are checked locally, not
 uploaded. Local maps last for the tab's session. Saved takes and views remember
@@ -279,6 +282,9 @@ wire bytes without changing this maximum. A full byte meter does not mean physic
 compilation or material preparation has finished; **Enter scene** waits for the
 simulation, visuals and a rendered frame. Expand **Details** for actual transfers
 and readiness. Pong appears only if an unfinished load lasts more than 30 seconds.
+Local-map verification is listed separately from downloads. Local file bytes and
+optional reader code already loaded during file selection do not increase the
+later scene download total.
 
 Open **Camera / output** before recording to set the static camera, lens and output
 format. **Scene** remains available above setup for look, parts, lighting and

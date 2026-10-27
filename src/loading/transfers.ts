@@ -228,7 +228,7 @@ function attachFetch(collector: Collector) {
 }
 
 /** Observe until explicit scene entry; stopping never cancels application work. */
-export function observeTransfers(prefix: string, report: (updates: TransferUpdate[]) => void): () => void {
+export function observeTransfers(prefix: string, report: (updates: TransferUpdate[]) => void, started?: number): () => void {
   const pending = new Map<string, TransferUpdate>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let notify: typeof report | undefined = report;
@@ -252,7 +252,7 @@ export function observeTransfers(prefix: string, report: (updates: TransferUpdat
   attachFetch(collector);
   // A worker's module graph may load before init arrives. Its whole lifetime is
   // startup, unlike the page's pre-Load UI, so include buffered worker entries.
-  const since = typeof document === 'undefined' ? 0 : performance.now();
+  const since = started ?? (typeof document === 'undefined' ? 0 : performance.now());
   let resources: PerformanceObserver | undefined;
   const accountResources = (entries: PerformanceEntry[]) => {
     for (const candidate of entries) {

@@ -4,6 +4,12 @@ export interface PlannedAsset {
   bytes: number;
 }
 
+/** Optional module intake state captured before this load starts. */
+export interface PriorModuleIntake {
+  complete: boolean;
+  before: number;
+}
+
 /** Generated from the final serving output, never from larger source masters. */
 export interface StartupAssetCatalogue {
   version: 1;
@@ -14,6 +20,8 @@ export interface StartupAssetCatalogue {
     page: string[];
     worker: string[];
     inference: string[];
+    /** Optional file-intake module graph, not a scene download root. */
+    localMap: string[];
   };
   mapVisuals: Record<string, string[]>;
   modelBundles: Record<string, string[]>;

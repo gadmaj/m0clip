@@ -125,6 +125,28 @@ await assert.rejects(inspectMapBundle(archive(bodies, indexFor(), { 'link.bin': 
 const external = { ...bodies, 'visual.glb': glb({ asset: { version: '2.0' }, images: [{ uri: 'https://outside.invalid/pixel.png' }] }) };
 await assert.rejects(decodeMapBundle(archive(external)), /unsafe dependency.*visual\.glb/);
 
+// Repeated references under one deep compiler directory must not materialize
+// a directory-by-reference cross-product, or rebuild every ancestor prefix.
+const deepDirectory = 'd/'.repeat(16000).slice(0, -1), deepMesh = `${deepDirectory}/triangle.obj`;
+const repeatedXml = Buffer.from(`<mujoco><compiler meshdir="MAPDIR/${deepDirectory}"/><asset>${'<mesh file="triangle.obj"/>'.repeat(8000)}</asset></mujoco>`);
+const deepBodies = {
+  ...bodies,
+  'manifest.json': Buffer.from(JSON.stringify({ name: 'Deep references', game: 'Fixture',
+    files: ['map.xml', deepMesh], visual: 'visual.glb' })),
+  'map.xml': repeatedXml, [deepMesh]: bodies['physics/triangle.obj'],
+};
+delete deepBodies['physics/triangle.obj'];
+const deepDecoded = await decodeMapBundle(archive(deepBodies));
+assert.deepEqual(Buffer.from(await deepDecoded.files.get(deepMesh).arrayBuffer()), bodies['physics/triangle.obj'],
+  'Repeated selected physics dependencies resolve to the original verified mesh');
+const inlineXml = Buffer.from(`<mujoco><asset><mesh vertex="${'0 0 0 '.repeat(220000)}" face="0 0 0"/></asset></mujoco>`);
+const inlineDecoded = await decodeMapBundle(archive({ ...bodies, 'map.xml': inlineXml }));
+assert.deepEqual(Buffer.from(await inlineDecoded.files.get('map.xml').arrayBuffer()), inlineXml,
+  'Large inline physics arrays survive dependency validation without being copied into retained metadata');
+await assert.rejects(decodeMapBundle(archive({ ...bodies,
+  'map.xml': Buffer.from(`<mujoco><compiler meshdir="MAPDIR/physics"/><asset>${'<mesh file="triangle.obj"/>'.repeat(110000)}</asset></mujoco>`),
+})), RangeError, 'Dense retained dependency records stop at the import allocation boundary');
+
 // Damage a stored texture body without touching the wrapper or central directory.
 // Metadata inspection must still succeed: only Load verifies body hashes/CRC.
 const damaged = new Uint8Array(await good.arrayBuffer());

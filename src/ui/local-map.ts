@@ -1,14 +1,22 @@
 import type { MapBundleIndex } from '../maps/bundle';
 import { registerLocalMap, type LocalMapIdentity, type MapSource } from '../maps/source';
 
+let localMapModule: { complete: boolean } | undefined;
+/** File rejection or cancellation does not unload an imported module graph. */
+export function localMapIntakeState(): Readonly<{ complete: boolean }> | undefined { return localMapModule; }
+
 export async function inspectLocalMap(file: File, signal?: AbortSignal): Promise<MapBundleIndex> {
   // Explicit file intake must not pull ZIP inflation into the lightweight launch graph.
+  const intake: { complete: boolean } = localMapModule = { complete: false };
   const { inspectMapBundle } = await import('../maps/bundle');
+  intake.complete = true;
   return inspectMapBundle(file, signal);
 }
 export async function loadLocalMap(file: File, signal?: AbortSignal): Promise<MapSource> {
   // Full verification is intentionally loaded only by the user's Load action.
+  const intake: { complete: boolean } = localMapModule = { complete: false };
   const { decodeMapBundle } = await import('../maps/bundle');
+  intake.complete = true;
   return registerLocalMap(await decodeMapBundle(file, signal));
 }
 /** User action is required to select/reattach a file; no file data enters a URL or storage. */
