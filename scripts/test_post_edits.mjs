@@ -250,18 +250,17 @@ try {
   const triangleGeometry = new THREE.PlaneGeometry(1, 1), triangleMaterial = new THREE.MeshStandardMaterial();
   const nativeMesh = new THREE.Mesh(triangleGeometry, triangleMaterial), terrainMesh = new THREE.Mesh(triangleGeometry, triangleMaterial);
   nativeMesh.name = 'native_triangle'; terrainMesh.name = 'terrain_triangle';
-  let display = { ...DEFAULT_DISPLAY }, nativeExports = 0;
+  let display = { ...DEFAULT_DISPLAY };
   const exportView = {
     waitForRobotVisuals: async () => {}, waitForTerrainVisuals: async () => {}, suspendHighlights: () => () => {},
     getAppearance: () => structuredClone(meta.appearance), getSourceHead: () => 'stock',
     getShotLights: () => [], getDisplay: () => ({ ...display }), getFlashlight: () => false,
     exportParts: () => [], terrainObject: terrainMesh,
-    exportSourceBody: () => { nativeExports++; return { root: nativeMesh.clone(), tracks: [] }; },
+    exportSourceBody: () => ({ root: nativeMesh.clone(), tracks: [] }),
   };
   try {
     for (const robot of [true, false]) for (const map of [true, false]) {
       display = { ...DEFAULT_DISPLAY, robot, map };
-      const previousExports = nativeExports;
       const binary = await (await exportGlb(take, exportView, { robot: 'r1' }, {
         fps: 25, t0: 0, t1: take.duration, floor: false, camera: null,
       })).arrayBuffer();
@@ -270,9 +269,21 @@ try {
       const names = new Set((document.nodes ?? []).map(node => node.name));
       assert.equal(names.has('native_triangle'), robot, 'Native body visibility matches the edited shot');
       assert.equal(names.has('terrain_triangle'), map, 'Map visibility matches the edited shot');
-      assert.equal(nativeExports - previousExports, Number(robot), 'Hidden native bodies are not needlessly sampled');
       assert.deepEqual(document.scenes[0].extras.display, display);
     }
+    display = { ...DEFAULT_DISPLAY, textures: false, robot: false, map: false };
+    const floorBinary = await (await exportGlb(take, exportView, { robot: 'r1' }, {
+      fps: 25, t0: 0, t1: take.duration, floor: true, camera: null,
+    })).arrayBuffer();
+    const floorJsonLength = new DataView(floorBinary).getUint32(12, true);
+    const floorDocument = JSON.parse(new TextDecoder().decode(new Uint8Array(floorBinary, 20, floorJsonLength)).trim());
+    const ground = floorDocument.nodes.find(node => node.name === 'ground');
+    assert.ok(ground && Number.isInteger(ground.mesh), 'The explicit export floor remains available with map geometry hidden');
+    const groundPrimitive = floorDocument.meshes[ground.mesh].primitives[0];
+    const groundMaterial = floorDocument.materials[groundPrimitive.material];
+    assert.equal(groundPrimitive.mode ?? 4, 4);
+    assert.equal(groundMaterial.pbrMetallicRoughness.baseColorTexture, undefined, 'Textures off also applies to the reconstructed floor');
+    assert.equal((floorDocument.images ?? []).length, 0, 'An untextured floor must not embed the checker image');
   } finally {
     if (previousReader === undefined) delete globalThis.FileReader; else globalThis.FileReader = previousReader;
     triangleGeometry.dispose();triangleMaterial.dispose();

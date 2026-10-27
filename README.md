@@ -245,8 +245,10 @@ the textured environment.
 - Detailed maps can require substantial downloads, memory and startup time.
 - Source gameplay, moving doors, prop physics, particles and HDR bloom are not
   reproduced. This is not a general loader for every game on noclip.website.
-- Video export depends on the codecs the browser can encode. Portable GLB exports
-  do not reproduce Source's custom shaders, lightmaps or final tone mapping.
+- Video export depends on the codecs the browser can encode.
+- GLB exports use solid triangle geometry, not viewport wireframe lines. **Textures**
+  also controls the optional exported ground plane. Source's custom shaders,
+  lightmaps and final tone mapping are not reproduced in GLB.
 - Saved takes, screenshots and imported policies are local to the browser and
   site origin, not cloud backups. Clearing site data can remove them; another
   hostname cannot read them. Download backups before changing origins.

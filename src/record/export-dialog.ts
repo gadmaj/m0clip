@@ -147,6 +147,7 @@ export class ExportDialog {
   private busy: AbortController | null = null;
   private status!: HTMLElement;
   private pickers: { picker: VisualPicker; select: HTMLSelectElement }[] = [];
+  private refreshVideoFields: (() => void) | null = null;
 
   constructor(readonly root: HTMLElement, readonly host: ExportHost) {
     this.out = loadPrefs().out;
@@ -182,6 +183,7 @@ export class ExportDialog {
 
   close() {
     if (this.busy) return;
+    this.refreshVideoFields = null;
     for (const { picker } of this.pickers) picker.dispose();
     this.pickers = [];
     this.root.hidden = true;
@@ -212,6 +214,7 @@ export class ExportDialog {
 
   private render() {
     ++this.renderVersion;
+    this.refreshVideoFields = null;
     for (const { picker } of this.pickers) picker.dispose();
     this.pickers = [];
     this.body.replaceChildren();
@@ -250,6 +253,7 @@ export class ExportDialog {
     this.host.shotChanged();
     this.persist();
     if (rerender) this.render();
+    else this.refreshVideoFields?.();
   }
 
   /** slider + number pair bound to a numeric shot field */
@@ -312,16 +316,18 @@ export class ExportDialog {
       fovEl.textContent = `Field of view ${hfov(shot.focal, shot.sensor, this.aspect).toFixed(1)}° × ` +
         `${vfov(shot.focal, shot.sensor, this.aspect).toFixed(1)}° (h × v) · sensor covers the longer side, ` +
         `like Blender's Auto fit`;
+      for (let i = 0; i < FOCALS.length; i++)
+        chips.children[i]?.classList.toggle("on", shot.focal === FOCALS[i]);
     };
     const focal = h("input");
     focal.type = "number"; focal.min = "4"; focal.max = "600"; focal.step = "1"; focal.value = String(shot.focal);
-    focal.onchange = () => { const v = Number(focal.value); if (v >= 4) { this.shotEdit({ focal: v }); updFov(); } };
+    focal.onchange = () => { const v = Number(focal.value); if (v >= 4) this.shotEdit({ focal: v }); };
     const chips = h("div", "x-chips");
     for (const f of FOCALS)
       chips.append(btn(`${f}`, "chip" + (shot.focal === f ? " on" : ""), () => this.shotEdit({ focal: f }, true), `${f} mm`));
     const sensor = select(SENSORS.map((s) => [s.mm, s.label] as [number, string]),
       SENSORS.find((s) => Math.abs(s.mm - shot.sensor) < 0.01)?.mm ?? 36,
-      (v) => { this.shotEdit({ sensor: v }); updFov(); });
+      (v) => this.shotEdit({ sensor: v }));
     lens.append(field("Focal length", focal, h("span", "u", "mm")), chips,
       this.visualField("export-sensor", "Sensor", sensor, (value) => {
         const mm = Number(value), aspect = this.aspect;
@@ -334,7 +340,6 @@ export class ExportDialog {
         `${vfov(shot.focal, Number(value), this.aspect).toFixed(1)}° field of view (h × v). ` +
         "Effective gate at the current output aspect; dashed outline: largest sensor, same scale."),
       fovEl);
-    updFov();
 
     const outS = this.section("Output");
     const w = h("input"), hh = h("input");
@@ -414,16 +419,30 @@ export class ExportDialog {
       field("Background", bg, h("span", "u", canAlpha(o) ? "" : "PNG or WebM VP9 for alpha")),
       field("", floorLbl));
 
-    const job = this.job(), frames = job ? frameCount(job) : null;
-    const summary = h("div", "x-summary", frames !== null
-      ? `${o.width} × ${o.height} · ${o.fps} fps · ${fmtTime(frames / o.fps)} s → ${frames} frames`
-      : `${o.width} × ${o.height} · ${o.fps} fps · record a take to export`);
+    const summary = h("div", "x-summary");
     const go = btn("Render video", "btn primary x-go", () => void this.renderVideoJob());
-    go.disabled = !job || !this.host.path();
-    if (go.disabled) go.title = "Open a recorded take to render video.";
     const foot = h("div", "x-foot");
     foot.append(summary, go);
     this.body.append(foot);
+    let probeKey = key;
+    this.refreshVideoFields = () => {
+      const job = this.job(), frames = job ? frameCount(job) : null;
+      summary.textContent = frames !== null
+        ? `${o.width} × ${o.height} · ${o.fps} fps · ${fmtTime(frames / o.fps)} s → ${frames} frames`
+        : `${o.width} × ${o.height} · ${o.fps} fps · record a take to export`;
+      go.disabled = !job || !this.host.path();
+      go.title = go.disabled ? "Open a recorded take to render video." : "";
+      updFov();
+      for (const { picker } of this.pickers) picker.sync();
+      const nextKey = `${o.width}x${o.height}@${o.fps}`;
+      if (nextKey !== probeKey) {
+        probeKey = nextKey;
+        this.supported = null;
+        fillCodecs();
+        void this.probe(fillCodecs);
+      }
+    };
+    this.refreshVideoFields();
     void this.probe(fillCodecs);
   }
 
@@ -446,6 +465,7 @@ export class ExportDialog {
     this.persist();
     this.host.shotChanged();
     if (rerender) this.render();
+    else this.refreshVideoFields?.();
   }
 
   private job(): VideoJob | null {

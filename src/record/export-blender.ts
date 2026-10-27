@@ -143,8 +143,8 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
   }
 
   if (job.floor) {
-    const tex = checkerTexture();
-    tex.repeat.set(20 / 0.2, 20 / 0.2);
+    const tex = display.textures ? checkerTexture() : null;
+    tex?.repeat.set(20 / 0.2, 20 / 0.2);
     const floor = new THREE.Mesh(new THREE.PlaneGeometry(20, 20),
       new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9, metalness: 0 }));
     floor.name = unique("ground");
