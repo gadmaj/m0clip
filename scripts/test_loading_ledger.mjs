@@ -128,9 +128,10 @@ assert.equal(pendingBeforeLoad.complete, false, 'Completion inside Load cannot r
 assert.equal(beforeIntake, undefined);
 
 const catalogue = { version: 1, release: 'intake-scope', sizes: {
-  '/main.js': 100, '/browser.js': 19_144, '/bundle.js': 15_422, '/model.bin': 700,
-}, dependencies: { '/main.js': ['/browser.js'], '/bundle.js': ['/browser.js'] },
-  runtime: { page: ['/main.js', '/browser.js'], worker: [], inference: [], localMap: ['/bundle.js', '/browser.js'] },
+  '/main.js': 100, '/browser.js': 19_144, '/bundle.js': 15_422, '/model.bin': 700, '/verify.worker.js': 500,
+}, dependencies: { '/main.js': ['/browser.js'], '/bundle.js': ['/browser.js'], '/verify.worker.js': ['/bundle.js'] },
+  runtime: { page: ['/main.js', '/browser.js'], worker: [], inference: [], localMap: ['/bundle.js', '/browser.js'],
+    localMapVerification: ['/verify.worker.js', '/bundle.js', '/browser.js'] },
   mapVisuals: {}, modelBundles: {} };
 const completeBeforeLoad = { complete: true, before: 100 };
 const receipt = { name: 'https://scene.test/browser.js', startTime: 10, responseEnd: 20, decodedBodySize: 19_144, responseStatus: 200 };
@@ -173,5 +174,90 @@ for (const [intake, entries, independentSharedRoot] of [
   assert.equal([...scoped.transfers()].some(asset => asset.url === '/bundle.js'), false,
     'A pre-Load ZIP reader cannot be credited as a selected HTTP download');
 }
+
+// Exercise the actual ledger boundary: completed page reads and prior intake
+// never satisfy the same URL required in the independent verification realm.
+const verifierProgress = new SceneProgress(), verifierGeneration = verifierProgress.begin(0);
+const pageAssets = plannedAssets(catalogue, catalogue.runtime.page, [],
+  priorIntakeAssets(catalogue, completeBeforeLoad, []));
+const verificationAssets = plannedAssets(catalogue, catalogue.runtime.localMapVerification, [])
+  .map(asset => ({ ...asset, realm: 'map-verification' }));
+verifierProgress.update(verifierGeneration,
+  [transfer('page:shared', '/browser.js', 19_144, 19_144, 'done')], 1);
+verifierProgress.freeze(verifierGeneration, [...pageAssets, ...verificationAssets], 2);
+const verifierMaximum = 100 + 500 + 15_422 + 19_144 + 19_144;
+assert.equal(verifierProgress.snapshot(2).knownTotal, verifierMaximum);
+assert.equal(verifierProgress.snapshot(2).loaded, 19_144, 'Page completion cannot credit worker consumption');
+verifierProgress.update(verifierGeneration, [transfer('page:main', '/main.js', 100, 100, 'done')], 3);
+assert.equal(verifierProgress.snapshot(3).remaining, 500 + 15_422 + 19_144);
+verifierProgress.update(verifierGeneration, verificationAssets.map(asset => ({
+  ...transfer(`worker:${asset.url}`, asset.url, asset.bytes, asset.bytes, 'done'), realm: asset.realm,
+})), 4);
+assert.equal(verifierProgress.snapshot(4).remaining, 0);
+assert.equal(verifierProgress.snapshot(4).knownTotal, verifierMaximum, 'Actual worker receipts never change the frozen maximum');
+assert.equal(verifierProgress.hasCatalogueMismatch, false);
+assert.equal([...verifierProgress.transfers()].filter(item => item.url === '/browser.js').length, 2,
+  'Realm isolation retains the exact canonical HTTP URL in each detail record');
+const verifierNext = verifierProgress.begin(5);
+verifierProgress.freeze(verifierNext, verificationAssets, 6);
+verifierProgress.update(verifierGeneration, verificationAssets.map(asset => ({
+  ...transfer(`late:${asset.url}`, asset.url, asset.bytes, asset.bytes, 'done'), realm: asset.realm,
+})), 7);
+assert.equal(verifierProgress.snapshot(7).loaded, 0, 'Old verification generations cannot close new worker units');
+
+// Ownership is metadata and must precede freeze even when the initiating
+// window's actual root HTTP timing is delivered only after verification.
+const rootUrl = '/verify.worker.js', rootBytes = 23_000;
+const rootAssets = [{ url: rootUrl, bytes: rootBytes, realm: 'map-verification' }];
+const pageRoot = transfer('page:root', rootUrl, rootBytes, rootBytes, 'done');
+const scopedRoot = { ...transfer('worker:root', rootUrl, rootBytes, rootBytes, 'done'), realm: 'map-verification' };
+for (const ordering of ['page-before-ownership', 'ownership-before-page', 'scoped-before-ownership', 'scoped-after-freeze']) {
+  const rootProgress = new SceneProgress(), generation = rootProgress.begin(0);
+  if (ordering === 'page-before-ownership') rootProgress.update(generation, [pageRoot], 1);
+  if (ordering === 'scoped-before-ownership') rootProgress.update(generation, [scopedRoot, pageRoot], 1);
+  rootProgress.ownWorkerRoot(generation, `https://scene.test${rootUrl}`, 2);
+  const hadReceipt = ordering === 'page-before-ownership' || ordering === 'scoped-before-ownership';
+  assert.equal(rootProgress.snapshot(2).loaded, hadReceipt ? rootBytes : 0);
+  assert.equal([...rootProgress.transfers()].length, hadReceipt ? 1 : 0,
+    'Root ownership must not invent a transfer or consumed bytes');
+  rootProgress.freeze(generation, rootAssets, 3);
+  assert.equal(rootProgress.snapshot(3).knownTotal, rootBytes, 'The owned root fixes exactly one 23000-byte unit');
+  assert.equal(rootProgress.snapshot(3).remaining, hadReceipt ? 0 : rootBytes);
+  rootProgress.update(generation, ordering === 'scoped-after-freeze' ? [scopedRoot, pageRoot] : [pageRoot, scopedRoot], 4);
+  let snapshot = rootProgress.snapshot(4);
+  assert.equal(snapshot.loaded, rootBytes);
+  assert.equal(snapshot.remaining, 0, 'Actual HTTP completion closes the already-owned root after freeze');
+  assert.equal(snapshot.knownTotal, rootBytes, 'Receipt order cannot grow or shrink the frozen root maximum');
+  assert.equal([...rootProgress.transfers()].length, 1, 'Page and scoped observations remain one actual root entity');
+  assert.equal(rootProgress.hasCatalogueMismatch, false);
+  const next = rootProgress.begin(5);
+  rootProgress.ownWorkerRoot(generation, rootUrl, 6);
+  rootProgress.update(generation, [pageRoot, scopedRoot], 6);
+  rootProgress.freeze(next, rootAssets, 7);
+  assert.equal(rootProgress.snapshot(7).loaded, 0);
+  assert.equal([...rootProgress.transfers()].length, 0, 'Old metadata and HTTP receipts never create new-generation records');
+  rootProgress.update(next, [pageRoot], 8);
+  snapshot = rootProgress.snapshot(8);
+  assert.equal(snapshot.loaded, 0, 'Stale ownership cannot route a new-generation page entry into the worker unit');
+  assert.equal(snapshot.knownTotal, rootBytes);
+  assert.equal(rootProgress.hasCatalogueMismatch, true, 'A genuinely unowned page body remains an unplanned entity');
+}
+
+const partialRoot = new SceneProgress(), partialGeneration = partialRoot.begin(0);
+partialRoot.update(partialGeneration, [transfer('root:pending', rootUrl, 1000, null)], 1);
+partialRoot.ownWorkerRoot(partialGeneration, rootUrl, 2);
+let partialSnapshot = partialRoot.snapshot(2);
+assert.equal(partialSnapshot.loaded, 1000, 'Ownership preserves only the actual consumed prefix');
+assert.equal(partialSnapshot.active, 1, 'Ownership preserves the real active request');
+assert.equal(partialSnapshot.unknown, 1, 'Ownership does not guess an unadvertised HTTP total');
+assert.equal([...partialRoot.transfers()].length, 1);
+partialRoot.freeze(partialGeneration, rootAssets, 3);
+partialSnapshot = partialRoot.snapshot(3);
+assert.equal(partialSnapshot.knownTotal, rootBytes);
+assert.equal(partialSnapshot.remaining, rootBytes - 1000);
+partialRoot.update(partialGeneration, [transfer('root:pending', rootUrl, rootBytes, rootBytes, 'done')], 4);
+assert.equal(partialRoot.snapshot(4).remaining, 0);
+assert.equal(partialRoot.snapshot(4).active, 0, 'Migrated request activity ends on its actual terminal update');
+assert.equal(partialRoot.hasCatalogueMismatch, false);
 console.log(JSON.stringify({ fixedMaximum: true, uniqueEntities: true, retainedPreflight: true,
   retryIsolation: true, generationIsolation: true, realRate: true, stalledEstimate: true, catalogueMismatch: true }));

@@ -575,6 +575,9 @@ class App {
       const assets = [
         ...plannedAssets(catalogue, catalogue.runtime.page, [], priorPageAssets),
         ...plannedAssets(catalogue, [...plan.urls, ...visuals.urls, ...prepared.map(asset => asset.url)], prepared),
+        ...(launch.usesLocalMapVerification
+          ? plannedAssets(catalogue, catalogue.runtime.localMapVerification, []).map(asset => ({ ...asset, realm: 'map-verification' as const }))
+          : []),
       ];
       launch.freezeAssets(plan.generation, assets, prepared);
       this.send({ t: 'loadingProceed', generation: plan.generation, token: plan.token });
@@ -640,7 +643,8 @@ class App {
       const id=terrain.slice(4),fingerprint=id.slice(6);
       if(!/^[a-f0-9]{64}$/.test(fingerprint))throw new Error('Choose a verified map bundle before restoring this view.');
       const expected=identity??this.sessionMaps.get(id)?.identity??{id,fingerprint,name:'Local map',game:'Local'};
-      return openLocalMap(undefined,expected,undefined,signal).then(source=>{
+      const observer = launch.active ? launch.beginLocalMapVerification() : undefined;
+      return openLocalMap(undefined,expected,undefined,signal,observer).then(source=>{
         signal?.throwIfAborted();
         this.sessionMaps.set(source.id,{identity:expected,source:new WeakRef(source)});
         return source;

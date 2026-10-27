@@ -1,5 +1,6 @@
 import type { MapBundleIndex } from '../maps/bundle';
 import { registerLocalMap, type LocalMapIdentity, type MapSource } from '../maps/source';
+import { verifyMapBundle, type BundleVerificationObserver } from '../maps/bundle-verification';
 
 let localMapModule: { complete: boolean } | undefined;
 /** File rejection or cancellation does not unload an imported module graph. */
@@ -12,12 +13,12 @@ export async function inspectLocalMap(file: File, signal?: AbortSignal): Promise
   intake.complete = true;
   return inspectMapBundle(file, signal);
 }
-export async function loadLocalMap(file: File, signal?: AbortSignal): Promise<MapSource> {
-  // Full verification is intentionally loaded only by the user's Load action.
-  const intake: { complete: boolean } = localMapModule = { complete: false };
-  const { decodeMapBundle } = await import('../maps/bundle');
-  intake.complete = true;
-  return registerLocalMap(await decodeMapBundle(file, signal));
+export async function loadLocalMap(file: File, signal?: AbortSignal,
+  observer?: BundleVerificationObserver): Promise<MapSource> {
+  const bundle = await verifyMapBundle(file, signal, observer);
+  // An abort between the worker's final reply and this continuation cannot register.
+  signal?.throwIfAborted();
+  return registerLocalMap(bundle);
 }
 /** User action is required to select/reattach a file; no file data enters a URL or storage. */
 export function openLocalMap(
@@ -25,6 +26,7 @@ export function openLocalMap(
   expected?: LocalMapIdentity,
   prepare?: (source: MapSource, signal: AbortSignal, commit: () => void) => Promise<void>,
   signal?: AbortSignal,
+  observer?: BundleVerificationObserver,
 ): Promise<MapSource> {
   if (signal?.aborted) return Promise.reject(signal.reason);
   const { promise, resolve, reject } = Promise.withResolvers<MapSource>();
@@ -90,7 +92,7 @@ export function openLocalMap(
     load.disabled = true; input.disabled = true;
     status.textContent = 'Verifying local files…';
     try {
-      const source = await loadLocalMap(selected, controller.signal);
+      const source = await loadLocalMap(selected, controller.signal, observer);
       if (settled) return;
       if (expected && source.identity?.fingerprint !== expected.fingerprint)
         throw new Error(`Different map content. Choose the original bundle for ${expected.name}.`);

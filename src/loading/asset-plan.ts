@@ -2,6 +2,8 @@
 export interface PlannedAsset {
   url: string;
   bytes: number;
+  /** Independent worker module reads cannot be credited from the page realm. */
+  realm?: 'map-verification';
 }
 
 /** Optional module intake state captured before this load starts. */
@@ -22,6 +24,8 @@ export interface StartupAssetCatalogue {
     inference: string[];
     /** Optional file-intake module graph, not a scene download root. */
     localMap: string[];
+    /** Full converted-map verifier, selected only by a Load that uses it. */
+    localMapVerification: string[];
   };
   mapVisuals: Record<string, string[]>;
   modelBundles: Record<string, string[]>;

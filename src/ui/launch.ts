@@ -16,6 +16,7 @@ import './launch.css';
 import { inspectLocalMap, loadLocalMap, localMapIntakeState } from './local-map';
 import type { MapBundleIndex } from '../maps/bundle';
 import type { MapSource } from '../maps/source';
+import type { BundleVerificationObserver } from '../maps/bundle-verification';
 
 export interface LaunchSelection {
   terrain: TerrainName;
@@ -81,6 +82,7 @@ class LaunchController {
   private progress = new SceneProgress();
   private loadGeneration = 0;
   private preloadedLocalMap?: PriorModuleIntake;
+  private localMapVerification = false;
   private progressTimer?: number;
   private stopTransfers?: () => void;
   private transferRoot!: HTMLElement;
@@ -123,6 +125,20 @@ class LaunchController {
   get active() { return this.showing; }
   get loadingId() { return this.loadGeneration; }
   get priorLocalMapIntake() { return this.preloadedLocalMap; }
+  get usesLocalMapVerification() { return this.localMapVerification; }
+  /** Capture the load that owns this worker, never a later scene generation. */
+  beginLocalMapVerification(): BundleVerificationObserver {
+    this.localMapVerification = true;
+    const generation = this.loadGeneration;
+    return {
+      root: url => {
+        if (!this.loading || !this.showing || generation !== this.loadGeneration) return;
+        this.progress.ownWorkerRoot(generation, url, performance.now());
+        this.detailsDirty = true;
+      },
+      transfers: updates => this.receiveTransfers(generation, updates),
+    };
+  }
   onEnter(callback: () => void) { this.callbacks.push(callback); }
   onFailure(callback: () => void) { this.failureCallbacks.push(callback); }
   ownsKey(code: string) { return this.heldKeys.has(code); }
@@ -229,7 +245,7 @@ class LaunchController {
         cancel.hidden=false;cancel.onclick=()=>controller.abort();
         this.phase('Verifying local map files…');
         try{
-          const source=await loadLocalMap(this.selection.localFile,controller.signal);
+          const source=await loadLocalMap(this.selection.localFile,controller.signal,this.beginLocalMapVerification());
           controller.signal.throwIfAborted();
           this.selection.localSource=source;this.selection.terrain=`map:${source.id}`;this.selection.localFile=undefined;
           const bytes=Array.from(source.payload!.files.values()).reduce((sum,file)=>sum+file.size,0);
@@ -340,6 +356,7 @@ class LaunchController {
     const started = performance.now(), intake = localMapIntakeState();
     // Copy before Load's verification; later imports cannot rewrite this scope.
     this.preloadedLocalMap = intake && { complete: intake.complete, before: started };
+    this.localMapVerification = false;
     for (const option of this.root.querySelectorAll<HTMLOptionElement>('option[data-preview]')) {
       if (option.dataset.preview) registerPreviewAsset(option.dataset.preview);
     }

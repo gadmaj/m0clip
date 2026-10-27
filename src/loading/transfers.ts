@@ -6,6 +6,7 @@ export interface TransferUpdate {
   loaded: number;
   total: number | null;
   state: 'loading' | 'done' | 'failed' | 'cancelled';
+  realm?: 'map-verification';
 }
 
 interface Collector {
@@ -228,7 +229,7 @@ function attachFetch(collector: Collector) {
 }
 
 /** Observe until explicit scene entry; stopping never cancels application work. */
-export function observeTransfers(prefix: string, report: (updates: TransferUpdate[]) => void, started?: number): () => void {
+export function observeTransfers(prefix: string, report: (updates: TransferUpdate[]) => void, started?: number): (options?: { drain?: boolean }) => void {
   const pending = new Map<string, TransferUpdate>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let notify: typeof report | undefined = report;
@@ -288,8 +289,16 @@ export function observeTransfers(prefix: string, report: (updates: TransferUpdat
     resources = undefined;
     accountResources(performance.getEntriesByType('resource'));
   }
-  return () => {
-    if (!collector.active) return;
+  let stopping = false;
+  return options => {
+    if (!collector.active || stopping) return;
+    // Explicit worker terminals must deliver queued actual timings before teardown.
+    // Guard re-entry because reporting can synchronously stop its owner.
+    stopping = true;
+    if (options?.drain) {
+      accountResources(resources?.takeRecords() ?? []);
+      flush();
+    }
     collector.active = false;
     notify = undefined;
     clearTimeout(timer);

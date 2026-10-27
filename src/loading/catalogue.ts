@@ -31,6 +31,7 @@ export function loadStartupCatalogue(): Promise<StartupAssetCatalogue> {
       || !catalogue.sizes || !catalogue.dependencies || !catalogue.runtime
       || !Array.isArray(catalogue.runtime.page) || !Array.isArray(catalogue.runtime.worker)
       || !Array.isArray(catalogue.runtime.inference) || !Array.isArray(catalogue.runtime.localMap)
+      || !Array.isArray(catalogue.runtime.localMapVerification)
       || !catalogue.mapVisuals || !catalogue.modelBundles) {
       throw new Error('The scene asset catalogue is incomplete. Reload to try again.');
     }

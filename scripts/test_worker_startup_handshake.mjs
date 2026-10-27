@@ -61,7 +61,7 @@ function fixture(packs, { local = false, installMetadata = false } = {}) {
   const state = { packs: packs.map(pack => local ? (({ downloadUrl, ...metadata }) => metadata)(pack) : pack), locals: {},
     listCalls: 0, installCalls: 0, loadCalls: [], prepares: 0, compiles: [], installMetadata };
   const catalogue = { version: 1, release: 'test', sizes: {}, dependencies: {}, runtime: {
-    page: [], worker: ['/runtime/worker.js'], inference: ['/runtime/inference.mjs', '/runtime/inference.wasm'], localMap: [],
+    page: [], worker: ['/runtime/worker.js'], inference: ['/runtime/inference.mjs', '/runtime/inference.wasm'], localMap: [], localMapVerification: [],
   }, mapVisuals: {}, modelBundles: {} };
   const served = new Map(), requests = [], messages = [], listeners = new Set();
   const json = value => ({ body: JSON.stringify(value), headers: { 'content-type': 'application/json' } });

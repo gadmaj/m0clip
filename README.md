@@ -111,8 +111,9 @@ Inline physics data and repeated references to the same file are supported.
 Unsafe paths and excessively complex dependency metadata are rejected before
 the map becomes active.
 
-Choose **Open map bundle…** in the map gallery. Files are checked locally, not
-uploaded. Cancel verification before installation to keep the current scene.
+Choose **Open map bundle…** in the map gallery. Files are checked locally in a
+dedicated worker, not uploaded. Cancel verification before installation to keep
+the current scene; archive bytes are separate from download progress.
 Local maps last for the tab's session. Saved takes and views remember
 the map's identity, not its files: after reloading, reattach the same bundle.
 Raw BSP, GMA and VPK files are not browser import formats yet.

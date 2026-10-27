@@ -30,7 +30,7 @@ const { build } = require('esbuild');
   const image = '/assets/maps/selected/material.png';
   const style = '/assets/maps/selected/styles.rgba.gz';
   const authored = authoredCharacter('gingerbread-man').url;
-  const catalogue = { version: 1, release: 'test', runtime: { page: [], worker: [], inference: [], localMap: [] },
+  const catalogue = { version: 1, release: 'test', runtime: { page: [], worker: [], inference: [], localMap: [], localMapVerification: [] },
     sizes: Object.fromEntries([cookie, dog, head, world, props, manifest, image, style, authored, '/assets/dog.bin'].map(url => [url, 17])),
     dependencies: { [world]: [image], [props]: [image], [dog]: ['/assets/dog.bin'], [authored]: [image] },
     mapVisuals: { selected: [manifest, world, props, style], unused: ['/unused.glb'] }, modelBundles: {} };

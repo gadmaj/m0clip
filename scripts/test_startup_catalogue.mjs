@@ -36,18 +36,26 @@ try {
     intake: { type: 'chunk', fileName: 'assets/bundle.js', facadeModuleId: null,
       moduleIds: ['/fixture/src/maps/bundle.ts'], imports: ['assets/common.js', 'assets/browser.js'], dynamicImports: [] },
   });
+  await put('assets/bundle-verification.worker.js', 'import "./bundle.js";');
+  const verificationChunks = captureRuntimeChunks({
+    verification: { type: 'chunk', fileName: 'assets/bundle-verification.worker.js', facadeModuleId: null,
+      moduleIds: ['/fixture/src/maps/bundle-verification.worker.ts'], imports: ['assets/bundle.js'], dynamicImports: [] },
+  }, true);
   await put('assets/sim.worker.js', 'new URL("./ort.wasm", import.meta.url); new URL("./not-emitted.mjs", import.meta.url);');
   await put('assets/ort.wasm', Buffer.alloc(41)); await put('wasm/old-unused-runtime.wasm', Buffer.alloc(999));
   const graph = await buildRuntimeGraph(root, [
     chunk('/assets/shell.js', 'shell', ['/assets/common.js']),
     chunk('/assets/common.js'), chunk('/assets/three.js'),
     chunk('/assets/main.js', 'page', ['/assets/common.js', '/assets/three.js', '/assets/browser.js'], ['/assets/main.css'], ['/assets/GLTFExporter.js']),
-    chunk('/assets/sim.worker.js', 'worker'), chunk('/assets/GLTFExporter.js'), chunk('/assets/browser.js'), ...intakeChunks,
+    chunk('/assets/sim.worker.js', 'worker'), chunk('/assets/GLTFExporter.js'), chunk('/assets/browser.js'), ...intakeChunks, ...verificationChunks,
   ]);
   assert.deepEqual(graph.runtime.page, ['/assets/browser.js', '/assets/main.css', '/assets/main.js', '/assets/three.js']);
   assert.deepEqual(graph.dependencies['/assets/main.js'], ['/assets/browser.js', '/assets/main.css', '/assets/three.js']);
   assert.deepEqual(graph.runtime.localMap, ['/assets/browser.js', '/assets/bundle.js'],
     'The real optional intake graph includes shared page dependencies, not preloaded shell files');
+  assert.deepEqual(graph.runtime.localMapVerification,
+    ['/assets/browser.js', '/assets/bundle-verification.worker.js', '/assets/bundle.js', '/assets/common.js'],
+    'The independent verifier keeps the complete static graph, including shell/page overlaps');
   assert(!graph.runtime.page.includes('/assets/bundle.js'), 'Deferred intake itself is never a scene download root');
   assert.deepEqual(graph.runtime.worker, ['/assets/sim.worker.js', '/wasm/mujoco.js', '/wasm/mujoco.wasm']);
   assert.deepEqual(graph.runtime.inference, ['/assets/ort.wasm']);
@@ -119,6 +127,7 @@ try {
     ['/src/main.ts', 'import "/src/shell.ts"; import "/src/render.ts"; import "/src/browser.ts"; import("/src/unused-exporter.ts");'],
     ['/src/render.ts', 'export const renderer = "transformed ✓";'],
     ['/src/maps/bundle.ts', 'import "/src/shell.ts"; import "/src/browser.ts"; export const inspect = () => {};'],
+    ['/src/maps/bundle-verification.worker.ts?worker_file&type=module', 'import "/src/maps/bundle.ts";'],
     ['/src/browser.ts', 'export const inflate = value => value;'],
     ['/src/worker/sim.worker.ts?worker_file&type=module', 'import "/src/policy.ts";'],
     ['/src/policy.ts', 'new URL("/runtime/ort.wasm", import.meta.url);'],
@@ -128,6 +137,8 @@ try {
   const dev = await buildDevelopmentCatalogue(root, async key => { loaded.push(key); return bodies.get(key) ?? null; });
   assert.deepEqual(dev.runtime.page, ['/src/browser.ts', '/src/main.ts', '/src/render.ts']);
   assert.deepEqual(dev.runtime.localMap, ['/src/browser.ts', '/src/maps/bundle.ts']);
+  assert.deepEqual(dev.runtime.localMapVerification,
+    ['/src/browser.ts', '/src/maps/bundle-verification.worker.ts?worker_file&type=module', '/src/maps/bundle.ts', '/src/shell.ts']);
   assert.equal(dev.sizes['/src/render.ts'], Buffer.byteLength(bodies.get('/src/render.ts')));
   assert.deepEqual(dev.runtime.inference, ['/runtime/ort.wasm']);
   assert.equal(dev.sizes['/runtime/ort.wasm'], 37);

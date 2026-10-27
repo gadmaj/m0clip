@@ -18,7 +18,7 @@ const crossOriginIsolation = {
 
 type RuntimeChunk = {
   url: string;
-  role?: 'page' | 'worker' | 'shell';
+  role?: 'page' | 'worker' | 'shell' | 'localMap' | 'localMapVerification';
   imports: string[];
   dynamicImports: string[];
   css: string[];

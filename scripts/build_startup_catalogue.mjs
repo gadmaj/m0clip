@@ -154,7 +154,7 @@ export async function buildStartupCatalogue(directory, runtime, options = {}) {
   // Runtime edges are static imports/CSS only. ORT URL assets are separately gated
   // by selected inference; never attach them to the worker's unconditional graph.
   for (const [key, values] of Object.entries(options.dependencies ?? {})) links(key, values);
-  for (const group of ['page', 'worker', 'inference', 'localMap']) {
+  for (const group of ['page', 'worker', 'inference', 'localMap', 'localMapVerification']) {
     for (const key of runtime[group]) requireAsset(key, '/');
   }
   const sceneDependencies = new Set([...Object.values(dependencies).flat(), ...Object.values(runtime).flat(), ...Object.values(mapVisuals).flat(), ...Object.values(modelBundles).flat()]);
@@ -170,7 +170,7 @@ export async function buildStartupCatalogue(directory, runtime, options = {}) {
 /** Record real Rollup chunks, including optimized dynamic entries without a facade.
  * @param {import('rollup').OutputBundle} bundle
  * @param {boolean} workerBuild
- * @returns {Array<{url: string, role?: 'page'|'worker'|'shell'|'localMap', imports: string[], dynamicImports: string[], css: string[], assets: string[]}>}
+ * @returns {Array<{url: string, role?: 'page'|'worker'|'shell'|'localMap'|'localMapVerification', imports: string[], dynamicImports: string[], css: string[], assets: string[]}>}
  */
 export function captureRuntimeChunks(bundle, workerBuild = false) {
   const chunks = [], url = file => '/' + file.replace(/^\//, '');
@@ -179,6 +179,7 @@ export function captureRuntimeChunks(bundle, workerBuild = false) {
     const facade = chunk.facadeModuleId?.replaceAll('\\', '/') ?? '';
     const owns = pattern => pattern.test(facade) || chunk.moduleIds.some(id => pattern.test(id.replaceAll('\\', '/')));
     const role = workerBuild && owns(/\/src\/worker\/sim\.worker\.ts(?:\?|$)/) ? 'worker'
+      : workerBuild && owns(/\/src\/maps\/bundle-verification\.worker\.ts(?:\?|$)/) ? 'localMapVerification'
       : owns(/\/src\/main\.ts(?:\?|$)/) ? 'page'
       : !workerBuild && chunk.isEntry ? 'shell'
       : !workerBuild && owns(/\/src\/maps\/bundle\.ts(?:\?|$)/) ? 'localMap' : undefined;
@@ -199,7 +200,9 @@ export async function buildRuntimeGraph(directory, chunks) {
   const worker = chunks.find(chunk => chunk.role === 'worker');
   const shell = chunks.find(chunk => chunk.role === 'shell');
   const localMap = chunks.find(chunk => chunk.role === 'localMap');
-  if (!page || !worker || !shell || !localMap) throw Error('Startup catalogue requires the launch, main, simulation worker and local-map intake output graphs');
+  const localMapVerification = chunks.find(chunk => chunk.role === 'localMapVerification');
+  if (!page || !worker || !shell || !localMap || !localMapVerification)
+    throw Error('Startup catalogue requires the launch, main, simulation worker, local-map intake and verification worker output graphs');
   const dependencies = {};
   for (const chunk of chunks) dependencies[chunk.url] = unique([...chunk.imports, ...chunk.css, ...chunk.assets.filter(key => !/\.(?:js|mjs|wasm)$/.test(key))]);
   function closure(roots) {
@@ -216,6 +219,8 @@ export async function buildRuntimeGraph(directory, chunks) {
   const shellFiles = closure([shell.url]);
   const pageFiles = [...closure([page.url])].filter(key => !shellFiles.has(key));
   const localMapFiles = [...closure([localMap.url])].filter(key => !shellFiles.has(key));
+  // An independent realm needs its full static graph, even shared page/shell URLs.
+  const localMapVerificationFiles = closure([localMapVerification.url]);
   for (const key of pageFiles) if (dependencies[key]) dependencies[key] = dependencies[key].filter(child => !shellFiles.has(child));
   const workerFiles = closure([worker.url]);
   const inferenceFiles = new Set(), queue = [...workerFiles];
@@ -236,7 +241,8 @@ export async function buildRuntimeGraph(directory, chunks) {
   }
   return {
     runtime: { page: unique(pageFiles), worker: unique([...workerFiles, '/wasm/mujoco.js', '/wasm/mujoco.wasm']),
-      inference: unique([...inferenceFiles]), localMap: unique(localMapFiles) },
+      inference: unique([...inferenceFiles]), localMap: unique(localMapFiles),
+      localMapVerification: unique([...localMapVerificationFiles]) },
     dependencies,
   };
 }
@@ -270,7 +276,8 @@ export async function buildDevelopmentCatalogue(publicDirectory, loadModule) {
     for (const child of children) await scan(child);
   }
   const page = '/src/main.ts', worker = '/src/worker/sim.worker.ts?worker_file&type=module', localMap = '/src/maps/bundle.ts';
-  await scan('/src/start.ts'); await scan(page); await scan(worker); await scan(localMap);
+  const localMapVerification = '/src/maps/bundle-verification.worker.ts?worker_file&type=module';
+  await scan('/src/start.ts'); await scan(page); await scan(worker); await scan(localMap); await scan(localMapVerification);
   function closure(root) {
     const found = new Set();
     function add(key) { if (found.has(key)) return; found.add(key); for (const child of modules.get(key) ?? []) add(child); }
@@ -298,10 +305,12 @@ export async function buildDevelopmentCatalogue(publicDirectory, loadModule) {
   }
   const pageFiles = [...closure(page)].filter(key => !shell.has(key)).sort();
   const localMapFiles = [...closure(localMap)].filter(key => !shell.has(key)).sort();
+  const localMapVerificationFiles = [...closure(localMapVerification)].sort();
   for (const key of pageFiles) dependencies[key] = dependencies[key].filter(child => !shell.has(child));
   const runtime = { page: pageFiles, worker: unique([...workerFiles, '/wasm/mujoco.js', '/wasm/mujoco.wasm']),
-    inference: unique([...inference]), localMap: localMapFiles };
-  const catalogue = await buildStartupCatalogue(publicDirectory, { page: [], worker: ['/wasm/mujoco.js', '/wasm/mujoco.wasm'], inference: [], localMap: [] });
+    inference: unique([...inference]), localMap: localMapFiles, localMapVerification: localMapVerificationFiles };
+  const catalogue = await buildStartupCatalogue(publicDirectory, { page: [], worker: ['/wasm/mujoco.js', '/wasm/mujoco.wasm'],
+    inference: [], localMap: [], localMapVerification: [] });
   Object.assign(catalogue.sizes, sizes);
   Object.assign(catalogue.dependencies, dependencies);
   catalogue.runtime = runtime;
