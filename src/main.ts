@@ -1749,6 +1749,7 @@ class App {
       case 'robotPlacementFailed':
         if (this.placingRobot) { this.placementPending = false; document.getElementById('flight-hint')!.textContent = m.msg; }
         return;
+      case "policyFinished": return this.panel.showPolicyFinished(m.policy,m.active);
       case "notice": return this.showOverlay(m.msg, "notice");
       case "error":
         this.pendingViewRestore?.reject(new Error(m.msg));this.pendingViewRestore=null;
