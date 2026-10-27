@@ -3,8 +3,7 @@
 
 Driver: src/core/drivers/r1_fw.ts (config block `r1:` with `firmware: true`). Obs / command / target details come
 from the decompiled r1_controller (1.0.2.154 in-memory dump; the unprotected DWARF builds 1.0.2.181 and 1.0.2.223)
-and bench ONNX-I/O captures — see docs/R1_FIRMWARE_POLICIES.md and
-orange_pi_workbench/docs/HANDOFF_R1_POLICIES.md.
+and bench ONNX-I/O captures.
 
 What gets packed (registry/r1/<group>/<name>.yaml + registry/r1/index.json, nets / CSVs → assets/policies/r1/):
   * every FSM the shipping firmware (OTA 1.4.2.8, ai_sport 1.0.2.154) wires up — 811/812/815/830/832/833, dances

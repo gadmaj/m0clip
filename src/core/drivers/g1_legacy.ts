@@ -1,5 +1,4 @@
-/** ai_sport 1.5.4 "legacy" (2024) G1 locomotion FSMs, decoded from bench MNN captures
- * (docs/G1_FIRMWARE_POLICIES.md):
+/** ai_sport 1.5.4 "legacy" (2024) G1 locomotion FSMs, decoded from bench MNN captures:
  *   200 hybrid_run     single net   input.1[400] = 10 x 40 frame
  *   201 blind_terrain  encoder [1500] = 50 x 30 proprio -> latent[80] (of 96); actor [480] = 400 + 80
  *   202 plane_encoder  encoder [1500] -> latent[24] (of 44);            actor [424] = 400 + 24

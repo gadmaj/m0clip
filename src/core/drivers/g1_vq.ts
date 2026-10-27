@@ -1,5 +1,5 @@
 /** ai_sport 1.5.4 "VQ-latent decoder" G1 FSMs, decoded from bench MNN captures (captures_154/probe2) and the
- * decompiled `humanoid` binary (docs/G1_FIRMWARE_POLICIES.md):
+ * decompiled `humanoid` binary:
  *
  *   503 HumanMimic2 (dances)  decoder p_obs [10 x 93] + cmd [64] -> act [29]
  *   706 OneKeyBreak (get-up)  decoder p_obs [10 x 93] + cmd [64] -> act [29]

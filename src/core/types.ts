@@ -74,7 +74,7 @@ export interface G1Cfg {
   /** firmware command shaping (Cpy* FSMs): per-axis up/down deltas per tick, the first step out of
    * standstill, and the translation speed under which the command snaps back to 0 */
   cmd_ramp?: { up: number[]; down: number[]; start: number[]; snap: number[] };
-  /** remote speed levels (decompiled + bench-checked, see docs/G1_FIRMWARE_POLICIES.md): the level sets the
+  /** remote speed levels (decompiled + bench-checked): the level sets the
    * full-stick command (and, for FsmHumanLoco, the gait); `combos` maps a remote combo to a level name or to
    * a step of the forward limit (802/801: R2+Left/Right = -/+0.1 m/s, capped at `vx_cap`) */
   speed?: G1SpeedModes;

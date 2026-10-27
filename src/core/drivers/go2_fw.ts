@@ -3,8 +3,7 @@
  * Source: Go2 OTA 1.1.15 (EDU) runs the "mcf" sport stack (mcf 1.0.0.75, shipped in 1.1.11 and unchanged since):
  * /unitree/module/mcf/module/ai/libgo2_ai_module.so (not stripped, decompiled with IDA) with the plain JSON
  * configs + MNN nets in module/ai/config. Every net was checked against bench MNN-I/O captures (libgo2mnnhook.so,
- * orange_pi_workbench/tools/ai_sport_probe/captures_go2_1115); notes in docs/GO2_FIRMWARE_POLICIES.md and
- * orange_pi_workbench/docs/HANDOFF_GO2_POLICIES.md.
+ * orange_pi_workbench/tools/ai_sport_probe/captures_go2_1115).
  *
  * One driver = a small copy of the firmware's AiController: the pack's home FSM plus the FSMs the firmware always
  * has at hand (1001 Damping, 1002 StandUp, 2006 StandDown, 2004 Recovery, 2005 AutoRecovery, 1003 FreeWalk — the

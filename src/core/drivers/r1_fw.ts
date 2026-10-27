@@ -1,7 +1,7 @@
 /** Unitree R1 firmware policies (ai_sport 1.0.2.154 `r1_controller`, OTA 1.4.2.8), each driven the way the
  * firmware drives it. Decoded from the virbox-decrypted in-memory image of r1_controller (IDA) and checked
  * against bench ONNX-I/O captures (orange_pi_workbench/tools/ai_sport_probe/orthook.c + r1_probe.py,
- * captures in captures_r1_142/; notes docs/HANDOFF_R1_POLICIES.md there).
+ * captures in captures_r1_142/).
  *
  * The firmware sticks are the RF remote record (lowstate.wireless_remote): ly, lx, rx in [-1, 1]. The web
  * command is stick × the axis maximum the driver publishes in `velRange` (symmetric), so the driver recovers the
@@ -38,7 +38,7 @@
  * `control` = 816 ArmSdkLocomotion (14 leg/waist actions, command 0, arms held by an emulated arm SDK client);
  * amp_motion with `frame: loco24` = 813 / 814 Locomotion24Dof; gait with `zero_cmd` / legs-only `action_joint_idx`
  * = 831 LocomotionArmsdk. Everything not reachable on the shipping 1.0.2.154 is decoded from the unprotected
- * 1.0.2.181 / 1.0.2.223 builds (IDA, DWARF); see docs/R1_FIRMWARE_POLICIES.md.
+ * 1.0.2.181 / 1.0.2.223 builds (IDA, DWARF).
  */
 import { clip, matFromWxyz, matTVec } from "../math";
 import type { Command, EvalConfig, RobotSpec } from "../types";

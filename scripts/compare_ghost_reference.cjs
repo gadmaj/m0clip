@@ -1,5 +1,4 @@
 /** Real noclip Ghost captures against staged and stable production bundles.
- * source deploy/development/env.sh
  * BASE_URL=http://127.0.0.1:4174 xvfb-run -a node scripts/compare_ghost_reference.cjs
  * Results persist in GHOST_COMPARISON_OUTPUT (default ~/.local/state/unitree-renderer/comparison).
  * Requires noclip's rust/pkg generated with its pinned wasm-bindgen 0.2.100.

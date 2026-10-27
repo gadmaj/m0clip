@@ -2,9 +2,8 @@
 node_modules/
 dist/
 
-# robot-derived assets: only the g1 / r1 / go2 model bundles are checked in, so a
-# fresh clone runs out of the box. Re-include per level: a parent dir must stay
-# traversable (dir/* instead of dir/) for the deeper negations to take effect.
+# Generated third-party assets are supplied separately; native robot bundles stay
+# tracked. Keep parent directories traversable for the deeper negations.
 public/assets/*
 !public/assets/.gitkeep
 !public/assets/models/
@@ -37,3 +36,27 @@ benchmark_results.json
 # local development environment and generated asset inspection
 /.venv/
 /.asset-analysis/
+
+# Local conversion inputs and intermediate assets.
+/character-sources/
+/.asset-staging/
+
+# node-private project notes (retained outside the repository)
+/docs/
+/AGENTS.md
+/.omp/
+/deploy/development/
+/deploy/access/
+/scripts/development_manifest.py
+/scripts/monitor_vm_vitals.py
+/scripts/test_monitor_vm_vitals.py
+/scripts/test_mowat_link_publisher.py
+/scripts/test_public_release.cjs
+
+# Local credentials; example configuration remains publishable.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.cloudflared/

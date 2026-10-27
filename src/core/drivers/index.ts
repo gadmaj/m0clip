@@ -48,7 +48,7 @@ async function createDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine):
       const traj = await loadTraj(clipPath);
       return new G1MimicDriver(cfg, spec, eng, sess, traj.data, traj.nCols);
     }
-    // ai_sport 1.5.4 families added from bench captures (see docs/G1_FIRMWARE_POLICIES.md):
+    // ai_sport 1.5.4 families added from bench captures:
     //   legacy = 2024 encoder/actor loco (200-203, 210); vq = VQ-latent decoders (503, 504, 706);
     //   bm_getup = BeyondMimic get-up with an embedded motion table (1001)
     //   faceup = 702 scripted face-up get-up + squat2stand VQ decoder; squat2stand = 703 phase-clock net

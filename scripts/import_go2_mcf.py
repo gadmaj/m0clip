@@ -4,7 +4,7 @@ packs for ONE bundle (go2-all.zip).
 
 Driver: src/core/drivers/go2_fw.ts (config block `go2:` with `firmware: true`). Behaviour decoded from
 libgo2_ai_module.so (mcf 1.0.0.75 — shipped by OTA 1.1.11 and unchanged through 1.1.15) and checked against bench
-MNN-I/O captures; see docs/GO2_FIRMWARE_POLICIES.md and orange_pi_workbench/docs/HANDOFF_GO2_POLICIES.md.
+MNN-I/O captures.
 
 What gets packed (registry/go2/<group>/<name>.yaml + registry/go2/index.json, nets -> assets/policies/go2/*.onnx):
   * every FSM the 1.1.15 AI module instantiates: 1003 FreeWalk (+ the payload variants the config service's
@@ -39,7 +39,7 @@ PACKS = {
 }
 
 # Buttons act on the RUNNING policy only; other policies are picked from the policy list (the firmware's
-# FSM-switch combos / sport-API calls are documented in docs/GO2_FIRMWARE_POLICIES.md, not duplicated as buttons).
+# FSM-switch combos / sport-API calls are not duplicated as buttons).
 SPEED = [{"group": "Speed", "items": [{"combo": "L1 L1", "label": "High speed (L1 ×2)"},
                                       {"combo": "L2 L2", "label": "Low speed (L2 ×2)"}]}]
 
