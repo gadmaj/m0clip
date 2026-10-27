@@ -131,6 +131,8 @@ emits `turntable.gif` and `still.min.png`; GIF palette reduction is lossy, while
 PNG recompression preserves decoded pixels. Keep generation receipts private;
 add only approved image URLs and captions to
 [`animated-preview-catalog.json`](src/ui/animated-preview-catalog.json).
+For an interrupted private batch, `--resume` reuses completed entries only when
+their source, image hashes, timing and attribution still match the explicit job.
 Policy animations require captures from the exact robot and checkpoint, not
 motion inferred from a policy name. Where no such capture exists, the gallery
 labels the robot-only picture rather than implying policy playback.

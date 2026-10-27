@@ -106,22 +106,42 @@ def render(entry, output, count, fps):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--job', type=Path, required=True)
+    parser.add_argument('--resume', action='store_true', help='Reuse only hash-matching completed private outputs')
     args = parser.parse_args(sys.argv[sys.argv.index('--') + 1:])
     job = json.loads(args.job.read_text())
     output = Path(job['output']).resolve()
     repository = Path(__file__).resolve().parent.parent
-    if output.is_relative_to(repository) or output.exists():
-        raise ValueError('Output must be a new private directory outside the repository')
+    if output.is_relative_to(repository) or (output.exists() and not args.resume):
+        raise ValueError('Output must be new private staging, or explicit --resume outside the repository')
     count, fps = job.get('frames', 48), job.get('fps', 12)
     if not 12 <= count <= 120 or not 1 <= fps <= 30:
         raise ValueError('Use 12–120 frames and 1–30 fps')
-    output.mkdir(parents=True)
+    output.mkdir(parents=True, exist_ok=args.resume)
+    inventory_path = output / 'inventory.json'
+    previous = {}
+    if args.resume and inventory_path.is_file():
+        previous = {entry['id']: entry for entry in json.loads(inventory_path.read_text())}
     inventory = []
     for entry in job['characters']:
         if not entry['id'] or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789-' for c in entry['id']):
             raise ValueError('Invalid character ID')
-        inventory.append(render(entry, output, count, fps))
-        (output / 'inventory.json').write_text(json.dumps(inventory, indent=2) + '\n')
+        if not entry['approvedRuntimeAsset'] or not entry['attribution']['license']:
+            raise ValueError('An approved runtime asset and its real attribution are required')
+        prior = previous.get(entry['id'])
+        if prior is not None:
+            if len(prior['encoding']['sourceFrames']) != count or prior['encoding']['animation']['durationMs'] != round(count * 100 / fps) * 10:
+                raise ValueError('Completed render timing differs from the explicit job: ' + entry['id'])
+            if prior['sha256'] != entry['sha256'] or digest(Path(entry['input'])) != entry['sha256']:
+                raise ValueError('Completed runtime asset hash changed: ' + entry['id'])
+            for record in [prior['encoding']['still']['preview'], prior['encoding']['animation']]:
+                if digest(Path(record['path'])) != record['sha256']:
+                    raise ValueError('Completed encoded asset hash changed: ' + entry['id'])
+            if json.loads((output / 'assets' / entry['id'] / 'attribution.json').read_text()) != entry['attribution']:
+                raise ValueError('Completed attribution differs from the approved job: ' + entry['id'])
+            inventory.append(prior)
+        else:
+            inventory.append(render(entry, output, count, fps))
+        inventory_path.write_text(json.dumps(inventory, indent=2) + '\n')
     catalog = {'characters': {entry['id']: {
         'still': f"/assets/previews/animated/{entry['id']}/still.min.png",
         'animation': f"/assets/previews/animated/{entry['id']}/turntable.gif",
