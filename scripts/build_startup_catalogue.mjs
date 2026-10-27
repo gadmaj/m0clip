@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /** Index final HTTP entities, not source masters or inflated native asset buffers. */
 import { createHash } from 'node:crypto';
 import { open, readFile, readdir, stat, writeFile, rename, unlink } from 'node:fs/promises';
