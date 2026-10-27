@@ -270,6 +270,9 @@ display, flashlight, added lights and camera edits belong to that shot, not live
 preferences. Robot, map, policy and other simulation controls are LIVE-only.
 Controls lock while encoding, not merely while setup is open.
 
+Finished motion clips report completion in **Play** without opening a dialog.
+The flashlight’s **F** shortcut is LIVE-only; use its button while reviewing a take.
+
 In **Render controls**, enable **Character wireframe** and leave **Map wireframe**
 off to keep the map solid. Keep **Textures** and **Map geometry** enabled to see
 the textured environment.
