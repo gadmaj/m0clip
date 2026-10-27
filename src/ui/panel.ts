@@ -135,7 +135,7 @@ export class Panel {
   private liveSections: HTMLElement[] = [];
   private liveControls: (HTMLButtonElement | HTMLInputElement | HTMLSelectElement)[] = [];
   private liveDisabled = new WeakMap<HTMLElement, boolean>();
-  private simulationScope!: HTMLElement;
+  private reviewScope!: HTMLElement;
   padDebugOpen: () => boolean = () => false;
 
   constructor(root: HTMLElement, mgrRoot: HTMLElement, robots: string[],
@@ -151,6 +151,9 @@ export class Panel {
     root.append(el("header.p-head", null,
       el("h1", null, "Play"), this.mgrToggleBtn));
     this.updateMgrToggle();
+    this.reviewScope = el('div.blk.sub', { role: 'note' });
+    this.reviewScope.hidden = true;
+    root.append(this.reviewScope);
 
     // setup: robot → terrain → policy
     const setup = el("section.blk");
@@ -216,8 +219,7 @@ export class Panel {
     const stopButton = button("Stop", { key: "Space", title: "Zero the command and re-arm the gamepad (Space)", onclick: cb.onZeroCmd });
     const recenterButton = button("Recenter", { key: "C", title: "Recenter the camera (C)", onclick: cb.onRecenter });
     this.liveControls.push(resetButton, stopButton, recenterButton, this.hoistBtn, this.noclipBtn);
-    this.simulationScope = el('div.sub', null, 'LIVE');
-    sim.append(this.simulationScope);
+    sim.append(el('div.sub', null, 'LIVE'));
     sim.append(
       el("div.row", null,
         resetButton,
@@ -363,11 +365,14 @@ export class Panel {
   setReviewScope(reviewing: boolean): void {
     this.reviewing = reviewing;
     const reason = reviewing ? 'LIVE · Recorded motion is fixed. Close timeline to change live settings.' : 'LIVE';
-    this.simulationScope.textContent = reason;
+    this.reviewScope.textContent = reason;
+    this.reviewScope.hidden = !reviewing;
+    const playBody = this.reviewScope.parentElement!;
     for (const section of this.liveSections) {
       let label = section.querySelector<HTMLElement>(':scope > .live-scope');
       if (!label) { label = el('div.sub.live-scope', { style: 'grid-column:1 / -1' }); section.prepend(label); }
-      label.textContent = reason;
+      label.textContent = playBody.contains(section) ? 'LIVE' : reason;
+      label.title = reviewing ? reason : '';
       for (const control of section.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input, select, button')) {
         if (reviewing) {
           if (!this.liveDisabled.has(control)) this.liveDisabled.set(control, control.disabled);
