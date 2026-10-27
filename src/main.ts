@@ -1788,9 +1788,18 @@ class App {
     }
     if (!prev || prev.robots.join() !== s.robots.join() || prev.robot !== s.robot)
       this.panel.setRobots(s.robots, s.robot);
-    const polKey = (m: StatusMsg) => m.policies.map((p) => p.name).join("|");
-    if (!prev || prev.robot !== s.robot ||
-        polKey(prev) !== polKey(s) || prev.policy !== s.policy)
+    let policyOptionsChanged = !prev || prev.policies.length !== s.policies.length;
+    if (prev && !policyOptionsChanged) {
+      for (let i = 0; i < s.policies.length; i++) {
+        if (prev.policies[i].name !== s.policies[i].name ||
+            prev.policies[i].previewRobot !== s.policies[i].previewRobot) {
+          policyOptionsChanged = true;
+          break;
+        }
+      }
+    }
+    if (!prev || prev.robot !== s.robot || prev.robotSpec !== s.robotSpec ||
+        policyOptionsChanged || prev.policy !== s.policy)
       this.panel.setPolicies(s.policies, s.policy, s.robot);
     // the manager lists only the ACTIVE family's packs (r1+r1_air | go2)
     const famPacks = s.packs.filter((p) => fam(p.robot) === s.robot);

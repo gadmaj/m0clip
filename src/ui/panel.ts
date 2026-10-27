@@ -8,9 +8,8 @@ import type { PackInfo, PolicyInfo } from "../sim/protocol";
 import { TERRAINS, type MapEntry, type TerrainName } from "../sim/terrain";
 import { policyPresentation } from './policy-names';
 import { TerrainPicker } from './terrain-picker';
-import { SearchPicker } from './search-picker';
 import { VisualPicker } from './visual-picker';
-import { previewImage, staticPreviewOptions } from './preview-catalog';
+import { previewImage, staticPreviewOptions, policyPreview } from './preview-catalog';
 
 export interface PanelCallbacks {
   onRobot(robot: string): void;
@@ -106,7 +105,7 @@ export class Panel {
   private terrainSel!: HTMLSelectElement;
   private terrainPicker!: TerrainPicker;
   private policySel!: HTMLSelectElement;
-  private policyPicker!:SearchPicker;
+  private policyPicker!:VisualPicker;
   private stateBtns = new Map<FsmState, HTMLButtonElement>();
   private stateDesc!: HTMLElement;
   private statusEl!: HTMLElement;
@@ -136,7 +135,7 @@ export class Panel {
   private liveSections: HTMLElement[] = [];
   private liveControls: (HTMLButtonElement | HTMLInputElement | HTMLSelectElement)[] = [];
   private liveDisabled = new WeakMap<HTMLElement, boolean>();
-  private simulationScope!: HTMLElement;
+  private reviewScope!: HTMLElement;
   padDebugOpen: () => boolean = () => false;
 
   constructor(root: HTMLElement, mgrRoot: HTMLElement, robots: string[],
@@ -152,6 +151,9 @@ export class Panel {
     root.append(el("header.p-head", null,
       el("h1", null, "Play"), this.mgrToggleBtn));
     this.updateMgrToggle();
+    this.reviewScope = el('div.blk.sub', { role: 'note' });
+    this.reviewScope.hidden = true;
+    root.append(this.reviewScope);
 
     // setup: robot → terrain → policy
     const setup = el("section.blk");
@@ -173,11 +175,13 @@ export class Panel {
     form.querySelector('label[for="sel-terrain"]')!.setAttribute('for', 'terrain-trigger');
     this.policySel = field("policy", "Policy", [], (v) => cb.onPolicy(v));
     this.policySel.setAttribute('aria-describedby', 'policy-description');
-    this.policyPicker=new SearchPicker(this.policySel,{id:'policy',label:'Policy',listLabel:'Policies',
-      placeholder:'Search policies…',category:'Policies',empty:'No matching policies.',descriptions:true,policyLabels:true});
-    this.policyPicker.input.setAttribute('aria-describedby','policy-description');
-    form.append(this.policyPicker.root);
-    form.querySelector('label[for="sel-policy"]')!.setAttribute('for','policy-search');
+    this.policyPicker=new VisualPicker(this.policySel,{id:'policy',label:'Policy',title:'Choose a policy',
+      preview:name=>{
+        const robot=Array.from(this.policySel.options).find(option=>option.value===name)?.dataset.previewRobot;
+        return robot?policyPreview(name,robot):el('span',null,'Motion preview unavailable');
+      }});
+    this.policyPicker.button.setAttribute('aria-describedby','policy-description');
+    form.querySelector('label[for="sel-policy"]')!.setAttribute('for','policy-trigger');
     setup.append(form);
     setup.append(el('div.sub', { id: 'policy-description', style: 'font-size:12px;color:var(--text-2);overflow-wrap:anywhere' }));
     root.append(setup);
@@ -215,8 +219,7 @@ export class Panel {
     const stopButton = button("Stop", { key: "Space", title: "Zero the command and re-arm the gamepad (Space)", onclick: cb.onZeroCmd });
     const recenterButton = button("Recenter", { key: "C", title: "Recenter the camera (C)", onclick: cb.onRecenter });
     this.liveControls.push(resetButton, stopButton, recenterButton, this.hoistBtn, this.noclipBtn);
-    this.simulationScope = el('div.sub', null, 'LIVE');
-    sim.append(this.simulationScope);
+    sim.append(el('div.sub', null, 'LIVE'));
     sim.append(
       el("div.row", null,
         resetButton,
@@ -362,11 +365,14 @@ export class Panel {
   setReviewScope(reviewing: boolean): void {
     this.reviewing = reviewing;
     const reason = reviewing ? 'LIVE · Recorded motion is fixed. Close timeline to change live settings.' : 'LIVE';
-    this.simulationScope.textContent = reason;
+    this.reviewScope.textContent = reason;
+    this.reviewScope.hidden = !reviewing;
+    const playBody = this.reviewScope.parentElement!;
     for (const section of this.liveSections) {
       let label = section.querySelector<HTMLElement>(':scope > .live-scope');
       if (!label) { label = el('div.sub.live-scope', { style: 'grid-column:1 / -1' }); section.prepend(label); }
-      label.textContent = reason;
+      label.textContent = playBody.contains(section) ? 'LIVE' : reason;
+      label.title = reviewing ? reason : '';
       for (const control of section.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input, select, button')) {
         if (reviewing) {
           if (!this.liveDisabled.has(control)) this.liveDisabled.set(control, control.disabled);
@@ -533,6 +539,7 @@ export class Panel {
         const presentation = policyPresentation(e.name);
         const option = new Option(presentation.label, e.name);
         option.dataset.label=presentation.title;
+        option.dataset.previewRobot=e.previewRobot;
         option.title = `${presentation.description}${e.fsmId !== undefined ? ` Robot state: ${e.fsmId}.` : ''}`;
         grp.appendChild(option);
       }
