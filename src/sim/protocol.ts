@@ -140,5 +140,6 @@ export type FromWorker =
   | InspectMsg
   | { t: "busy"; msg: string }
   | { t: "ready" }
+  | { t: "policyFinished"; policy: string }
   | { t: "notice"; msg: string }   // informational (e.g. no model bundle on disk yet)
   | { t: "error"; msg: string };
