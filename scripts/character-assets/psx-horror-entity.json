@@ -1,0 +1,35 @@
+{
+  "source": "Creature/scissors.blend",
+  "output": "../../.asset-staging/psx-horror-entity/psx-horror-entity.glb",
+  "preview": "../../.asset-staging/psx-horror-entity/preview.png",
+  "analysis": "../../.asset-analysis/psx-horror-entity.json",
+  "redistributionApproved": true,
+  "textureMaxDimension": 2048,
+  "sourceForward": "-Y (Blender); +Z (glTF), based on forward head/scissor geometry",
+  "meshNames": ["Cube"],
+  "previewDirection": [1, -3, 0.8],
+  "sourceFiles": {
+    "Creature/scissors.blend": "cf76c338e6ba7e791eda1189d183e82e690ff726bfa453213d8aca46b242746a",
+    "Creature/scissors.fbx": "53a596ba9473822b5e37ae30ba82c4950504ef19c8ee5f8c3611d7486e1d784b",
+    "Creature/Material_Base_color.png": "9ec7088781e78a2ee95ec32748278a0cd470b726590a8202fa528b7601329d4a"
+  },
+  "sourceArchive": {"name": "Creature.zip", "bytes": 3390167, "sha256": "94b1100d0f5ddde164b138ca0cef03a673e110e41344547044af7faba544b616", "uploadId": "14761483", "sourceUrl": "https://puszke.itch.io/psx-horror-entity-free"},
+  "attribution": {
+    "name": "PSX Horror Entity",
+    "creator": "Puck (puck_psx)",
+    "creatorUrl": "https://puszke.itch.io",
+    "copyright": "PSX Horror Entity by Puck (puck_psx). Inspired by Plastiboo, as credited by the creator.",
+    "license": "CC BY — version unspecified",
+    "sourceUrl": "https://puszke.itch.io/psx-horror-entity-free",
+    "modifications": "Converted the original Blender mesh, 16-bone weighted armature and authored clip to Y-up GLB. Preserved the original 2048px texture and authored emission. Normalized weight totals while retaining all seven native influences and relative ratios. Added compatible R1 motion with anatomical joint pivots and bind-relative scissor grips; source hierarchy and inverse binds remain native.",
+    "licenseEvidence": {
+      "url": "https://puszke.itch.io/psx-horror-entity-free",
+      "quote": "Model is free and CC BY.",
+      "creatorUsageReply": "Hi! Thanks! ^^ The model is completely free, so you can use it in your game with no problem! You can add puck_psx in the credits as the model author if you would like :D",
+      "creatorUsageReplyUrl": "https://itch.io/post/14027670",
+      "inspirationQuote": "Inspiried by @Plastiboo work below:",
+      "archiveFinding": "Three original model/texture files; no license file, version or canonical license URL. CC BY version remains unspecified.",
+      "publicationDecision": "Approved under the creator's published CC BY statement, with its version left unspecified, attribution, source links and marked modifications. The creator separately permits game use. The credited inspiration is retained without asserting separate third-party clearance. Native Chrome qualification remains required before release."
+    }
+  }
+}

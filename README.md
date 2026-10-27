@@ -1,0 +1,229 @@
+# m0clip
+
+Put robots and characters into Source maps, move them around, and record clips in
+your browser.
+
+[Open the public demo](https://m0clip.com)
+
+m0clip builds on [unitree-mujoco-web](https://github.com/legion1581/unitree-mujoco-web)
+and Source-map rendering from [noclip.website](https://github.com/magcius/noclip.website).
+MuJoCo runs physics in a worker, Three.js renders the scene, and ONNX Runtime Web
+runs compatible robot policies. A production build is a static site.
+
+## Before you build
+
+| Requirement | Used for |
+| --- | --- |
+| Git, Node.js and npm | Installing dependencies and running Vite. Use a current Node.js LTS release, such as 22 or 24. |
+| Python 3.12+ with `venv` | Asset processing during production builds and map conversion. |
+| NumPy, Pillow with WebP support, PyYAML | The Python asset tools; installation is shown below. |
+| Chrome or Chromium | The supported development browser; WebGL, WebAssembly and cross-origin isolation are required. |
+| Blender, optional | Converting supported third-party character sources. |
+
+**A clone is not the demo's asset collection.** The repository includes the R1,
+G1 and Go2 robot model bundles. Converted maps, imported character assets and
+policy weights are ignored by Git and must be supplied separately, under terms
+that permit your intended use and redistribution.
+
+There is also a **build-time character prerequisite**: the current
+[`character catalog`](src/characters/catalog.ts) imports generated attribution,
+rig and definition JSON from `public/assets/characters/`. Those files are not
+included in a fresh clone. Supply the metadata and assets for its configured
+characters, or adapt that catalog to the characters you can provide, before
+running development or build commands. Selecting Original at runtime does not
+remove these build-time imports.
+
+## Install and develop
+
+```sh
+git clone https://github.com/gadmaj/m0clip.git
+cd m0clip
+npm ci
+
+python3 -m venv .venv
+.venv/bin/python -m pip install numpy==2.4.6 Pillow==12.3.0 PyYAML==6.0.3
+```
+
+`npm ci` runs the postinstall script that copies MuJoCo's JavaScript and WASM
+runtime into `public/wasm/`. Do not skip install scripts unless you perform that
+copy yourself with `node scripts/copy-ort-wasm.mjs`.
+
+After preparing the character inputs above:
+
+```sh
+npm run dev
+```
+
+Open the URL printed by Vite in Chrome or Chromium. Vite sets the isolation
+headers required by the simulator. Use the development server rather than
+opening `index.html` with `file://`.
+
+Built-in terrains do not require converted game maps. Choose one and the
+Original robot to avoid runtime dependencies on imported map and character
+binaries. Without a compatible policy pack, physics can run without a learned
+walking controller; character appearance does not supply one.
+
+## Supply your own assets
+
+Only import assets you are allowed to use. Permission to download a file is not
+necessarily permission to redistribute it from a public host. Prepare assets
+before building: Vite copies `public/` into the output, including any third-party
+files you place there.
+
+### Source maps
+
+Map conversion is a **command-line preparation step**, not a browser BSP upload
+feature. For a local Source BSP, replace `asset-sources/map.bsp` with your file:
+
+```sh
+.venv/bin/python scripts/import_source_bsp.py \
+  --bsp asset-sources/map.bsp --name "My map"
+```
+
+The importer writes `public/assets/maps/<map-id>/` and updates
+`public/assets/maps/index.json`, which populates the map picker. The map ID comes
+from the BSP filename. The input must be a supported `VBSP` map; LZMA-compressed
+BSP lumps are not supported.
+
+A local BSP may not contain all of its materials or models. The importer can
+read embedded assets, but external game dependencies need a compatible asset
+mount. The `--game neotokyo --maps <map-id>` mode uses the importer's configured
+remote catalog and mounts; it is not a general adapter for every Source game.
+Consult [`import_source_bsp.py`](scripts/import_source_bsp.py) for its arguments
+and mount definitions before selecting a source. Do not assume a converted map
+reproduces every prop, material or gameplay entity.
+
+### Characters
+
+Imported characters need geometry, textures, attribution and a compatible rig
+mapping. They are visual bodies attached to supported robot physics, not new
+controllers. Adding an arbitrary GLB to `public/` does not register a character.
+
+[`import_character_assets.py`](scripts/import_character_assets.py) runs inside
+Blender and accepts a JSON configuration through `--config`, plus an optional
+`--source-root`. It supports Blender, FBX and glTF inputs and writes a GLB and
+preview. Its configuration declares source/output paths, source-file hashes and
+attribution. Public output requires an explicit redistribution approval and
+license evidence. Register the resulting definition and rig in the
+[`character catalog`](src/characters/catalog.ts); the importer does not do that
+integration automatically.
+
+The in-app Source model search uses the
+[pmodels index](https://github.com/wootguy/pmodels). Its loader supports GoldSrc
+`IDST` version 10 models, not arbitrary Source or Source 2 model files. Individual
+models retain their own authorship and terms; search results are not a license
+grant. Remote search also depends on its upstream services and CORS support.
+
+### Robot policies
+
+Import your compatible policy ZIP through **Controls → Play → Packs →
+Import .zip…**. Packs are stored in this browser's IndexedDB. A pack contains
+`pack.json`, its YAML policy configuration and ONNX checkpoints, plus any
+auxiliary networks or reference data required by the driver. A bundle is a ZIP
+of pack ZIPs. The manifest and parser are defined in
+[`src/packs/index.ts`](src/packs/index.ts); the runtime is not a general-purpose
+loader for arbitrary neural networks.
+
+For an optional hosted R1 catalog, provide your own compatible R1 bundle before
+building, replacing the example input path with your file:
+
+```sh
+node scripts/host-default-packs.mjs asset-sources/r1-all.zip
+```
+
+This writes `public/assets/packs/r1-default-v1.json` and the individual pack ZIPs
+under `public/assets/packs/r1/`. The browser installs the catalog metadata and
+downloads weights when a policy is selected. Publishing these files distributes
+the weights: confirm you have permission first.
+
+## Build
+
+The following commands use the Python virtual environment created above:
+
+```sh
+npm run typecheck
+PYTHON="$PWD/.venv/bin/python" npm run build
+npm run preview
+```
+
+These are POSIX-shell examples. On another shell, set `PYTHON` to your virtual
+environment's Python executable before invoking `npm run build`.
+
+The build typechecks the application, writes `dist/`, then generates compressed
+robot meshes and processes native map visuals when the corresponding map inputs
+are present. Keep the complete output, including `assets/`, `wasm/`, manifests
+and `.gz` files. `npm run preview` serves it locally with the required isolation
+headers; it is a preview server, not a production hosting service.
+
+## Host the static build
+
+Serve the contents of `dist/` at the **root of an HTTPS origin**. Several asset
+URLs are root-relative; putting the site under a URL subdirectory requires code
+and asset-path changes, not just a Vite base option. Localhost is suitable for
+local development, but a remote plain-HTTP origin cannot provide the secure
+context the simulator needs.
+
+Configure your static host or reverse proxy to send:
+
+```http
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+These headers enable cross-origin isolation for MuJoCo's `SharedArrayBuffer`.
+Serve workers and runtime files from the same origin where possible. Resources
+fetched from another origin must satisfy CORS or the relevant cross-origin
+resource policy; do not disable isolation to work around a blocked asset.
+
+| Resource | Serving requirement |
+| --- | --- |
+| JavaScript modules and workers | A JavaScript MIME type; preserve the generated paths. |
+| `.wasm` | `Content-Type: application/wasm`; preserve binary bytes. |
+| `.json` manifests | `Content-Type: application/json`; missing assets must not become an HTML fallback. |
+| GLB, ONNX, meshes and ZIPs | Serve the actual binary files, with an appropriate binary MIME type. Do not apply text conversion. |
+| Explicit `.gz` mesh or lightstyle files | Keep their filenames and bytes. Serving raw gzip files as `application/gzip` without `Content-Encoding` is supported; the application decodes them. |
+
+HTTP compression is separate from an explicit `.gz` asset. If your host sends
+`Content-Encoding: gzip` or `br`, the response body must actually use that
+encoding. The browser decodes it before the application receives it. The runtime
+also accepts already-decoded explicit gzip assets, but a false encoding header,
+a renamed uncompressed file or an HTML error page will break loading. Do not
+strip the generated `.gz` files as redundant precompression artifacts.
+
+Deploy HTML, scripts, asset manifests and their referenced files together. Avoid
+long-lived caching for `index.html` and mutable catalog/manifest URLs; reserve
+immutable caching for files whose URLs change with their contents.
+
+## Use and limitations
+
+Choose a map and character, then **Load scene**. The scene controls and **? Help**
+list movement, camera and capture actions. Record takes, review them in Timeline
+and download saved files for backup.
+
+- Detailed maps can require substantial downloads, memory and startup time.
+- Source gameplay, moving doors, prop physics, particles and HDR bloom are not
+  reproduced. This is not a general loader for every game on noclip.website.
+- Video export depends on the codecs the browser can encode. Portable GLB exports
+  do not reproduce Source's custom shaders, lightmaps or final tone mapping.
+- Saved takes, screenshots and imported policies are local to the browser and
+  site origin, not cloud backups. Clearing site data can remove them; another
+  hostname cannot read them. Download backups before changing origins.
+- Simulation compatibility depends on the robot model, policy observation/action
+  scheme and supported driver. A different visual character does not change that
+  contract, and this browser application is not a real-robot safety controller.
+
+## Credits and licenses
+
+- **Konstantin Severov** — the original
+  [unitree-mujoco-web](https://github.com/legion1581/unitree-mujoco-web) simulator.
+- **Jasper St. Pierre and noclip.website contributors** — Source format and
+  rendering work; see [LICENSE.noclip](LICENSE.noclip).
+- **MuJoCo, Three.js, ONNX Runtime and Mediabunny contributors** — physics,
+  rendering, inference and media export.
+- Game, robot and character creators — retain each asset's notices and attribution
+  when preparing or redistributing a build.
+
+Application code is covered by [LICENSE](LICENSE), with the separate noclip
+notice above. Those notices do **not** relicense game maps, robot assets,
+character models or policy weights. Check their individual terms, including
+attribution and redistribution requirements, independently of the code license.
