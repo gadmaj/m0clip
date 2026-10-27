@@ -123,6 +123,12 @@ function buildFloor(size: number): THREE.Object3D {
       textureHeight: 1024,
       color: 0x9099a0,
     });
+    const renderReflection = mirror.onBeforeRender;
+    mirror.onBeforeRender = function(renderer, scene, camera, geometry, material, group) {
+      // The flashlight needs the floor's depth, not its unused reflected color.
+      if (material instanceof THREE.MeshDepthMaterial) return;
+      renderReflection.call(this, renderer, scene, camera, geometry, material, group);
+    };
     group.add(mirror);
   }
   const tex = checkerTexture();
