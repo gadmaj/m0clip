@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { buildDevelopmentCatalogue, buildRuntimeGraph, captureRuntimeChunks, writeStartupCatalogue } from './scripts/build_startup_catalogue.mjs';
+import { privateAssetReceiptMiddleware, removePrivateAssetReceipts } from './scripts/public_asset_policy.mjs';
 
 // COOP/COEP so the mujoco wasm's SharedArrayBuffer/threads are usable.
 // A production host must send these too (see README).
@@ -89,6 +90,7 @@ export default defineConfig(({ command }) => {
           child.on('error',fail);
           child.on('exit',code => code === 0 ? done() : fail(new Error('Native Ghost visual build failed')));
         });
+        await removePrivateAssetReceipts(outputDirectory);
         // The catalogue sees rewritten manifests, generated native GLBs and final
         // gzip mesh entities, never their larger pre-postprocessing source files.
         const graph = await buildRuntimeGraph(outputDirectory, chunks);
@@ -97,6 +99,7 @@ export default defineConfig(({ command }) => {
     }, {
       name: 'startup-catalogue-serving',
       configureServer(server) {
+        server.middlewares.use(privateAssetReceiptMiddleware);
         server.middlewares.use(explicitGzip(server.config.publicDir));
         server.middlewares.use((request, response, next) => {
           if (request.url?.split('?')[0] !== '/' + catalogueFile) return next();
@@ -112,6 +115,7 @@ export default defineConfig(({ command }) => {
         });
       },
       configurePreviewServer(server) {
+        server.middlewares.use(privateAssetReceiptMiddleware);
         server.middlewares.use(explicitGzip(resolve(server.config.root, server.config.build.outDir)));
       },
     }],

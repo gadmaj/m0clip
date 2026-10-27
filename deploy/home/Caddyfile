@@ -1,5 +1,7 @@
 {$APP_HOST} {
 	root * /srv
+	@internalReceipts path /assets/maps/*/*-report.json /assets/maps/*/source-upgrade.json
+	respond @internalReceipts 404
 	@mapModels path /assets/maps/*/*.glb
 	encode @mapModels zstd gzip {
 		match {

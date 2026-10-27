@@ -4,6 +4,7 @@ import { open, readFile, readdir, stat, writeFile, rename, unlink } from 'node:f
 import { resolve, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { isPrivateAssetReceipt } from './public_asset_policy.mjs';
 
 const origin = 'https://startup.invalid';
 export function assetKey(value, base = '/') {
@@ -36,9 +37,11 @@ async function filesBelow(root) {
   const files = [];
   async function walk(directory) {
     for (const name of (await readdir(directory)).sort()) {
-      const path = resolve(directory, name), info = await stat(path);
+      const path = resolve(directory, name), key = '/' + relative(root, path).split(sep).join('/');
+      if (isPrivateAssetReceipt(key)) continue;
+      const info = await stat(path);
       if (info.isDirectory()) await walk(path);
-      else if (info.isFile()) files.push({ path, key: '/' + relative(root, path).split(sep).join('/'), bytes: info.size });
+      else if (info.isFile()) files.push({ path, key, bytes: info.size });
     }
   }
   await walk(root);

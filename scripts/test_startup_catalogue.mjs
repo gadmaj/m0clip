@@ -69,6 +69,7 @@ try {
   await put('assets/characters/authored/preview.min.png', Buffer.alloc(73));
   await put('assets/previews/manifest.json', { baseURL: 'private-capture-origin', console: ['private capture notes'] });
   await put('assets/previews/character.webp', Buffer.alloc(79));
+  for (const name of ['source-upgrade.json', 'props-report.json']) await put(map + name, { internal: true });
   const catalogue = await buildStartupCatalogue(root, graph.runtime, { dependencies: graph.dependencies });
   assert.deepEqual(catalogue.mapVisuals.selected, [
     'lighting.json', 'lightstyles.json', 'manifest.json', 'props-native.glb', 'source-color-0.rgb',
@@ -83,6 +84,9 @@ try {
   assert.deepEqual(catalogue.dependencies['/assets/characters/authored/body.glb'], ['/assets/characters/authored/skin.png', '/assets/characters/shared/body.bin']);
   for (const key of ['/assets/characters/authored/gallery-poster.png', '/assets/characters/authored/preview.min.png', '/assets/previews/manifest.json', '/assets/previews/character.webp']) {
     assert(!(key in catalogue.sizes), 'Preview-only media and capture receipts do not enter the runtime inventory');
+  }
+  for (const name of ['source-upgrade.json', 'props-report.json']) {
+    assert(!('/' + map + name in catalogue.sizes), 'Conversion-only receipts must not be advertised by the public catalogue');
   }
   const first = await writeStartupCatalogue(root, graph.runtime, { dependencies: graph.dependencies, fileName: 'startup-catalogue-release.json' });
   await put(map + 'source-color-0.rgb', Buffer.alloc(101));
