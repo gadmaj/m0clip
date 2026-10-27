@@ -174,8 +174,7 @@ of pack ZIPs. The manifest and parser are defined in
 loader for arbitrary neural networks.
 
 Some motion clips run once, then switch to their configured next policy.
-Re-select a clip to play it again; a different active controller does not
-necessarily mean the selection failed.
+Re-select a clip to play it again.
 
 For an optional hosted R1 catalog, provide your own compatible R1 bundle before
 building, replacing the example input path with your file:
@@ -293,6 +292,7 @@ Controls lock while encoding, not merely while setup is open.
 In **Render controls**, enable **Character wireframe** and leave **Map wireframe**
 off to keep the map solid. Keep **Textures** and **Map geometry** enabled to see
 the textured environment.
+On Flat, the camera flashlight keeps the floor and its reflection visible.
 
 - Detailed maps can require substantial downloads, memory and startup time.
 - Source gameplay, moving doors, prop physics, particles and HDR bloom are not
