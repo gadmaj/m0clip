@@ -12,6 +12,7 @@ interface MediaEntry {
   media: PreviewMedia;
   visible: boolean;
   source: string;
+  desiredSource: string;
   failedAnimation: boolean;
   loading: boolean;
   cancel?: () => void;
@@ -26,6 +27,7 @@ let removals: MutationObserver | undefined;
 
 function refresh(): void {
   let animations = 0;
+  // Release every obsolete source before assigning any of the freed slots.
   for (const entry of entries.values()) {
     if (!entry.root.isConnected) {
       observer?.unobserve(entry.root);
@@ -34,41 +36,48 @@ function refresh(): void {
       entries.delete(entry.root);
       continue;
     }
-    const animate = entry.visible && !document.hidden && !reduced.matches
+    const visible = entry.visible && !document.hidden;
+    const animate = visible && !reduced.matches
       && !!entry.media.animation && !entry.failedAnimation && animations < maximumAnimations;
     if (animate) animations++;
-    const source = animate ? entry.media.animation! : entry.media.still;
-    if (!entry.visible || document.hidden) {
-      // GIF playback cannot be paused. Drop offscreen sources (stills too) so
-      // scrolling a full catalogue does not retain every decoded image.
-      if (entry.source) {
-        entry.cancel?.();
-        entry.image.removeAttribute('src');
-        entry.source = '';
-      }
-      continue;
+    entry.desiredSource = visible ? (animate ? entry.media.animation! : entry.media.still) : '';
+    if (entry.source && entry.source !== entry.desiredSource) {
+      // GIFs cannot be paused: clear active and pending animation immediately,
+      // including on reduced-motion changes, without waiting for a request slot.
+      entry.cancel?.();
+      entry.image.removeAttribute('src');
+      entry.source = '';
     }
-    if (entry.source === source || entry.loading || requests >= maximumRequests) continue;
+  }
+  for (const entry of entries.values()) {
+    const source = entry.desiredSource;
+    if (!source || entry.source === source || entry.loading || requests >= maximumRequests) continue;
     requests++;
     entry.loading = true;
     entry.source = source;
     entry.image.hidden = false;
     let pending = true;
-    entry.cancel = () => {
+    const cancel = () => {
       if (!pending) return;
       pending = false;
       entry.image.onload = null;
       entry.image.onerror = null;
       entry.loading = false;
+      entry.cancel = undefined;
       requests--;
     };
+    entry.cancel = cancel;
     const settled = () => {
       if (!pending) return;
-      entry.cancel?.();
+      cancel();
       refresh();
     };
-    entry.image.onload = () => { void entry.image.decode().catch(() => undefined).then(settled); };
+    entry.image.onload = () => {
+      if (!pending) return;
+      void entry.image.decode().catch(() => undefined).then(settled);
+    };
     entry.image.onerror = () => {
+      if (!pending) return;
       if (source === entry.media.animation) { entry.failedAnimation = true; entry.source = ''; }
       else {
         entry.root.setAttribute('role', 'status');
@@ -94,7 +103,7 @@ export function previewMedia(media: PreviewMedia): HTMLElement {
   const caption = document.createElement('small'); caption.textContent = media.caption ?? '';
   caption.hidden = !media.caption;
   root.append(image, caption);
-  const entry: MediaEntry = { root, image, media, visible: false, source: '', failedAnimation: false, loading: false };
+  const entry: MediaEntry = { root, image, media, visible: false, source: '', desiredSource: '', failedAnimation: false, loading: false };
   entries.set(root, entry);
   if (!observer) {
     observer = new IntersectionObserver(changes => {

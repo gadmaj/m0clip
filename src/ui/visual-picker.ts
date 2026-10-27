@@ -46,11 +46,15 @@ export class VisualPicker {
     this.button.textContent=`${this.select.selectedOptions[0]?.label || this.config.label} ▦`;
     const thumbnail=this.select.selectedOptions[0]?.dataset.preview;
     if(thumbnail){registerPreviewAsset(thumbnail);const image=document.createElement('img');image.crossOrigin='anonymous';image.loading='lazy';image.decoding='async';image.src=thumbnail;image.alt='';image.onerror=()=>{image.remove();this.button.append(' · Preview unavailable');};this.button.prepend(image);}
-    this.button.disabled=this.select.disabled;
+    this.button.disabled=this.disabled;
     if(this.dialog){
-      if(preserveSearch&&!this.select.disabled&&this.refreshIncluded)this.refreshIncluded();
+      if(preserveSearch&&!this.button.disabled&&this.refreshIncluded)this.refreshIncluded();
       else this.close();
     }
+  }
+  private get disabled(){
+    return this.select.disabled||(!this.config.catalog&&!Array.from(this.select.options).some(option=>
+      !option.disabled&&!(option.parentElement instanceof HTMLOptGroupElement&&option.parentElement.disabled)));
   }
   private cancelRequest(){this.request?.abort();this.request=null;window.clearTimeout(this.searchTimer);this.searchTimer=undefined;}
   private close(restore=true){
@@ -63,7 +67,7 @@ export class VisualPicker {
     if(restore)queueMicrotask(()=>{if(!VisualPicker.active)(document.getElementById(`${this.config.id}-trigger`) as HTMLButtonElement|null)?.focus({preventScroll:true});});
   }
   private open(){
-    if(this.disposed || this.select.disabled || this.dialog)return;
+    if(this.disposed || this.disabled || this.dialog)return;
     for(const picker of VisualPicker.opened)picker.close(false);
     const dialog=document.createElement('dialog'); this.dialog=dialog;
     for(const type of ['keydown','keyup','pointerdown','pointerup','click'])dialog.addEventListener(type,event=>event.stopPropagation());

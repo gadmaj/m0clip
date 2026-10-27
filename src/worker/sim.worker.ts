@@ -798,9 +798,11 @@ class SimWorker {
       // decides the exact spec)
       robots: [...new Set(Object.keys(SPECS).map(fam))],
       robot: fam(this.robot),
+      robotSpec: this.robot,
       policies: this.policies.map((p) => ({
         name: p.name, family: p.family, dof: p.dof,
         group: p.group, packId: p.packId, fsmId: p.fsmId,
+        previewRobot: p.name === e?.name ? this.robot : specFor(p, this.robot),
         models: fam(p.robot) === "r1" ? r1Models(p) : p.models })),
       packs: this.packs.map((p) => ({
         id: p.id, group: p.manifest.group, robot: p.manifest.robot,

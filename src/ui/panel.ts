@@ -167,7 +167,10 @@ export class Panel {
     this.policySel = field("policy", "Policy", [], (v) => cb.onPolicy(v));
     this.policySel.setAttribute('aria-describedby', 'policy-description');
     this.policyPicker=new VisualPicker(this.policySel,{id:'policy',label:'Policy',title:'Choose a policy',
-      preview:name=>policyPreview(name,this.robotSel.value)});
+      preview:name=>{
+        const robot=Array.from(this.policySel.options).find(option=>option.value===name)?.dataset.previewRobot;
+        return robot?policyPreview(name,robot):el('span',null,'Motion preview unavailable');
+      }});
     this.policyPicker.button.setAttribute('aria-describedby','policy-description');
     form.querySelector('label[for="sel-policy"]')!.setAttribute('for','policy-trigger');
     setup.append(form);
@@ -472,6 +475,7 @@ export class Panel {
         const presentation = policyPresentation(e.name);
         const option = new Option(presentation.label, e.name);
         option.dataset.label=presentation.title;
+        option.dataset.previewRobot=e.previewRobot;
         option.title = `${presentation.description}${e.fsmId !== undefined ? ` Robot state: ${e.fsmId}.` : ''}`;
         grp.appendChild(option);
       }

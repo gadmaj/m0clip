@@ -10,6 +10,7 @@ const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { launch, capture } = require('./generate-previews.cjs');
+const { unzipSync, strFromU8 } = require('fflate');
 const { chooseVisual } = require('./choose-visual.cjs');
 const run = promisify(execFile);
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -19,10 +20,16 @@ const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
   if (!job.approvedRuntimeAsset || !job.attribution || !job.packSHA256 || !job.policy || !job.robot) throw new Error('Explicit approved policy, pack hash and source attribution required');
   const count = job.frames ?? 48, fps = job.fps ?? 12;
   if (!Number.isInteger(count) || count < 12 || count > 120 || fps < 1 || fps > 30) throw new Error('Use 12–120 frames and 1–30 fps');
-  const output = path.resolve(process.env.PREVIEW_OUTPUT);
-  await fs.mkdir(output, { recursive: false });
   const pack = await fs.readFile(job.pack);
   if (hash(pack) !== job.packSHA256) throw new Error('Approved pack hash changed');
+  const files = unzipSync(pack, { filter: file => file.name === 'pack.json' });
+  if (!files['pack.json']) throw new Error('Approved pack has no pack.json');
+  const manifest = JSON.parse(strFromU8(files['pack.json']));
+  const policies = manifest.checkpoints.map(checkpoint => manifest.checkpoints.length > 1
+    ? `${manifest.baseName}@${checkpoint.id}` : manifest.baseName);
+  if (!policies.includes(job.policy)) throw new Error('Requested canonical policy is not declared by the approved pack');
+  const output = path.resolve(process.env.PREVIEW_OUTPUT);
+  await fs.mkdir(output, { recursive: false });
   const scene = await launch(job.robot, 'flat');
   const frames = [], captures = [], clocks = [];
   try {
@@ -45,6 +52,16 @@ const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
       window.__app.worker.postMessage({ t: 'importPack', zip }, [zip]);
     }, Array.from(pack));
     await scene.page.waitForFunction(policy => Array.from(document.querySelector('#sel-policy').options).some(option => option.value === policy), job.policy, { timeout: 300000 });
+    const declared = await scene.page.evaluate(policy => {
+      const status = window.__previewPolicy.status;
+      const entry = status?.policies.find(entry => entry.name === policy);
+      return { entry, pack: status?.packs.find(pack => pack.id === entry?.packId) };
+    }, job.policy);
+    // The worker resolves variants through specFor; shared compiled model identity is not sufficient.
+    if (declared.entry?.packId !== manifest.baseName || declared.pack?.robot !== manifest.robot ||
+        declared.entry?.previewRobot !== job.robot) {
+      throw new Error('Requested robot/policy does not match approved pack and worker variant: ' + JSON.stringify(declared));
+    }
     if (await scene.page.locator('#toggle-menu').getAttribute('aria-expanded') === 'false') await scene.page.locator('#toggle-menu').click();
     await chooseVisual(scene.page, 'policy', job.policy);
     await scene.page.waitForFunction(policy => window.__previewPolicy.status?.policy === policy, job.policy, { timeout: 300000 });
@@ -64,8 +81,8 @@ const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
       // Let already-posted real frames settle after the worker receives pause.
       await scene.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       const state = await scene.page.evaluate(() => ({ clock: window.__previewPolicy.clock, qpos: window.__previewPolicy.qpos,
-        status: window.__previewPolicy.status, errors: window.__previewPolicy.errors, robot: window.__app.model.robot }));
-      if (state.errors.length || state.status.policy !== job.policy || state.status.state !== 'policy' || state.robot !== job.robot) throw new Error('Policy identity/state changed: ' + JSON.stringify(state));
+        status: window.__previewPolicy.status, errors: window.__previewPolicy.errors }));
+      if (state.errors.length || state.status.policy !== job.policy || state.status.state !== 'policy' || state.status.robotSpec !== job.robot) throw new Error('Policy identity/state changed: ' + JSON.stringify(state));
       const filename = `${String(index).padStart(4, '0')}.png`;
       captures.push({ ...(await capture(scene, { kind: 'policy', format: 'png', filename,
         angle: -Math.PI / 3 + index * Math.PI * 2 / count })), clock: state.clock, qposSHA256: hash(JSON.stringify(state.qpos)) });

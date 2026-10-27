@@ -76,6 +76,7 @@ export interface RenderModel {
 export interface PolicyInfo {
   name: string; family: string; dof: number; group: string;
   packId: string;            // owning pack (all policies come from packs)
+  previewRobot: string;      // exact worker-resolved candidate robot, not its family or shared compiled model
   fsmId?: number;            // ai_sport FSM id on the robot (G1), shown in the picker
   models?: string[];         // G1 / R1 variants it runs on ("air" / "edu"): picker lists Air, Air+EDU, EDU
 }
@@ -87,7 +88,8 @@ export interface PackInfo {
 export interface StatusMsg {
   t: "status";
   robots: string[];
-  robot: string;
+  robot: string;            // selectable family
+  robotSpec: string;        // exact active worker robot identity
   policies: PolicyInfo[];
   packs: PackInfo[];        // imported packs (for the manager list)
   policy: string;

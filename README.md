@@ -125,9 +125,11 @@ To prepare previews for assets you already have permission to publish,
 runs in Blender with an explicit `--job` JSON. The job supplies a new output
 directory, frame count/rate, and `characters` entries containing `id`, `input`,
 `sha256`, `approvedRuntimeAsset` and `attribution`. It renders a full camera orbit
-around each GLB's native rest pose. The encoder emits `turntable.gif` and
-`still.min.png`; GIF palette reduction is lossy, while PNG recompression preserves
-decoded pixels. Add only approved image URLs and captions to
+around each GLB's native rest pose. It encodes and reads back one character at a
+time, then removes only that render's disposable image sequence. The encoder
+emits `turntable.gif` and `still.min.png`; GIF palette reduction is lossy, while
+PNG recompression preserves decoded pixels. Keep generation receipts private;
+add only approved image URLs and captions to
 [`animated-preview-catalog.json`](src/ui/animated-preview-catalog.json).
 Policy animations require captures from the exact robot and checkpoint, not
 motion inferred from a policy name. Where no such capture exists, the gallery

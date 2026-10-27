@@ -11,6 +11,8 @@ import json
 import math
 import os
 from pathlib import Path
+import tempfile
+import shutil
 import subprocess
 import sys
 
@@ -53,6 +55,7 @@ def render(entry, output, count, fps):
     scene.render.resolution_x = 320
     scene.render.resolution_y = 240
     scene.render.resolution_percentage = 100
+    scene.render.use_persistent_data = True
     scene.render.image_settings.file_format = 'PNG'
     scene.render.film_transparent = True
     scene.view_settings.view_transform = 'Standard'
@@ -73,17 +76,19 @@ def render(entry, output, count, fps):
         scene.collection.objects.link(obj)
         obj.location = center + Vector(offset) * radius
         obj.rotation_euler = (center - obj.location).to_track_quat('-Z', 'Y').to_euler()
-    masters = output / 'masters' / entry['id']
-    masters.mkdir(parents=True)
+    masters = Path(tempfile.mkdtemp(prefix='render-' + entry['id'] + '-', dir=output))
     frames = []
     for index in range(count):
         angle = -math.pi / 3 + index * 2 * math.pi / count
         camera.location = center + Vector((math.cos(angle), math.sin(angle), .22)) * radius * 4
         camera.rotation_euler = (center - camera.location).to_track_quat('-Z', 'Y').to_euler()
-        frame = masters / f'{index:04d}.png'
-        scene.render.filepath = str(frame)
-        bpy.ops.render.render(write_still=True)
-        frames.append(str(frame))
+        camera.keyframe_insert(data_path='location', frame=index)
+        camera.keyframe_insert(data_path='rotation_euler', frame=index)
+        frames.append(str(masters / f'{index:04d}.png'))
+    scene.frame_start = 0
+    scene.frame_end = count - 1
+    scene.render.filepath = str(masters) + os.sep
+    bpy.ops.render.render(animation=True)
     encoder = Path(__file__).with_name('encode_character_previews.py')
     encoded = subprocess.run([os.environ.get('PYTHON', 'python3'), str(encoder),
         '--animation-output', str(output / 'assets' / entry['id']), '--fps', str(fps), *frames],
@@ -91,6 +96,9 @@ def render(entry, output, count, fps):
     result = json.loads(encoded.stdout)
     (output / 'assets' / entry['id'] / 'attribution.json').write_text(
         json.dumps(entry['attribution'], ensure_ascii=False, indent=2) + '\n')
+    # Only this invocation's disposable render sequence is removed, and only
+    # after the encoder has decoded every GIF frame and verified the true still.
+    shutil.rmtree(masters)
     return {**entry, 'mode': '360-degree camera orbit, native rest pose; no simulated motion',
             'encoding': result}
 
