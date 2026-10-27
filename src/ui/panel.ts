@@ -174,7 +174,7 @@ export class Panel {
     this.terrainPicker = new TerrainPicker(this.terrainSel,cb.onLocalMap);
     form.append(this.terrainPicker.root);
     form.querySelector('label[for="sel-terrain"]')!.setAttribute('for', 'terrain-trigger');
-    this.policySel = field("policy", "Policy", [], (v) => cb.onPolicy(v));
+    this.policySel = field("policy", "Policy", [], (v) => { this.clearPolicyCompletion(); cb.onPolicy(v); });
     this.policySel.setAttribute('aria-describedby', 'policy-description');
     this.policyPicker=new VisualPicker(this.policySel,{id:'policy',label:'Policy',title:'Choose a policy',
       preview:name=>{
@@ -184,7 +184,9 @@ export class Panel {
     this.policyPicker.button.setAttribute('aria-describedby','policy-description');
     form.querySelector('label[for="sel-policy"]')!.setAttribute('for','policy-trigger');
     setup.append(form);
-    setup.append(el('div.sub', { id: 'policy-description', style: 'font-size:12px;color:var(--text-2);overflow-wrap:anywhere' }));
+    const policyDescription=el('div.sub', { id: 'policy-description', role:'status', 'aria-live':'polite', 'aria-atomic':'true', style: 'font-size:12px;color:var(--text-2);overflow-wrap:anywhere' });
+    policyDescription.hidden=true;
+    setup.append(policyDescription);
     root.append(setup);
     this.liveSections.push(setup);
 
@@ -496,6 +498,7 @@ export class Panel {
 
   // ---- state pushed from the app --------------------------------------
   setRobots(robots: string[], active: string) {
+    this.clearPolicyCompletion();
     this.robotSel.innerHTML = "";
     for (const r of robots) this.robotSel.add(new Option(r, r));
     this.robotSel.value = active;
@@ -503,10 +506,28 @@ export class Panel {
     this.robotPicker.sync();
   }
 
+  private clearPolicyCompletion() {
+    const description=document.getElementById('policy-description')!;
+    if(description.dataset.completedFor===undefined)return;
+    delete description.dataset.completedFor;
+    description.textContent=policyPresentation(this.policySel.value).description;
+    description.hidden=!description.textContent;
+  }
+
+  showPolicyFinished(policy:string,active:string) {
+    if(this.policySel.value!==active)return;
+    const description=document.getElementById('policy-description')!;
+    description.dataset.completedFor=active;
+    description.textContent=`${policyPresentation(policy).title} finished.`;
+    description.hidden=false;
+  }
+
   setPolicies(entries: PolicyInfo[], active: string, robot = "") {
     this.policySel.innerHTML = "";
     const description = document.getElementById('policy-description')!;
     if (!entries.length) {
+      delete description.dataset.completedFor;
+      description.hidden=false;
       description.textContent = 'Import a policy pack to add motions for this robot.';
       const o = new Option("No policies — import a pack", "");
       o.disabled = true;
@@ -541,7 +562,7 @@ export class Panel {
         const option = new Option(presentation.label, e.name);
         option.dataset.label=presentation.title;
         option.dataset.previewRobot=e.previewRobot;
-        option.title = `${presentation.description}${e.fsmId !== undefined ? ` Robot state: ${e.fsmId}.` : ''}`;
+        option.title = e.fsmId===undefined?presentation.description:presentation.description?`${presentation.description} · State ${e.fsmId}`:`State ${e.fsmId}`;
         grp.appendChild(option);
       }
       this.policySel.appendChild(grp);
@@ -549,7 +570,11 @@ export class Panel {
     this.policySel.value = active;
     const presentation = policyPresentation(active);
     this.policySel.title = presentation.label;
-    description.textContent = `${presentation.description} (${active})`;
+    if(description.dataset.completedFor!==active){
+      delete description.dataset.completedFor;
+      description.textContent=presentation.description;
+      description.hidden=!description.textContent;
+    }
     this.policyPicker.sync(true);
   }
 
@@ -580,7 +605,7 @@ export class Panel {
 
   private packCard(p: PackInfo): HTMLElement {
     const meta = el("div.pack-meta", { title: p.checkpoints.join(", ") },
-      policyPresentation(p.id).description + (p.checkpoints.length > 1 ? ` · ${p.checkpoints.length} checkpoints` : ""));
+      `${p.checkpoints.length} ${p.checkpoints.length===1?'checkpoint':'checkpoints'}`);
     const del = button("", { cls: "ghost icon pack-del", icon: "trash", title: `Delete ${p.id}`,
       onclick: () => {
         const many = p.checkpoints.length > 1

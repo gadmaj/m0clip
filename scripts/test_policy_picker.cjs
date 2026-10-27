@@ -92,7 +92,6 @@ const attachReadyApp = require('./attach-ready-app.cjs');
     await page.waitForFunction(name => window.__app.status.policy === name, next, { timeout: 120000 });
     assert.equal(await select.inputValue(), next);
     assert.ok((await policy.textContent()).includes(next));
-    assert.ok((await page.locator('#policy-description').textContent()).includes(next));
 
     await policy.click();
     await search.fill('walking running');

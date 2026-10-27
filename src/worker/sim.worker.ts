@@ -522,7 +522,7 @@ class SimWorker {
     }
     if (this.driver) {
       this.hoistZ = this.eng.qpos[this.driver.bqp + 2];
-      post({ t: "notice", msg: `${drv.name} finished → ${next}` });
+      post({ t: "policyFinished", policy: drv.name, active: this.policies[this.polIdx]?.name ?? "-" });
       this.autoPolicy = next;               // reached by hand-over: don't pop its how-to notice
     }
   }
