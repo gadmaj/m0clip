@@ -71,7 +71,7 @@ export interface Lighting {
   shadows: boolean;
   background: number;
 }
-export interface SceneDisplay { textures: boolean; wireframe: boolean; map: boolean; robot: boolean; decals: boolean }
+export interface SceneDisplay { textures: boolean; wireframe: boolean; characterWireframe?: boolean; map: boolean; robot: boolean; decals: boolean }
 export const STUDIO: Lighting = {
   sunAzimuth: 27, sunElevation: 61, sunIntensity: 1.5, sunColor: 0xffffff,
   ambient: 0.8, skyColor: 0xdfeaf5, groundColor: 0x1a2028, fill: 0.7, reflections: 0.55,
@@ -369,7 +369,7 @@ export class SceneView {
       material.clearcoat = 0; material.specularIntensity = 0; material.sheen = 0; material.iridescence = 0;
     }
   }
-  private display: SceneDisplay = { textures: true, wireframe: false, map: true, robot: true, decals: true };
+  private display: Required<SceneDisplay> = { textures: true, wireframe: false, characterWireframe: false, map: true, robot: true, decals: true };
   private originalMaps = new WeakMap<THREE.Material, THREE.Texture | null>();
   private originalVisibility = new WeakMap<THREE.Object3D, boolean>();
   private robotFade = 1;
@@ -443,21 +443,21 @@ export class SceneView {
 
   setFlashlight(on: boolean) { this.flashlight.set(on); }
 
-  private displayMaterial(m: THREE.Material) {
+  private displayMaterial(m: THREE.Material, wireframe = this.display.wireframe) {
     if (!(m instanceof THREE.MeshStandardMaterial || m instanceof THREE.MeshBasicMaterial)) return;
     if(setSourceTexturesEnabled(m,this.display.textures)){
-      if(m.wireframe!==this.display.wireframe){m.wireframe=this.display.wireframe;m.needsUpdate=true}
+      if(m.wireframe!==wireframe){m.wireframe=wireframe;m.needsUpdate=true}
       return;
     }
     if (!this.originalMaps.has(m)) this.originalMaps.set(m, m.map);
     const map = this.display.textures ? this.originalMaps.get(m)! : null;
-    if (m.map !== map || m.wireframe !== this.display.wireframe) {
-      m.map = map; m.wireframe = this.display.wireframe; m.needsUpdate = true;
+    if (m.map !== map || m.wireframe !== wireframe) {
+      m.map = map; m.wireframe = wireframe; m.needsUpdate = true;
     }
   }
 
   setDisplay(display: SceneDisplay) {
-    this.display = { ...display, decals: display.decals ?? true };
+    this.display = { ...display, characterWireframe: display.characterWireframe ?? display.wireframe, decals: display.decals ?? true };
     if (this.terrainVisual) {
       this.terrainVisual.visible = display.map;
       this.terrainVisual.traverse(object => { if (object.userData.sourceOverlay) object.visible = this.display.decals; });
@@ -469,10 +469,11 @@ export class SceneView {
         o.visible = display.robot && this.originalVisibility.get(o)! && !this.sourceBody;
       }
       o.traverse((child) => {
-        if (child instanceof THREE.Mesh) for (const m of [child.material].flat()) this.displayMaterial(m);
+        if (child instanceof THREE.Mesh) for (const m of [child.material].flat())
+          this.displayMaterial(m, o.userData.robotGeom ? this.display.characterWireframe : this.display.wireframe);
       });
     }
-    this.sourceBody?.eachMaterial(material=>this.displayMaterial(material));
+    this.sourceBody?.eachMaterial(material=>this.displayMaterial(material,this.display.characterWireframe));
     this.sourceBody?.visibility(this.robotFade,display.robot);
     for (const m of this.terrainMaterials)
       for (const material of [...[m.original].flat(), ...[m.source].flat()]) this.displayMaterial(material);
@@ -636,7 +637,7 @@ export class SceneView {
         if(highlighted){material.emissive.setHex(0xe0a23c);material.emissiveIntensity=.35;}
         this.robotMaterial(material);
         if(this.appearance.robotLight?.brightness&&!this.appearance.robotLight?.dull)material.emissiveMap=null;
-        this.sourceAmbient.patch(material);this.patchDynamicLighting(material,true);this.displayMaterial(material);
+        this.sourceAmbient.patch(material);this.patchDynamicLighting(material,true);this.displayMaterial(material,this.display.characterWireframe);
         return highlighted||!!this.appearance.robotLight?.dull||!!this.appearance.robotLight?.brightness;
       });
       if(this.lastRobotPose)body.sync(this.lastRobotPose.xpos,this.lastRobotPose.xmat);
@@ -720,7 +721,7 @@ export class SceneView {
       this.robotMaterial(material);
       this.sourceAmbient.patch(material);
       this.patchDynamicLighting(material, true);
-      this.displayMaterial(material);
+      this.displayMaterial(material,this.display.characterWireframe);
     });
     this.previewCache.clear();
   }
@@ -1575,7 +1576,7 @@ export class SceneView {
     for (const m of [mat].flat()) {
       this.sourceAmbient.patch(m);
       this.patchDynamicLighting(m, true);
-      this.displayMaterial(m);
+      this.displayMaterial(m,this.display.characterWireframe);
     }
     if (name === R1_HEAD_PART) this.applyHeadVisual();
   }

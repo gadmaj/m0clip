@@ -1,6 +1,5 @@
 /** Floating controls over a full-bleed scene, with independent, remembered positions. */
 const STORAGE = 'playpen-workspace-v1';
-const WINDOW_LAYER: Record<string, number> = { deck: 250, export: 300 };
 interface Placement { x: number; y: number; collapsed: boolean }
 interface FloatingPanel {
   root: HTMLElement; grip: HTMLButtonElement; body: HTMLElement | null;
@@ -133,7 +132,7 @@ export class FloatingWorkspace {
     const valid = saved && Number.isFinite(saved.x) && Number.isFinite(saved.y) && typeof saved.collapsed === 'boolean';
     const panel: FloatingPanel = { root, grip, body, home, placement: valid ? { ...saved } : home(), rank: this.panels.size };
     this.panels.set(root.id, panel);
-    root.style.zIndex = String((WINDOW_LAYER[root.id] ?? 20) + panel.rank);
+    root.style.zIndex = String(20 + panel.rank);
     collapse.onclick = () => {
       panel.placement.collapsed = !panel.placement.collapsed;
       if (!panel.placement.collapsed) panel.placement.y = Math.min(panel.placement.y, Math.max(this.workspaceTop, innerHeight - this.dockHeight - 480));
@@ -223,7 +222,7 @@ export class FloatingWorkspace {
       if (other === panel) other.rank = top;
       else if (other.rank > rank) other.rank--;
       else continue;
-      other.root.style.zIndex = String((WINDOW_LAYER[other.root.id] ?? 20) + other.rank);
+      other.root.style.zIndex = String(20 + other.rank);
     }
   }
 

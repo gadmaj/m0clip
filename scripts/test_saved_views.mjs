@@ -4,6 +4,11 @@ const result=await build({stdin:{contents:"export {validView,viewLink,sharedView
 const{validView,viewLink,sharedView,STUDIO}=await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
 const legacy={version:1,robot:'r1',terrain:'flat',position:[2,-2,1],target:[0,0,.7],fov:60,display:{textures:true,wireframe:false,map:true,robot:true},flashlight:false,look:{preset:'auto',custom:STUDIO}};
 assert.ok(validView(legacy));assert.deepEqual(sharedView(new URL(viewLink(legacy,'https://example.test/')).hash),legacy);
+for(const wireframe of [false,true])for(const characterWireframe of [false,true]) {
+ const v={...legacy,display:{...legacy.display,wireframe,characterWireframe}};
+ assert.ok(validView(v));assert.deepEqual(sharedView(new URL(viewLink(v,'https://example.test/')).hash),v);
+}
+for(const characterWireframe of [null,0,'true'])assert.equal(validView({...legacy,display:{...legacy.display,characterWireframe}}),false);
 for(const antialiasing of ['fxaa','msaa4','none']) {
  const v={...legacy,look:{...legacy.look,antialiasing}};
  assert.deepEqual(sharedView(new URL(viewLink(v,'https://example.test/')).hash),v);

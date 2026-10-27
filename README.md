@@ -200,6 +200,10 @@ Choose a map and character, then **Load scene**. The scene controls and **? Help
 list movement, camera and capture actions. Record takes, review them in Timeline
 and download saved files for backup.
 
+In **Render controls**, enable **Character wireframe** and leave **Map wireframe**
+off to keep the map solid. Keep **Textures** and **Map geometry** enabled to see
+the textured environment.
+
 - Detailed maps can require substantial downloads, memory and startup time.
 - Source gameplay, moving doors, prop physics, particles and HDR bloom are not
   reproduced. This is not a general loader for every game on noclip.website.

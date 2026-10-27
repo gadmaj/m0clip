@@ -658,12 +658,12 @@ class App {
       if (focus) this.view.renderer.domElement.focus({ preventScroll: true });
     };
     panels.onclick = () => {
-      if (this.exporting || this.dialog.isOpen) return;
+      if (this.exporting) return;
       visible = !visible.inspector && !visible.menu ? { ...restore } : { inspector: false, menu: false };
       update();
     };
-    inspector.onclick = () => { if (!this.exporting && !this.dialog.isOpen) { visible.inspector = !visible.inspector; update(); } };
-    menu.onclick = () => { if (!this.exporting && !this.dialog.isOpen) { visible.menu = !visible.menu; update(); } };
+    inspector.onclick = () => { if (!this.exporting) { visible.inspector = !visible.inspector; update(); } };
+    menu.onclick = () => { if (!this.exporting) { visible.menu = !visible.menu; update(); } };
     update(false);
     const toolbar = document.getElementById('viewport-tools')!;
     new ResizeObserver(() => {
@@ -1079,6 +1079,8 @@ class App {
     this.look.setReadOnly(on);
     this.timeline.root.inert = on;
     document.getElementById('panel')!.inert = on;
+    document.getElementById('policy-manager')!.inert = on;
+    document.getElementById('inspector')!.inert = on;
     this.view.controls.enabled = !on && this.timeline.mode !== 'recorded';
     if(!on&&this.take){
       const state=this.storedTakes.get(this.take);

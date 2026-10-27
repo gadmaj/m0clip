@@ -1,5 +1,5 @@
-/** GLTFExporter re-encodes WebP with browser quality defaults. Export PNG instead,
- * using temporary copies so the live viewer's textures and materials stay intact. */
+/** Prepare solid, lossless glTF materials using temporary copies, leaving the
+ * live viewer's textures, diffuse-only state and wireframe untouched. */
 import * as THREE from 'three';
 import { sourceDiffuseOnly } from '../render/source-textures';
 import { diffuseOnlyImage } from './lossless-images';
@@ -13,8 +13,10 @@ export function prepareLosslessTextures(root: THREE.Object3D): () => void {
     const gray=sourceDiffuseOnly(original);
     const entries = Object.entries(original).filter(([name,value]) => value instanceof THREE.Texture
       &&(value.userData.sourceNativeTexture||value.userData.mimeType==='image/webp'||gray&&name==='map'&&value.format===THREE.RGBAFormat));
-    if (!entries.length) return original;
+    const wireframe = 'wireframe' in original && original.wireframe === true;
+    if (!entries.length && !wireframe) return original;
     const clone = original.clone(); materials.set(original,clone);
+    if (wireframe && 'wireframe' in clone) clone.wireframe = false;
     for (const [name,value] of entries) {
       const texture = value as THREE.Texture;
       const neutral=gray&&name==='map';let variants=textures.get(texture);

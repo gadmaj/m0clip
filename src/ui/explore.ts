@@ -14,7 +14,7 @@ export interface SavedView {
   orientation?:[number,number,number,number];noclip?:boolean;
   flight?:{speed:number;hover:boolean};
 }
-const DISPLAY: SceneDisplay = { textures: true, wireframe: false, map: true, robot: true, decals: true };
+const DISPLAY: Required<SceneDisplay> = { textures: true, wireframe: false, characterWireframe: false, map: true, robot: true, decals: true };
 const BOOKMARKS_KEY = 'ume-saved-views-v1', DISPLAY_KEY = 'ume-display';
 type Bookmark={name:string;view:SavedView};
 const TERRAIN_NAMES:Record<string,string>={flat:'Flat ground',rough:'Rough ground',slope:'Slope',stairs:'Stairs',park:'Park'};
@@ -27,8 +27,8 @@ const viewLocation=(view:SavedView)=>{
 const vector = (v: unknown): v is [number, number, number] => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
 export const validDisplay = (v: unknown): v is SceneDisplay => !!v && typeof v === 'object'
   && ['textures', 'wireframe', 'map', 'robot'].every((k) => typeof (v as Record<string, unknown>)[k] === 'boolean')
-  // Old bookmarks and links predate the decal toggle; keep them usable.
-  && ((v as Record<string, unknown>).decals === undefined || typeof (v as Record<string, unknown>).decals === 'boolean');
+  // Old bookmarks and links predate independent character wireframe and decals.
+  && ['decals', 'characterWireframe'].every(k => (v as Record<string, unknown>)[k] === undefined || typeof (v as Record<string, unknown>)[k] === 'boolean');
 
 export function validView(v: unknown): v is SavedView {
   if (!v || typeof v !== 'object') return false;
@@ -104,12 +104,12 @@ export class ExplorePanel {
   }) {
     try {
       const display: unknown = JSON.parse(localStorage.getItem(DISPLAY_KEY) ?? 'null');
-      if (validDisplay(display)) this.display = { ...DISPLAY, ...display };
+      if (validDisplay(display)) this.display = { ...DISPLAY, ...display, characterWireframe: display.characterWireframe ?? display.wireframe };
       const saved = JSON.parse(localStorage.getItem(BOOKMARKS_KEY) ?? '[]');
       if (Array.isArray(saved)) this.bookmarks = saved.filter((v) => typeof v?.name === 'string' && validView(v.view));
     } catch { /* use defaults if a browser preference is damaged */ }
     const render = fold(parent, 'Render controls');
-    for (const [key, label] of Object.entries({ textures: 'Textures', wireframe: 'Wireframe', map: 'Map geometry', decals: 'Decals and markings', robot: 'Robot' })) {
+    for (const [key, label] of Object.entries({ textures: 'Textures', wireframe: 'Map wireframe', characterWireframe: 'Character wireframe', map: 'Map geometry', decals: 'Decals and markings', robot: 'Robot' })) {
       const row = document.createElement('label'); row.className = 'lk-check';
       const input = document.createElement('input'); input.type = 'checkbox'; input.checked = this.display[key as keyof SceneDisplay];
       input.onchange = () => this.setDisplay({ ...this.display, [key]: input.checked });
@@ -160,7 +160,7 @@ export class ExplorePanel {
   getDisplay(): SceneDisplay { return { ...this.display }; }
 
   setDisplay(display: SceneDisplay) {
-    this.display = { ...DISPLAY, ...display };
+    this.display = { ...DISPLAY, ...display, characterWireframe: display.characterWireframe ?? display.wireframe };
     for (const [k, checkbox] of this.checks) checkbox.checked = this.display[k];
     localStorage.setItem(DISPLAY_KEY, JSON.stringify(this.display));
     this.callbacks.display(this.display);

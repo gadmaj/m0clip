@@ -18,7 +18,7 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; }
 #viewport-tools .btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
 #workspace-panels { display: none; flex: 1 1 100%; gap: 6px; }
 #workspace-panels .btn { flex: 1; justify-content: center; min-height: 44px; }
-body.menu-hidden #workspace-panels, body.x-open #workspace-panels { display: none; }
+body.menu-hidden #workspace-panels { display: none; }
 .playpen-brand { margin-right: auto; padding: 6px 10px; color: var(--accent); background: var(--panel); border: 1px solid var(--line-hi); }
 .playpen-brand h1 { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: 0; }
 
@@ -92,7 +92,7 @@ option { background: var(--panel); }
 #inspector .ins-wrap { padding: 12px 14px; }
 #policy-manager.floating-window { width: 340px; }
 #policy-manager.hidden { display: none; }
-#export.floating-window { width: 440px; z-index: 300; }
+#export.floating-window { width: 440px; }
 #export[hidden], #deck[hidden] { display: none; }
 #export .floating-body { display: flex; flex-direction: column; }
 #deck.floating-window { width: min(920px, calc(100vw - 24px)); height: 270px; }
