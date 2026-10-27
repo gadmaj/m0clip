@@ -155,8 +155,7 @@ of pack ZIPs. The manifest and parser are defined in
 loader for arbitrary neural networks.
 
 Some motion clips run once, then switch to their configured next policy.
-Re-select a clip to play it again; a different active controller does not
-necessarily mean the selection failed.
+Re-select a clip to play it again.
 
 For an optional hosted R1 catalog, provide your own compatible R1 bundle before
 building, replacing the example input path with your file:
