@@ -44,7 +44,8 @@ import { clip, matFromWxyz, matTVec } from "../math";
 import type { Command, EvalConfig, RobotSpec } from "../types";
 import type { Engine } from "../../sim/engine";
 import { OnnxSession } from "../policy";
-import { assetUrl, loadTraj } from "../assets";
+import { loadTraj } from "../assets";
+import { selectedDriverAssets } from '../driver-assets';
 import { BaseDriver } from "./base";
 
 type Range = [number, number];
@@ -1156,23 +1157,23 @@ function quatMat(q: number[]): number[] { return Array.from(matFromWxyz(q)); }
 /** Driver factory for packs with an `r1:` block and `firmware: true` (called from makeDriver). */
 export async function makeR1FwDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine): Promise<BaseDriver> {
   const r = r1fw(cfg);
-  const url = (p: string) => assetUrl(p).replace(/\.mnn$/, ".onnx");
-  const net = await OnnxSession.load(url(cfg.policy.path));
+  const assets = selectedDriverAssets(cfg);
+  const net = await OnnxSession.load(assets.policy);
   const aux: Record<string, OnnxSession> = {};
-  for (const [role, p] of Object.entries(r.aux_models ?? {})) if (p) aux[role] = await OnnxSession.load(url(p));
+  for (const [role, url] of Object.entries(assets.models)) aux[role] = await OnnxSession.load(url);
   switch (r.obs_scheme) {
     case "amp_loco": return new R1AmpLocoDriver(cfg, spec, eng, net, aux);
     case "amp_motion": return new R1AmpMotionDriver(cfg, spec, eng, net, aux);
     case "gait": return new R1GaitDriver(cfg, spec, eng, net);
     case "mimic": case "simple": {
       const files: Record<string, { data: Float32Array; nRows: number; nCols: number }> = {};
-      for (const [role, p] of Object.entries(r.aux_files ?? {})) if (p) files[role] = await loadTraj(p);
+      for (const [role, url] of Object.entries(assets.files)) files[role] = await loadTraj(url);
       return r.obs_scheme === "mimic" ? new R1MimicDriver(cfg, spec, eng, net, aux, files)
         : new R1SimpleDriver(cfg, spec, eng, net, files);
     }
     case "track": {
       const motions: Record<string, { data: Float32Array; nRows: number; nCols: number }> = {};
-      for (const [role, p] of Object.entries(r.aux_files ?? {})) if (p) motions[role] = await loadTraj(p);
+      for (const [role, url] of Object.entries(assets.files)) motions[role] = await loadTraj(url);
       return new R1TrackDriver(cfg, spec, eng, net, aux, motions);
     }
   }

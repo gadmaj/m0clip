@@ -138,7 +138,7 @@ function textures(r: Reader, reserve: (bytes: number) => void): TextureData[] {
 }
 
 /** Map actual authored bones, never an invented proxy skeleton. Reject incomplete humanoids. */
-function rigDefinition(data: BoneData[], r: Reader): CharacterDefinition['rig'] {
+function rigDefinition(data: BoneData[], reference: THREE.Matrix4[], r: Reader): CharacterDefinition['rig'] {
   const normalized = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
   const names = new Map<string, string>();
   for (const bone of data) {
@@ -162,7 +162,7 @@ function rigDefinition(data: BoneData[], r: Reader): CharacterDefinition['rig'] 
   const head = find(['Bip01 Head', 'ValveBiped.Bip01_Head1'])!;
   if (neck) bindings[neck] = ['head_pitch_link', 'torso_link'];
   bindings[head] = ['head_yaw_link', 'head_pitch_link', 'torso_link'];
-  const feet: string[] = [];
+  const feet: string[] = [], hips: THREE.Vector3[] = [];
   for (const [side, prefix] of [['L','left'], ['R','right']] as const) {
     // Old Biped: Arm is clavicle, Arm1 humerus, Arm2 forearm. ValveBiped names are explicit.
     const upper = find([`Bip01 ${side} Arm1`, `ValveBiped.Bip01_${side}_UpperArm`, `Bip01 ${side} UpperArm`])!;
@@ -175,9 +175,16 @@ function rigDefinition(data: BoneData[], r: Reader): CharacterDefinition['rig'] 
     bindings[hand] = [`${prefix}_wrist_roll_link`, `${prefix}_elbow_link`];
     bindings[thigh] = [`${prefix}_hip_yaw_link`]; bindings[calf] = [`${prefix}_knee_link`];
     bindings[foot] = [`${prefix}_ankle_roll_link`];
+    hips.push(new THREE.Vector3().setFromMatrixPosition(reference[data.findIndex(bone => bone.name === thigh)]));
     aim[upper] = lower; aim[lower] = hand; aim[thigh] = calf; aim[calf] = foot; feet.push(foot);
   }
-  return {root: pelvis, alignment: [Math.SQRT1_2, 0, 0, Math.SQRT1_2], bindings, aim, feet};
+  // Compiled bind poses need not face file +X. Raw model-space thighs define anatomical left.
+  // The scene supplies Rx(-90deg), so Qz(yaw) * Qx(+90deg) maps left to physics +Y, up to +Z.
+  const left = hips[0].sub(hips[1]); left.z = 0;
+  if (left.lengthSq() < 1e-10) r.fail('unsupported rig: no horizontal left/right hip separation.');
+  const alignment = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI/2-Math.atan2(left.y, left.x))
+    .multiply(new THREE.Quaternion(Math.SQRT1_2, 0, 0, Math.SQRT1_2));
+  return {root: pelvis, alignment: alignment.toArray(), bindings, aim, feet};
 }
 
 /** Decode an RLE channel once. Every run must advance, contain values, and stay inside its file. */
@@ -219,7 +226,6 @@ export async function decodeGoldSrcScene(source: GoldSrcSource): Promise<{scene:
     state[index] = 1; if (boneData[index].parent >= 0) checkParent(boneData[index].parent); state[index] = 2;
   };
   for (let i = 0; i < boneCount; i++) checkParent(i);
-  const rig = rigDefinition(boneData, r);
   const controllerCount = r.table(r.i(152), r.i(148), 24), adjustments: number[] = [];
   const controllers: Record<string, number>[] = [];
   for (let i = 0; i < controllerCount; i++) {
@@ -231,7 +237,7 @@ export async function decodeGoldSrcScene(source: GoldSrcSource): Promise<{scene:
     if ((type & 0x7fff) >= 8) value *= Math.PI/180;
     adjustments.push(value); controllers.push({bone,type,start,end,rest,index});
   }
-  const defaults = boneData.map(bone => bone.value.map((value, k) => {
+  const controlledDefaults = boneData.map(bone => bone.value.map((value, k) => {
     const controller = bone.controllers[k];
     if (controller === -1) return value;
     checkedIndex(r, controller, controllerCount, 'bone controller'); return value+adjustments[controller];
@@ -239,17 +245,21 @@ export async function decodeGoldSrcScene(source: GoldSrcSource): Promise<{scene:
   const scene = new THREE.Group(); scene.name = 'GoldSrcCharacter'; scene.rotation.x = -Math.PI/2;
   const motion = new THREE.Group(); motion.name = 'GoldSrcRootMotion'; scene.add(motion);
   const boneNames = new Set<string>();
-  const bones = boneData.map((data, i) => {
+  // Header controller rest bytes describe animation offsets, not the raw anatomical reference.
+  // Rebuild geometry and inverse binds together: A(t) * B^-1 * (B * vertex) = A(t) * vertex.
+  // Controlled native tracks below therefore retain their world motion without biasing R1 calibration.
+  const bones = boneData.map(data => {
     const bone = new THREE.Bone(); bone.name = THREE.PropertyBinding.sanitizeNodeName(data.name);
     if (boneNames.has(bone.name)) r.fail(`animation bone-name collision at ${data.name}.`);
     boneNames.add(bone.name); bone.userData.name = data.name;
-    bone.position.fromArray(defaults[i]); bone.quaternion.copy(rotation(defaults[i])); return bone;
+    bone.position.fromArray(data.value); bone.quaternion.copy(rotation(data.value)); return bone;
   });
   for (let i = 0; i < boneCount; i++) (boneData[i].parent >= 0 ? bones[boneData[i].parent] : motion).add(bones[i]);
   scene.updateMatrixWorld(true);
   // Geometry is stored in individual bone-local coordinates, not model/world coordinates.
   const inverseScene = new THREE.Matrix4().copy(scene.matrixWorld).invert();
   const boneWorld = bones.map(bone => new THREE.Matrix4().multiplyMatrices(inverseScene, bone.matrixWorld));
+  const rig = rigDefinition(boneData, boneWorld, r);
   let textureReader = r;
   if (r.i(180) === 0) {
     const filename = `${source.name}t.mdl`;
@@ -370,7 +380,7 @@ export async function decodeGoldSrcScene(source: GoldSrcSource): Promise<{scene:
         const values = new Float64Array(6), quaternion = new THREE.Quaternion(), previous = new THREE.Quaternion();
         for (let frame = 0; frame < frames; frame++) {
           for (let axis = 0; axis < 6; axis++) {
-            values[axis] = defaults[bone][axis]+(channels[axis]?.[frame] ?? 0)*boneData[bone].scale[axis];
+            values[axis] = controlledDefaults[bone][axis]+(channels[axis]?.[frame] ?? 0)*boneData[bone].scale[axis];
             if (!Number.isFinite(Math.fround(values[axis]))) a.fail(`nonfinite animated pose in ${name}.`);
           }
           if (bone === motionBone) for (let axis = 0; axis < 3; axis++) if (motionType & (1<<axis)) values[axis] = 0;
@@ -411,7 +421,7 @@ export async function decodeGoldSrcScene(source: GoldSrcSource): Promise<{scene:
       materialLimits:['GoldSrc legacy directional lighting is represented by scene PBR lighting; flat/fullbright/chrome/additive/masked flags are retained.',
         'ALPHA has no per-model entity render amount; default amount is opaque. Chrome view-dependent UV shader is retained at runtime; generic GLB viewers do not implement that shader.',
         'Authored blend endpoints are separate clips; no animation UI or engine gameplay/controller emulation is claimed.'],
-      formatReference:'https://github.com/wootguy/modelguy',coordinateSystem:'Native Z-up X-forward, scene Rx(-90deg), physics alignment Rx(+90deg)'}};
+      formatReference:'https://github.com/wootguy/modelguy',coordinateSystem:'Native Z-up; scene Rx(-90deg); physics alignment from the anatomical left/right hip axis.'}};
   scene.updateMatrixWorld(true);
   return {scene,definition};
 }

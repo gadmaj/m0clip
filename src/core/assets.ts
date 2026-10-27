@@ -3,6 +3,7 @@
  * Paths inside pack configs are either repo-relative ("assets/models/…", for
  * the model bundles under public/) or absolute blob:/data:/http URLs (policy
  * and traj bytes from imported packs resolve to blob URLs — see src/packs). */
+import { fetchAsset } from './prepared-assets';
 
 export function assetUrl(repoRelPath: string): string {
   // pass through already-absolute URLs (blob:/data:/http[s]:) so imported
@@ -15,7 +16,7 @@ export interface Traj { data: Float32Array; nRows: number; nCols: number }
 
 /** Parse a reference-motion CSV into a flat Float32Array [nRows, nCols]. */
 export async function loadTraj(repoRelPath: string): Promise<Traj> {
-  const r = await fetch(assetUrl(repoRelPath));
+  const r = await fetchAsset(assetUrl(repoRelPath));
   if (!r.ok) throw new Error(`failed to fetch traj ${repoRelPath}: ${r.status}`);
   const text = await r.text();
   const lines = text.split("\n").filter((l) => l.trim().length > 0);

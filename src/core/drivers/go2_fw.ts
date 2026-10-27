@@ -24,7 +24,7 @@ import { clip, matFromWxyz, matTVec } from "../math";
 import type { Command, EvalConfig, RobotSpec } from "../types";
 import type { Engine } from "../../sim/engine";
 import { OnnxSession } from "../policy";
-import { assetUrl } from "../assets";
+import { selectedDriverAssets } from '../driver-assets';
 import { HeightMapSampler } from "../lidar";
 import { BaseDriver } from "./base";
 
@@ -948,10 +948,9 @@ export class Go2FwDriver extends BaseDriver {
 
 /** Build the driver: the pack's checkpoint is role "main", `go2.aux_models` the other roles. */
 export async function makeGo2FwDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine): Promise<BaseDriver> {
-  const g = go2fw(cfg);
-  const url = assetUrl(cfg.policy.path).replace(/\.mnn$/, ".onnx");
-  const nets: Record<string, OnnxSession> = { main: await OnnxSession.load(url) };
-  for (const [role, p] of Object.entries(g.aux_models ?? {}))
-    if (p) nets[role] = await OnnxSession.load(assetUrl(p).replace(/\.mnn$/, ".onnx"));
+  const assets = selectedDriverAssets(cfg);
+  const nets: Record<string, OnnxSession> = { main: await OnnxSession.load(assets.policy) };
+  for (const [role, url] of Object.entries(assets.models))
+    nets[role] = await OnnxSession.load(url);
   return new Go2FwDriver(cfg, spec, eng, nets);
 }

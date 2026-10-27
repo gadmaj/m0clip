@@ -3,11 +3,11 @@
 import { makeDriver, type BaseDriver } from "../core/drivers";
 import { sampleTraj, wxyz } from "../core/math";
 import type { PolicyEntry, Command, EvalConfig, RobotSpec } from "../core/types";
-import { listPacks, deletePack, deleteAllPacks, loadPack, importAny, packEntries, resolvePackConfig,
+import { listPacks, deletePack, deleteAllPacks, loadPack, importAny, packEntries, packAssetUrls, resolvePackConfig,
          revokePack, type PackMetadata } from "../packs";
 import { installDefaultPacks } from '../packs/defaults';
 import { releasePolicySessions } from '../core/policy';
-import { Engine, MissingBundleError, GEOM_MESH } from "../sim/engine";
+import { Engine, MissingBundleError, GEOM_MESH, type PreparedEngine } from "../sim/engine";
 import { SimFSM, type FsmState } from "../sim/fsm";
 import { isTerrain, mapId, MAPS_DIR, terrainTransform, type TerrainName } from "../sim/terrain";
 import { getSpec, SPECS } from "../robots";
@@ -15,6 +15,10 @@ import { observeTransfers } from "../loading/transfers";
 import { robotFamily as fam, r1Models, modelKey, specFor, selectRobotPolicy } from './robot-policy';
 import type { FromWorker, RenderModel, ToWorker } from "../sim/protocol";
 import { createFrameGeometryLayout, copyMovingGeometry } from '../sim/geometry-frames';
+import { PreparedAssets, httpAssetKey, usePreparedAssets } from '../core/prepared-assets';
+import { StartupGate } from '../core/startup-gate';
+import { driverAssetUrls, selectedDriverAssets } from '../core/driver-assets';
+import { expandAssetUrls } from '../loading/catalogue';
 
 /** Kinematic-playback state: a user-supplied reference clip is set into qpos
  * frame-by-frame (no physics), to preview retargeted mocap on the robot. */
@@ -50,12 +54,17 @@ const post = (m: FromWorker, transfer: Transferable[] = []) =>
   (self as unknown as Worker).postMessage(m, transfer);
 
 let loadingGeneration: number | undefined;
+let loadingEpoch = 0;
 let stopLoading: (() => void) | undefined;
+let releasePrepared: (() => void) | undefined;
+const startupGate = new StartupGate();
 
 function finishLoading(generation: number) {
   if (generation !== loadingGeneration) return;
+  startupGate.finish(generation);
   stopLoading?.();
-  stopLoading = undefined;
+  releasePrepared?.();
+  stopLoading = releasePrepared = undefined;
   loadingGeneration = undefined;
 }
 
@@ -237,17 +246,22 @@ class SimWorker {
             xp[3 * b + 2] + R[m + 6] * o[0] + R[m + 7] * o[1] + R[m + 8] * o[2]];
   }
 
-  async init(m: Extract<ToWorker, { t: "init" }>) {
+  async init(m: Extract<ToWorker, { t: "init" }>, epoch = loadingEpoch) {
+    if (epoch !== loadingEpoch) return;
     stopLoading?.();
+    releasePrepared?.();
     loadingGeneration = m.loadingId;
     const generation = m.loadingId;
+    const assets = m.catalogue && generation !== undefined ? new PreparedAssets() : undefined;
+    releasePrepared = assets ? usePreparedAssets(assets) : undefined;
     stopLoading = generation === undefined ? undefined : observeTransfers(`worker:${generation}`, updates => {
       post({ t: 'loading', generation, updates });
     });
     post({ t: "busy", msg: "loading imported policy packs…" });
     this.packs = await listPacks();
     try {
-      this.packs = await installDefaultPacks(this.packs, msg => post({ t: 'busy', msg }));
+      this.packs = await installDefaultPacks(this.packs, msg => post({ t: 'busy', msg }),
+        assets ? url => assets.prepare(url) : undefined);
     } catch (error) {
       // A failed download must not prevent browsing maps or using manual packs.
       // Leave the marker unset so the next visit retries, keeping partial imports.
@@ -264,18 +278,66 @@ class SimWorker {
     this.policies = selection.policies;
     this.polIdx = -1;
     const first = selection.index;
+    if (epoch !== loadingEpoch) return;
+
+    let preparedEngine: PreparedEngine | undefined;
+    let preparedConfig: PromiseSettledResult<EvalConfig> | undefined;
+    if (assets && m.catalogue && generation !== undefined) {
+      post({ t: 'busy', msg: 'Planning selected scene assets…' });
+      const catalogue = m.catalogue;
+      const entry = this.policies[first];
+      const selected = entry ? this.packs.find(pack => pack.id === entry.packId) : undefined;
+      const downloadUrl = selected?.downloadUrl;
+      const downloadKey = downloadUrl ? httpAssetKey(downloadUrl) : null;
+      // Local packs already have their real bytes. Unknown hosted packs must be
+      // downloaded and resolved now, so their actual external dependencies are known.
+      if (entry && (!downloadKey || catalogue.sizes[downloadKey] === undefined || this.configs.has(entry.name))) {
+        preparedConfig = await (async () => {
+          if (downloadUrl) await assets.prepare(downloadUrl);
+          return this.cfgFor(entry);
+        })().then(
+          value => ({ status: 'fulfilled' as const, value }),
+          reason => ({ status: 'rejected' as const, reason }),
+        );
+      }
+      if (epoch !== loadingEpoch || generation !== loadingGeneration) return;
+      const spec = getSpec(this.robot), map = mapId(this.terrain), mount = '/work/map';
+      preparedEngine = await Engine.prepare(spec.model_dir, spec.scene,
+        map ? { dir: `${MAPS_DIR}/${map}`, mount } : undefined, url => assets.prepare(url));
+      if (epoch !== loadingEpoch || generation !== loadingGeneration) return;
+      if (preparedConfig?.status === 'rejected') throw preparedConfig.reason;
+      const policyUrls = preparedConfig?.status === 'fulfilled'
+        ? driverAssetUrls(selectedDriverAssets(preparedConfig.value))
+        : selected ? packAssetUrls(selected) : [];
+      const roots = [...catalogue.runtime.worker, '/wasm/mujoco.js', '/wasm/mujoco.wasm',
+        ...preparedEngine.urls, ...policyUrls, ...(downloadUrl ? [downloadUrl] : []),
+        ...(entry ? catalogue.runtime.inference : []), ...assets.snapshot().map(asset => asset.url)];
+      const urls = expandAssetUrls(catalogue, roots.filter(url => httpAssetKey(url) !== null));
+      for (const url of urls) {
+        if (epoch !== loadingEpoch || generation !== loadingGeneration) return;
+        if (catalogue.sizes[url] === undefined) await assets.prepare(url);
+      }
+      if (epoch !== loadingEpoch || generation !== loadingGeneration) return;
+      const waiting = startupGate.wait(generation);
+      post({ t: 'loadingPlan', plan: { generation, token: waiting.token, robot: this.robot,
+        policy: entry?.name ?? null, pack: entry?.packId ?? null, inference: !!entry,
+        urls, prepared: assets.snapshot() } });
+      if (!await waiting.ready || epoch !== loadingEpoch || generation !== loadingGeneration) return;
+    }
 
     post({ t: "busy", msg: "compiling MuJoCo model (wasm)…" });
     if (this.policies.length) {
       // Only config/download work is engine-independent. Drain both before releasing
       // the worker queue, retaining model errors even if the selected policy fails too.
       const [engine, prepared] = await Promise.allSettled([
-        this.buildEngine(), this.cfgFor(this.policies[first]),
+        this.buildEngine(preparedEngine), preparedConfig
+          ? preparedConfig.status === 'fulfilled' ? preparedConfig.value : Promise.reject(preparedConfig.reason)
+          : this.cfgFor(this.policies[first]),
       ]);
       if (engine.status === "rejected") throw engine.reason;
       await this.loadDriver(first, true, prepared);
     } else {
-      await this.buildEngine();
+      await this.buildEngine(preparedEngine);
       this.driver = null;
       await releasePolicySessions();
     }
@@ -297,12 +359,12 @@ class SimWorker {
   }
 
 
-  private async buildEngine() {
+  private async buildEngine(prepared?: PreparedEngine) {
     const prev = this.eng as Engine | undefined;
     const spec0 = getSpec(this.robot);
     const map = mapId(this.terrain), mount = "/work/map";
     this.eng = await Engine.create(spec0.model_dir, terrainTransform(this.terrain, {}, mount), spec0.scene,
-                                   map ? { dir: `${MAPS_DIR}/${map}`, mount } : undefined);
+                                   map ? { dir: `${MAPS_DIR}/${map}`, mount } : undefined, prepared);
     if (prev) {
       // the old driver is bound to the old engine's model/data; every caller
       // reloads one (or runs driverless) — drop it before freeing the wasm side
@@ -375,7 +437,7 @@ class SimWorker {
     if (!c) {
       const index = this.packs.findIndex(pack => pack.id === entry.packId);
       if (index < 0) throw new Error(`imported pack ${entry.packId} not found`);
-      const pack = await loadPack(entry.packId);
+      const pack = await loadPack(entry.packId, this.packs[index]);
       const { files: _files, ...metadata } = pack;
       this.packs[index] = metadata;
       c = resolvePackConfig(pack, entry);
@@ -1022,9 +1084,19 @@ function serializeWork(task: () => void | Promise<void>) {
   return chain;
 }
 self.onmessage = (ev: MessageEvent<ToWorker>) => {
-  // Observation lifecycle must not queue behind a still-running asset load.
+  // Planning barriers and observation cleanup cannot queue behind init's wait.
+  if (ev.data.t === 'loadingProceed') {
+    startupGate.proceed(ev.data.generation, ev.data.token);
+    return;
+  }
   if (ev.data.t === 'loadingFinished') {
     finishLoading(ev.data.generation);
+    return;
+  }
+  if (ev.data.t === 'init') {
+    const message = ev.data, epoch = ++loadingEpoch;
+    startupGate.cancel();
+    void serializeWork(() => sim.init(message, epoch));
     return;
   }
   void serializeWork(() => sim.onMessage(ev.data));

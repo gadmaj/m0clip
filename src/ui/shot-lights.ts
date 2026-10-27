@@ -33,7 +33,7 @@ function diagram(kind: ShotLightKind): HTMLElement {
   return root;
 }
 
-/** Take-only editor. It owns no preferences and always commits an entire validated light snapshot. */
+/** Shared live/shot editor; commits a complete validated physical-light snapshot. */
 export class ShotLightsPanel {
   readonly root = element('details', 'fold shot-lights');
   private readonly body = element('div', 'fold-body');
@@ -43,6 +43,7 @@ export class ShotLightsPanel {
   private pickers: VisualPicker[] = [];
   private active = false;
   private readOnly = false;
+  private shot = false;
   private selected = '';
   private createKind: ShotLightKind = 'point';
   private invalid = new Set<HTMLInputElement>();
@@ -56,21 +57,15 @@ export class ShotLightsPanel {
     this.status.setAttribute('aria-live', 'polite');
   }
 
-  show(readOnly: boolean): void {
+  show(readOnly: boolean, shot = false): void {
     this.active = true;
     this.readOnly = readOnly;
+    this.shot = shot;
+    this.summary.textContent = shot ? 'Lights · SHOT' : 'Lights · LIVE';
     this.root.hidden = false;
     this.render();
   }
 
-  hide(): void {
-    this.active = false;
-    this.root.hidden = true;
-    this.selected = '';
-    for (const picker of this.pickers) picker.dispose();
-    this.pickers = [];
-    this.body.replaceChildren();
-  }
 
   setReadOnly(on: boolean): void {
     this.readOnly = on;
@@ -254,7 +249,7 @@ export class ShotLightsPanel {
     this.addButton.onclick = () => this.add();
     create.append(kind, this.addButton);
     this.body.append(element('div', 'sub', `${lights.length} / ${MAX_SHOT_LIGHTS} lights · world metres · Z up`), create);
-    if (!lights.length) this.body.append(element('div', 'sub', 'No shot lights. Choose a type and add a light at the current camera.'));
+    if (!lights.length) this.body.append(element('div', 'sub', 'No added lights.'));
     if (limit) this.body.append(element('div', 'sub', 'Eight-light limit reached. Remove a light to add another.'));
     this.renderList();
     this.body.append(this.list);
@@ -290,9 +285,9 @@ export class ShotLightsPanel {
       editor.append(remove);
       this.body.append(editor);
     }
-    const reset = element('button', 'btn ghost danger', 'Reset shot appearance');
+    const reset = element('button', 'btn ghost danger', this.shot ? 'Reset shot appearance' : 'Clear added lights');
     reset.type = 'button'; reset.disabled = this.readOnly;
     reset.onclick = () => { if (this.active && !this.readOnly) this.reset(); };
-    this.body.append(this.status, element('div', 'sub', 'Added lights are unshadowed. Reset removes all appearance and lighting edits from this take.'), reset);
+    this.body.append(this.status, element('div', 'sub', 'Added lights are unshadowed.'), reset);
   }
 }

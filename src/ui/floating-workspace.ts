@@ -54,6 +54,7 @@ export class FloatingWorkspace {
       button.title = `Show and focus ${button.textContent} controls`;
       panel.activator = button;
       button.onclick = () => {
+        if (document.body.classList.contains('menu-hidden')) element('toggle-menu').click();
         panel.placement.collapsed = false;
         this.apply(panel); this.raise(panel); this.persist();
         panel.grip.focus({ preventScroll: true });

@@ -1,4 +1,5 @@
 /** Startup-only decoded payload accounting. No observer branch consumes a body. */
+import { isPreviewAsset } from './preview-assets';
 export interface TransferUpdate {
   id: string;
   url: string;
@@ -37,8 +38,8 @@ function assetUrl(input: RequestInfo | URL): string | null {
     const url = new URL(value, globalThis.location.href);
     url.hash = '';
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-    if (/\/assets\/previews\//i.test(url.pathname)
-      || /\.(?:css|woff2?|ttf|otf|ico)$/i.test(url.pathname)
+    if (isPreviewAsset(url.href) || /\/assets\/previews\//i.test(url.pathname)
+      || /\.(?:woff2?|ttf|otf|ico)$/i.test(url.pathname)
       || /\/(?:favicon[^/]*|apple-touch-icon[^/]*)$/i.test(url.pathname)) return null;
     return url.href;
   } catch {
@@ -269,7 +270,7 @@ export function observeTransfers(prefix: string, report: (updates: TransferUpdat
         }
       }
       if ((entry.initiatorType === 'link' || entry.initiatorType === 'other')
-        && !/\.(?:[cm]?js|ts|wasm)(?:[?#]|$)/i.test(url)) continue;
+        && !/\.(?:[cm]?js|ts|css|wasm)(?:[?#]|$)/i.test(url)) continue;
       // Buffered timing is also a completion-only fallback for libraries that
       // captured fetch before init, and XHR. Pair observed fetches by URL/start
       // interval, not URL alone: concurrent/repeated requests are distinct.

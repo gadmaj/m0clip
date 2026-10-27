@@ -5,7 +5,8 @@
 import { OnnxPolicy, OnnxSession, withPolicySessions } from "../policy";
 import type { EvalConfig, RobotSpec } from "../types";
 import type { Engine } from "../../sim/engine";
-import { assetUrl, loadTraj } from "../assets";
+import { loadTraj } from "../assets";
+import { selectedDriverAssets } from '../driver-assets';
 import { BaseDriver } from "./base";
 import { G1LocoDriver, G1MimicDriver } from "./g1";
 import { G1LegacyDriver } from "./g1_legacy";
@@ -21,13 +22,20 @@ export type { BaseDriver };
 
 export async function makeDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine):
     Promise<BaseDriver> {
-  return withPolicySessions(() => createDriver(cfg, spec, eng));
+  return withPolicySessions(async () => {
+    const driver = await createDriver(cfg, spec, eng);
+    // These families used to fetch on their first control step, after ready.
+    // Retain the same data and behavior, but finish consuming startup bodies first.
+    if (driver instanceof G1VqDriver || driver instanceof G1PunchDriver
+      || driver instanceof G1FaceupDriver || driver instanceof G1GetupDriver) await driver.prepare();
+    return driver;
+  });
 }
 
 async function createDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine):
     Promise<BaseDriver> {
   const fam = cfg.family;
-  const policyUrl = assetUrl(cfg.policy.path).replace(/\.mnn$/, ".onnx");
+  const assets = selectedDriverAssets(cfg), policyUrl = assets.policy;
 
   // R1 ai_sport firmware policies (registry/r1, see r1_fw.ts)
   if (cfg.r1?.firmware) return makeR1FwDriver(cfg, spec, eng);
@@ -38,12 +46,12 @@ async function createDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine):
     // 813 CpyWalkJump / 900 ZjxWalkJump: future-state / 201-dim mimics of the walk-jump clip (see g1_jump.ts)
     if (cfg.g1?.obs_scheme === "cpy_jump" || cfg.g1?.obs_scheme === "zjx_jump") {
       const sess = await OnnxSession.load(policyUrl);
-      const traj = await loadTraj(cfg.g1.motion_clip!);
+      const traj = await loadTraj(assets.clip!);
       return new G1JumpDriver(cfg, spec, eng, sess, traj.data, traj.nCols);
     }
     if (fam === "g1_mimic" || cfg.g1?.obs_scheme === "mimic") {
       const sess = await OnnxSession.load(policyUrl);
-      const clipPath = cfg.g1?.motion_clip;
+      const clipPath = assets.clip;
       if (!clipPath) throw new Error(`${cfg.name}: g1 mimic requires motion_clip`);
       const traj = await loadTraj(clipPath);
       return new G1MimicDriver(cfg, spec, eng, sess, traj.data, traj.nCols);
@@ -59,9 +67,9 @@ async function createDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine):
     if (scheme === "legacy" || scheme === "vq" || scheme === "bm_getup" || scheme === "faceup" || scheme === "punch") {
       const sess = await OnnxSession.load(policyUrl);
       const aux: Record<string, OnnxSession> = {};
-      for (const [role, p] of Object.entries(cfg.g1?.aux_models ?? {}))
-        if (p) aux[role] = await OnnxSession.load(assetUrl(p).replace(/\.mnn$/, ".onnx"));
-      const files = Object.fromEntries(Object.entries(cfg.g1?.aux_files ?? {}).map(([k, p]) => [k, assetUrl(p)]));
+      for (const [role, url] of Object.entries(assets.models))
+        aux[role] = await OnnxSession.load(url);
+      const files = assets.files;
       if (scheme === "legacy") return new G1LegacyDriver(cfg, spec, eng, sess, aux, files);
       if (scheme === "vq") return new G1VqDriver(cfg, spec, eng, sess, aux, files);
       if (scheme === "faceup") return new G1FaceupDriver(cfg, spec, eng, sess, aux, files);
@@ -74,8 +82,8 @@ async function createDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine):
       : await OnnxPolicy.load(policyUrl);
     // Cpy* locomotion: the stance / run networks the firmware swaps in
     const aux: Record<string, OnnxSession> = {};
-    for (const [role, p] of Object.entries(cfg.g1?.aux_models ?? {}))
-      if (p) aux[role] = await OnnxSession.load(assetUrl(p).replace(/\.mnn$/, ".onnx"));
+    for (const [role, url] of Object.entries(assets.models))
+      aux[role] = await OnnxSession.load(url);
     return new G1LocoDriver(cfg, spec, eng, sess, aux);
   }
 

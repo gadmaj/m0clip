@@ -114,6 +114,10 @@ The in-app Source model search uses the
 models retain their own authorship and terms; search results are not a license
 grant. Remote search also depends on its upstream services and CORS support.
 
+Compatible biped imports align named left/right limbs to the robot and keep the
+model's reference pose separate from animated bone controllers. Custom skeletons
+may require an explicit rig mapping.
+
 Character and policy galleries browse image previews without loading models or
 policy weights. Available turntables use prebuilt GIFs; reduced-motion mode uses
 separate PNG stills. A rest-pose turntable is not a motion or controller demo.
@@ -125,17 +129,11 @@ To prepare previews for assets you already have permission to publish,
 runs in Blender with an explicit `--job` JSON. The job supplies a new output
 directory, frame count/rate, and `characters` entries containing `id`, `input`,
 `sha256`, `approvedRuntimeAsset` and `attribution`. It renders a full camera orbit
-around each GLB's native rest pose. It encodes and reads back one character at a
-time, then removes only that render's disposable image sequence. The encoder
-emits `turntable.gif` and `still.min.png`; GIF palette reduction is lossy, while
-PNG recompression preserves decoded pixels. Keep generation receipts private;
-add only approved image URLs and captions to
-[`animated-preview-catalog.json`](src/ui/animated-preview-catalog.json).
-For an interrupted private batch, `--resume` reuses completed entries only when
-their source, image hashes, timing and attribution still match the explicit job.
-Completed receipts are checkpointed atomically without dropping earlier entries.
-Encoding uses fresh staging; only verified output is published to its final
-identity. Incomplete older output is preserved separately rather than overwritten.
+around each GLB's native rest pose. The encoder emits `turntable.gif` and
+`still.min.png`; GIF palette reduction is lossy, while PNG recompression preserves
+decoded pixels. Keep generation receipts private; add only approved image URLs
+and captions to [`animated-preview-catalog.json`](src/ui/animated-preview-catalog.json).
+
 Policy animations require captures from the exact robot and checkpoint, not
 motion inferred from a policy name. Where no such capture exists, the gallery
 labels the robot-only picture rather than implying policy playback.
@@ -177,9 +175,25 @@ environment's Python executable before invoking `npm run build`.
 
 The build typechecks the application, writes `dist/`, then generates compressed
 robot meshes and processes native map visuals when the corresponding map inputs
-are present. Keep the complete output, including `assets/`, `wasm/`, manifests
-and `.gz` files. `npm run preview` serves it locally with the required isolation
-headers; it is a preview server, not a production hosting service.
+are present. It writes a release-specific startup asset catalogue **after** those
+steps, using the final file sizes and dependencies. Keep the complete output,
+including `assets/`, `wasm/`, manifests, the startup catalogue and `.gz` files.
+`npm run preview` serves it locally with the required isolation headers; it is a
+preview server, not a production hosting service.
+
+Map-conversion reports are omitted from the build and startup catalogue. Keep any
+reports you need with your local asset sources, not on the static host.
+
+If you change assets in an already-built output directory, regenerate its
+catalogue before serving that output:
+
+```sh
+node scripts/build_startup_catalogue.mjs dist
+```
+
+This keeps the catalogue URL compiled into that build. Prepare character previews
+and model conversions before the final catalogue pass; do not mix a catalogue
+from one output with files from another.
 
 ## Host the static build
 
@@ -207,14 +221,14 @@ resource policy; do not disable isolation to work around a blocked asset.
 | `.wasm` | `Content-Type: application/wasm`; preserve binary bytes. |
 | `.json` manifests | `Content-Type: application/json`; missing assets must not become an HTML fallback. |
 | GLB, ONNX, meshes and ZIPs | Serve the actual binary files, with an appropriate binary MIME type. Do not apply text conversion. |
-| Explicit `.gz` mesh or lightstyle files | Keep their filenames and bytes. Serving raw gzip files as `application/gzip` without `Content-Encoding` is supported; the application decodes them. |
+| Explicit `.gz` mesh or lightstyle files | Keep their filenames and bytes. Serve as `application/gzip` without `Content-Encoding`; the application inflates them. |
 
-HTTP compression is separate from an explicit `.gz` asset. If your host sends
-`Content-Encoding: gzip` or `br`, the response body must actually use that
-encoding. The browser decodes it before the application receives it. The runtime
-also accepts already-decoded explicit gzip assets, but a false encoding header,
-a renamed uncompressed file or an HTML error page will break loading. Do not
-strip the generated `.gz` files as redundant precompression artifacts.
+HTTP compression is separate from an explicit `.gz` asset. For ordinary resources,
+if your host sends `Content-Encoding: gzip` or `br`, the response body must actually
+use that encoding. The browser decodes it before the application receives it.
+Do not label an explicit `.gz` file as HTTP gzip: its compressed file bytes are
+part of the generated scene payload budget. Do not strip the generated `.gz`
+files as redundant precompression artifacts or replace missing files with HTML.
 
 Deploy HTML, scripts, asset manifests and their referenced files together. Avoid
 long-lived caching for `index.html` and mutable catalog/manifest URLs; reserve
@@ -226,6 +240,27 @@ Choose a map and character, then **Load scene**. The scene controls and **? Help
 list movement, camera and capture actions. Record takes, review them in Timeline
 and download saved files for backup.
 
+Loading first resolves the selected scene, model, appearance and policy. Selected
+external player models may need to finish downloading during this planning step;
+their prepared data is reused. Before the remaining scene downloads begin, the
+loader fixes its **scene asset payload** maximum. **MB LEFT** and download ETA use
+unique HTTP-decoded resources, including bytes read from browser cache—not billed
+network traffic or inflated texture/mesh memory. Transport compression can reduce
+wire bytes without changing this maximum. A full byte meter does not mean physics
+compilation or material preparation has finished; **Enter scene** waits for the
+simulation, visuals and a rendered frame. Expand **Details** for actual transfers
+and readiness. Pong appears only if an unfinished load lasts more than 30 seconds.
+
+Open **Camera / output** before recording to set the static camera, lens and output
+format. **Scene** remains available above setup for look, parts, lighting and
+display controls. Motion/video/data exports require an open recorded take; static
+setup does not create one. Press **Escape** to close setup. Starting a recording
+also closes it and restores the live camera without losing the output recipe;
+setup cannot open while a recording is starting or active. In review, appearance,
+display, flashlight, added lights and camera edits belong to that shot, not live
+preferences. Robot, map, policy and other simulation controls are LIVE-only.
+Controls lock while encoding, not merely while setup is open.
+
 In **Render controls**, enable **Character wireframe** and leave **Map wireframe**
 off to keep the map solid. Keep **Textures** and **Map geometry** enabled to see
 the textured environment.
@@ -233,8 +268,10 @@ the textured environment.
 - Detailed maps can require substantial downloads, memory and startup time.
 - Source gameplay, moving doors, prop physics, particles and HDR bloom are not
   reproduced. This is not a general loader for every game on noclip.website.
-- Video export depends on the codecs the browser can encode. Portable GLB exports
-  do not reproduce Source's custom shaders, lightmaps or final tone mapping.
+- Video export depends on the codecs the browser can encode.
+- GLB exports use solid triangle geometry, not viewport wireframe lines. **Textures**
+  also controls the optional exported ground plane. Source's custom shaders,
+  lightmaps and final tone mapping are not reproduced in GLB.
 - Saved takes, screenshots and imported policies are local to the browser and
   site origin, not cloud backups. Clearing site data can remove them; another
   hostname cannot read them. Download backups before changing origins.
