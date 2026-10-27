@@ -190,9 +190,10 @@ including `assets/`, `wasm/`, manifests, the startup catalogue and `.gz` files.
 `npm run preview` serves it locally with the required isolation headers; it is a
 preview server, not a production hosting service.
 
-Map-conversion reports and character `analysis.json` files are omitted from public
-builds and the startup catalogue. Keep conversion records with your local asset
-sources, not on the static host.
+Map and character conversion records are omitted from public builds and the startup
+catalogue. Keep source analysis, conversion recipes and rig-mapping notes with your
+local asset sources, not on the static host. Runtime rig definitions and attribution
+remain included.
 
 If you change assets in an already-built output directory, regenerate its
 catalogue before serving that output:

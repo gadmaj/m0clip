@@ -11,7 +11,9 @@ const root = await mkdtemp(resolve(tmpdir(), 'm0clip-public-asset-policy-'));
 const project = resolve(root, 'project'), output = resolve(project, 'dist'), publicDir = resolve(project, 'public');
 const configFile = fileURLToPath(new URL('../vite.config.ts', import.meta.url));
 const runtime = 'assets/maps/selected/manifest.json';
-const receipts = ['assets/maps/selected/props-report.json', 'assets/maps/selected/source-upgrade.json', 'assets/characters/selected/analysis.json'];
+const characterReceipts = ['analysis.json', 'conversion.json', 'rig-map.json', 'source-evidence.json', 'source-manifest.json'];
+const receipts = ['assets/maps/selected/props-report.json', 'assets/maps/selected/source-upgrade.json',
+  ...characterReceipts.map(name => 'assets/characters/selected/' + name)];
 async function put(path, body) {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, body);
@@ -41,7 +43,7 @@ try {
   published = await preview({ ...common, build: { outDir: output }, preview: { host: '127.0.0.1', port: 0 } });
   const canonicalPaths = ['/assets/maps/selected/props-report.json', '/assets/maps/selected/%73ource-upgrade.json',
     '/assets/maps/selected//props-report.json', '//assets/maps/selected/source-upgrade.json',
-    '/assets/maps/selected/source-upgrade.json/', '/assets/characters/selected/analysis.json',
+    '/assets/maps/selected/source-upgrade.json/', ...characterReceipts.map(name => '/assets/characters/selected/' + name),
     '//assets/characters/selected/%61nalysis.json', '/assets/characters/selected/analysis.json/'];
   await deny(`http://127.0.0.1:${published.httpServer.address().port}`, canonicalPaths);
   development = await createServer({ ...common, server: { host: '127.0.0.1', port: 0, fs: { allow: [project] } } });
@@ -49,7 +51,7 @@ try {
   const fsPrefix = '/@fs/' + publicDir.replaceAll('\\', '/').replace(/^\/+/, '');
   await deny(`http://127.0.0.1:${development.httpServer.address().port}`, [...canonicalPaths,
     '/public/assets/maps/selected/source-upgrade.json', fsPrefix + '/assets/maps/selected/props-report.json',
-    '/public/assets/characters/selected/analysis.json', fsPrefix + '/assets/characters/selected/analysis.json']);
+    ...characterReceipts.flatMap(name => ['/public/assets/characters/selected/' + name, fsPrefix + '/assets/characters/selected/' + name])]);
 
   await removePrivateAssetReceipts(output);
   for (const key of receipts) await assert.rejects(readFile(resolve(output, key)), { code: 'ENOENT' });
