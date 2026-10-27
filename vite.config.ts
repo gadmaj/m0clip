@@ -6,7 +6,7 @@ import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { buildDevelopmentCatalogue, buildRuntimeGraph, writeStartupCatalogue } from './scripts/build_startup_catalogue.mjs';
+import { buildDevelopmentCatalogue, buildRuntimeGraph, captureRuntimeChunks, writeStartupCatalogue } from './scripts/build_startup_catalogue.mjs';
 
 // COOP/COEP so the mujoco wasm's SharedArrayBuffer/threads are usable.
 // A production host must send these too (see README).
@@ -66,19 +66,7 @@ export default defineConfig(({ command }) => {
     return {
       name: 'startup-runtime-graph',
       generateBundle(_options, bundle: OutputBundle) {
-        for (const output of Object.values(bundle)) {
-          if (output.type !== 'chunk') continue;
-          const metadata = output as typeof output & { viteMetadata?: { importedCss: Set<string>; importedAssets: Set<string> } };
-          const facade = output.facadeModuleId?.replaceAll('\\', '/') ?? '';
-          const role = workerBuild && /\/src\/worker\/sim\.worker\.ts(?:\?|$)/.test(facade) ? 'worker'
-            : /\/src\/main\.ts(?:\?|$)/.test(facade) ? 'page'
-            : !workerBuild && output.isEntry ? 'shell' : undefined;
-          const url = (file: string) => '/' + file.replace(/^\//, '');
-          chunks.push({ url: url(output.fileName), role,
-            imports: output.imports.map(url), dynamicImports: output.dynamicImports.map(url),
-            css: [...metadata.viteMetadata?.importedCss ?? []].map(url),
-            assets: [...metadata.viteMetadata?.importedAssets ?? []].map(url) });
-        }
+        chunks.push(...captureRuntimeChunks(bundle, workerBuild));
       },
     };
   }

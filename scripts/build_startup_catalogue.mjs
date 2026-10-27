@@ -165,6 +165,28 @@ export async function buildStartupCatalogue(directory, runtime, options = {}) {
   return { version: 1, release: hash.digest('hex'), sizes, dependencies, runtime, mapVisuals, modelBundles };
 }
 
+/** Record real Rollup chunks, including optimized dynamic entries without a facade.
+ * @param {import('rollup').OutputBundle} bundle
+ * @param {boolean} workerBuild
+ * @returns {Array<{url: string, role?: 'page'|'worker'|'shell', imports: string[], dynamicImports: string[], css: string[], assets: string[]}>}
+ */
+export function captureRuntimeChunks(bundle, workerBuild = false) {
+  const chunks = [], url = file => '/' + file.replace(/^\//, '');
+  for (const chunk of Object.values(bundle)) {
+    if (chunk.type !== 'chunk') continue;
+    const facade = chunk.facadeModuleId?.replaceAll('\\', '/') ?? '';
+    const owns = pattern => pattern.test(facade) || chunk.moduleIds.some(id => pattern.test(id.replaceAll('\\', '/')));
+    const role = workerBuild && owns(/\/src\/worker\/sim\.worker\.ts(?:\?|$)/) ? 'worker'
+      : owns(/\/src\/main\.ts(?:\?|$)/) ? 'page'
+      : !workerBuild && chunk.isEntry ? 'shell' : undefined;
+    chunks.push({ url: url(chunk.fileName), role, imports: chunk.imports.map(url),
+      dynamicImports: chunk.dynamicImports.map(url),
+      css: [...chunk.viteMetadata?.importedCss ?? []].map(url),
+      assets: [...chunk.viteMetadata?.importedAssets ?? []].map(url) });
+  }
+  return chunks;
+}
+
 /** Rollup records both builds, including its separately bundled module worker. */
 export async function buildRuntimeGraph(directory, chunks) {
   const files = await filesBelow(resolve(directory));
