@@ -105,7 +105,8 @@ node scripts/package_map.mjs public/assets/maps/my_map \
 The packager requires Linux with `/proc/self/fd` and rejects symlinked input
 directories or files. It includes the selected visuals, textures and physics,
 checks their contents, and never overwrites an existing ZIP. The resulting
-bundle is portable; the browser does not need Linux.
+bundle is portable; the browser does not need Linux. Truncated compressed entries
+and entries with trailing compressed data are rejected.
 
 Choose **Open map bundle…** in the map gallery. Files are checked locally, not
 uploaded. Local maps last for the tab's session. Saved takes and views remember

@@ -1,5 +1,5 @@
 /** Browser-local converted maps. ZIP metadata is read separately from resource bodies. */
-import { Inflate } from 'fflate';
+import { BoundedInflate, deflateFeedBytes } from './deflate';
 import { mapXmlReferences, parseMapXml } from './xml.mjs';
 
 export interface MapBundleResource {
@@ -151,30 +151,29 @@ async function extract(file: Blob, entry: ZipEntry, centralOffset: number, signa
     const descriptor = view(await read(file, end + skip, 12, signal));
     if (descriptor.getUint32(0, true) !== entry.crc || descriptor.getUint32(4, true) !== entry.compressed || descriptor.getUint32(8, true) !== entry.bytes) fail(`inconsistent ZIP data descriptor: ${entry.path}`);
   }
-  let size = 0, crc = 0xffffffff, complete = entry.method === 0;
+  let size = 0, crc = 0xffffffff;
   const chunks: BlobPart[] = [];
-  const consume = (chunk: Uint8Array, final: boolean) => {
+  const consume = (chunk: Uint8Array) => {
     aborted(signal);
+    if (chunk.length > entry.bytes - size) fail(`inflated size exceeds declared bytes: ${entry.path}`);
     size += chunk.length;
-    if (size > entry.bytes) fail(`inflated size exceeds declared bytes: ${entry.path}`);
     for (const byte of chunk) crc = crcTable[(crc ^ byte) & 255] ^ (crc >>> 8);
     if (entry.method !== 0 && chunk.length) chunks.push(chunk as BlobPart);
-    complete = final;
   };
-  const inflate = entry.method === 8 ? new Inflate(consume) : null;
+  const inflate = entry.method === 8 ? new BoundedInflate(entry.compressed, entry.bytes, consume, signal) : null;
+  const feedBytes = inflate ? deflateFeedBytes : 16384;
   try {
-    for (let pos = 0; pos < entry.compressed; pos += 16384) {
-      const body = await read(file, start + pos, Math.min(16384, entry.compressed - pos), signal);
-      const final = pos + body.length === entry.compressed;
-      if (inflate) inflate.push(body, final); else consume(body, final);
+    for (let pos = 0; pos < entry.compressed; pos += feedBytes) {
+      const body = await read(file, start + pos, Math.min(feedBytes, entry.compressed - pos), signal);
+      if (inflate) inflate.push(body); else consume(body);
     }
-    if (inflate && !entry.compressed) inflate.push(new Uint8Array(), true);
+    inflate?.finish();
   } catch (error) {
     aborted(signal);
     fail(`cannot inflate ${entry.path}: ${error instanceof Error ? error.message : String(error)}`);
   }
   aborted(signal);
-  if (!complete || size !== entry.bytes || ((crc ^ 0xffffffff) >>> 0) !== entry.crc) fail(`wrong bytes/CRC or truncated body: ${entry.path}`);
+  if (size !== entry.bytes || ((crc ^ 0xffffffff) >>> 0) !== entry.crc) fail(`wrong bytes/CRC or truncated body: ${entry.path}`);
   return entry.method === 0 ? file.slice(start, start + entry.bytes, contentType(entry.path)) : new Blob(chunks, { type: contentType(entry.path) });
 }
 function record(value: unknown, label: string): Record<string, unknown> {

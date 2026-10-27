@@ -52,6 +52,46 @@ const reversed = indexFor(); reversed.resources.reverse();
 const repacked = await decodeMapBundle(archive(bodies, reversed, { 'unlisted.json': strToU8('{"private":"not a dependency"}') }, 6));
 assert.equal(repacked.id, stored.id, 'Resource ordering and unlisted ZIP payload cannot alter identity');
 assert(!repacked.files.has('unlisted.json'), 'Only declared verified resources become owned map blobs');
+// Preserve valid compressed content/CRC/hash while inserting declared compressed
+// bytes AFTER its final Deflate block. Neither metadata nor body validation may
+// silently accept padding and feed/copy it until the declared extent is exhausted.
+async function paddedArchive(target) {
+  const bytes = Buffer.from(await archive(bodies, indexFor(), {}, 6).arrayBuffer());
+  const end = bytes.length - 22, central = bytes.readUInt32LE(end + 16), records = [];
+  for (let position = central; position < end;) {
+    const nameBytes = bytes.readUInt16LE(position + 28), extra = bytes.readUInt16LE(position + 30), comment = bytes.readUInt16LE(position + 32);
+    records.push({ position, name: bytes.toString('utf8', position + 46, position + 46 + nameBytes), offset: bytes.readUInt32LE(position + 42) });
+    position += 46 + nameBytes + extra + comment;
+  }
+  const entry = records.find(record => record.name === target);
+  assert(entry);
+  assert.equal(bytes.readUInt16LE(entry.offset + 6) & 8, 0, 'Independent zipSync fixture has fixed local sizes, not a descriptor');
+  const compressed = bytes.readUInt32LE(entry.offset + 18), start = entry.offset + 30 + bytes.readUInt16LE(entry.offset + 26) + bytes.readUInt16LE(entry.offset + 28);
+  const insertion = start + compressed, padding = Buffer.alloc(5 * 4096);
+  bytes.writeUInt32LE(compressed + padding.length, entry.offset + 18);
+  bytes.writeUInt32LE(compressed + padding.length, entry.position + 20);
+  for (const record of records) if (record.offset >= insertion) bytes.writeUInt32LE(record.offset + padding.length, record.position + 42);
+  bytes.writeUInt32LE(central + padding.length, end + 16);
+  class BodyReadBlob extends Blob {
+    bodyBytesRead = 0;
+    slice(from = 0, to = this.size, type) {
+      const part = super.slice(from, to, type), arrayBuffer = part.arrayBuffer.bind(part);
+      // ZIP tail/central metadata reads are distinct from selected body feeds.
+      if (from >= start && to <= insertion + padding.length) part.arrayBuffer = async () => {
+        const body = await arrayBuffer();
+        this.bodyBytesRead += body.byteLength;
+        return body;
+      };
+      return part;
+    }
+  }
+  return new BodyReadBlob([bytes.subarray(0, insertion), padding, bytes.subarray(insertion)]);
+}
+for (const target of ['m0clip-map.json', 'manifest.json']) {
+  const padded = await paddedArchive(target);
+  await assert.rejects(target === 'm0clip-map.json' ? inspectMapBundle(padded) : decodeMapBundle(padded), /trailing|Deflate.*end|inflate/, `Reject trailing compressed padding in ${target}`);
+  assert(padded.bodyBytesRead <= 4096, 'Reject after one bounded selected-body feed, without reading the remaining compressed padding');
+}
 
 const wrongHash = indexFor(); wrongHash.resources.find(item => item.path === 'textures/pixel.png').sha256 = '0'.repeat(64);
 await assert.rejects(decodeMapBundle(archive(bodies, wrongHash)), /SHA256.*textures\/pixel\.png/);
