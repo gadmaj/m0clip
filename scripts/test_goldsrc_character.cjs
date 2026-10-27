@@ -79,6 +79,143 @@ const {build} = require('esbuild');
   const image=meshes[0].material.map.image.data, palette=pixels+width*height, color=bytes[pixels];
   assert.deepEqual(Array.from(image.slice(0,4)),[bytes[palette+color*3],bytes[palette+color*3+1],bytes[palette+color*3+2],255]);
   const boneOffset=bytes.readInt32LE(144), sequenceOffset=bytes.readInt32LE(168);
+  // Independent format oracle: raw bone-local points transformed by hierarchical Rz * Ry * Rx.
+  // Valve's StudioCalcBonePosition/StudioCalcBoneQuaterion add runtime controllers AFTER defaults:
+  // https://github.com/ValveSoftware/halflife/blob/master/cl_dll/StudioModelRenderer.cpp
+  // GMod's bind matrices convert model space back into bone-local reference space, not animated space:
+  // https://wiki.facepunch.com/gmod/Structures/BoneBindPose
+  // https://wiki.facepunch.com/gmod/ValveBiped_Bones
+  const nativeBones=Array.from({length:bytes.readInt32LE(140)},(_,index)=>{
+    const offset=boneOffset+index*112;
+    return {name:bytes.toString('latin1',offset,offset+32).split('\0')[0],parent:bytes.readInt32LE(offset+32),
+      values:Array.from({length:6},(_,axis)=>bytes.readFloatLE(offset+64+axis*4)),
+      scale:Array.from({length:6},(_,axis)=>bytes.readFloatLE(offset+88+axis*4)),
+      controllers:Array.from({length:6},(_,axis)=>bytes.readInt32LE(offset+40+axis*4))};
+  });
+  const nativeIndex=name=>{
+    const index=nativeBones.findIndex(bone=>bone.name===name);assert.ok(index>=0,name);return index;
+  };
+  const nativeVector=offset=>new THREE.Vector3(bytes.readFloatLE(offset),bytes.readFloatLE(offset+4),bytes.readFloatLE(offset+8));
+  const nativeSample=(address,axis,frame)=>{
+    const delta=bytes.readUInt16LE(address+axis*2);if(!delta)return 0;
+    let cursor=address+delta,remaining=frame;
+    while(remaining>=bytes[cursor+1]){remaining-=bytes[cursor+1];cursor+=2*(bytes[cursor]+1);}
+    return bytes.readInt16LE(cursor+2*(1+Math.min(remaining,bytes[cursor]-1)));
+  };
+  const nativeWorld=(sequence=-1,frame=0,blend=0)=>{
+    const output=[],seq=sequenceOffset+sequence*176;
+    const resolve=index=>{
+      if(output[index])return output[index];
+      const bone=nativeBones[index],v=bone.values.slice();
+      if(sequence>=0)for(let axis=0;axis<6;axis++){
+        const address=bytes.readInt32LE(seq+124)+bytes.readInt32LE(bytes.readInt32LE(176)+100)+(blend*nativeBones.length+index)*12;
+        v[axis]+=nativeSample(address,axis,frame)*bone.scale[axis];
+        const controller=bone.controllers[axis];
+        if(controller>=0){
+          const c=bytes.readInt32LE(152)+controller*24,start=bytes.readFloatLE(c+8),end=bytes.readFloatLE(c+12);
+          const type=bytes.readInt32LE(c+4),rest=bytes.readInt32LE(c+16),slot=bytes.readInt32LE(c+20);
+          let adjustment=type&0x8000?start+rest*360/256:start+(end-start)*Math.min(1,rest/(slot===4?64:255));
+          if((type&0x7fff)>=8)adjustment*=Math.PI/180;
+          v[axis]+=adjustment;
+        }
+        if(axis<3&&index===bytes.readInt32LE(seq+72)&&(bytes.readInt32LE(seq+68)&(1<<axis)))v[axis]=0;
+      }
+      const matrix=new THREE.Matrix4().makeRotationZ(v[5])
+        .multiply(new THREE.Matrix4().makeRotationY(v[4])).multiply(new THREE.Matrix4().makeRotationX(v[3]));
+      matrix.setPosition(v[0],v[1],v[2]);
+      output[index]=bone.parent<0?matrix:resolve(bone.parent).clone().multiply(matrix);
+      return output[index];
+    };
+    nativeBones.forEach((_,index)=>resolve(index));return output;
+  };
+  const rawWorld=nativeWorld(),nativeMeshVertices=new Map();
+  for(let part=0;part<bytes.readInt32LE(204);part++){
+    const p=bytes.readInt32LE(208)+part*76;
+    for(let model=0;model<bytes.readInt32LE(p+64);model++){
+      const m=bytes.readInt32LE(p+72)+model*112,modelName=bytes.toString('latin1',m,m+64).split('\0')[0];
+      for(let mesh=0;mesh<bytes.readInt32LE(m+72);mesh++){
+        const records=[];let cursor=bytes.readInt32LE(bytes.readInt32LE(m+76)+mesh*20+4);
+        for(;;){
+          const count=bytes.readInt16LE(cursor);cursor+=2;if(!count)break;
+          for(let vertex=0;vertex<Math.abs(count);vertex++,cursor+=8){
+            const vi=bytes.readInt16LE(cursor),ni=bytes.readInt16LE(cursor+2);
+            records.push({bone:bytes[bytes.readInt32LE(m+84)+vi],position:nativeVector(bytes.readInt32LE(m+88)+vi*12),
+              normalBone:bytes[bytes.readInt32LE(m+96)+ni],normal:nativeVector(bytes.readInt32LE(m+100)+ni*12)});
+          }
+        }
+        if(records.length)nativeMeshVertices.set(`${part}_${model}_${modelName}_mesh${mesh}`,records);
+      }
+    }
+  }
+  const nativeScene=new THREE.Matrix4().makeRotationX(-Math.PI/2);
+  const assertMatrix=(actual,expected,label,tolerance=1e-5)=>{
+    actual.elements.forEach((value,index)=>assert.ok(Math.abs(value-expected.elements[index])<tolerance,`${label} matrix component ${index}`));
+  };
+  assert.ok(Math.abs(nativeBones[0].values[5])>1,'real fixture must retain its nontrivial authored root yaw');
+  assert.deepEqual(meta.controllers.slice(0,4).map(c=>[c.type,c.start,c.end,c.rest]),Array.from({length:4},()=>[8,-30,30,0]));
+  for(const bone of bones){
+    const index=nativeIndex(bone.userData.name);
+    assertMatrix(bone.matrixWorld,nativeScene.clone().multiply(rawWorld[index]),`${bone.userData.name}: controller-neutral raw bind`);
+  }
+  for(const mesh of meshes){
+    const records=nativeMeshVertices.get(mesh.name);assert.equal(records.length,mesh.geometry.getAttribute('position').count);
+    for(const [vertex,record]of records.entries()){
+      const expected=record.position.clone().applyMatrix4(rawWorld[record.bone]);
+      assert.ok(point.fromBufferAttribute(mesh.geometry.getAttribute('position'),vertex).distanceTo(expected)<1e-4,'raw native geometry, not controller endpoint geometry');
+      const expectedNormal=record.normal.clone().transformDirection(rawWorld[record.normalBone]);
+      assert.ok(point.fromBufferAttribute(mesh.geometry.getAttribute('normal'),vertex).distanceTo(expectedNormal)<1e-5,'raw native normals');
+    }
+  }
+  const rawPosition=name=>new THREE.Vector3().setFromMatrixPosition(rawWorld[nativeIndex(name)]);
+  const rawLeft=rawPosition('Bip01 L Leg').sub(rawPosition('Bip01 R Leg')).normalize();
+  assert.ok(rawLeft.x>.99,'real fixture anatomy is left +X, not file +Y');
+  const anatomicalAlignment=new THREE.Quaternion().fromArray(definition.rig.alignment);
+  const alignedLeft=rawLeft.clone().transformDirection(nativeScene).applyQuaternion(anatomicalAlignment);
+  assert.ok(alignedLeft.distanceTo(new THREE.Vector3(0,1,0))<1e-5,'anatomical left maps to physics left');
+  // Actual authored eye geometry establishes facial front; an arbitrary head bone axis does not.
+  const eyeMesh=meshes.find(mesh=>mesh.name==='2_0_eyes_mesh0');assert.ok(eyeMesh);
+  const eyeRecords=nativeMeshVertices.get(eyeMesh.name),headIndex=nativeIndex('Bip01 Head');
+  assert.ok(eyeRecords.every(record=>record.bone===headIndex),'eye landmark must be rigidly authored to head');
+  const eyeCenter=new THREE.Vector3();
+  for(const record of eyeRecords)eyeCenter.add(record.position.clone().applyMatrix4(rawWorld[record.bone]));
+  eyeCenter.multiplyScalar(1/eyeRecords.length);
+  const rawFace=eyeCenter.clone().sub(rawPosition('Bip01 Head'));rawFace.z=0;rawFace.normalize();
+  assert.ok(rawFace.y<-.99,'real authored eyes establish native forward -Y');
+  assert.ok(rawFace.clone().transformDirection(nativeScene).applyQuaternion(anatomicalAlignment).x>.99,'face points physics forward, not backward');
+  // Compare actual skinned world vertices under controlled native clips, including a blend and root motion.
+  const nativeSequences=[0];
+  for(let sequence=1;sequence<bytes.readInt32LE(164);sequence++){
+    const seq=sequenceOffset+sequence*176;
+    if(bytes.readInt32LE(seq+56)>2&&nativeVector(seq+76).lengthSq()>1e-6){nativeSequences.push(sequence);break;}
+  }
+  assert.equal(nativeSequences.length,2,'fixture must exercise authored root motion');
+  for(let sequence=1;sequence<bytes.readInt32LE(164);sequence++){
+    const seq=sequenceOffset+sequence*176;
+    if(bytes.readInt32LE(seq+56)>2&&bytes.readInt32LE(seq+120)>1){nativeSequences.push(sequence);break;}
+  }
+  assert.equal(nativeSequences.length,3,'fixture must exercise an authored blend endpoint');
+  for(const sequence of nativeSequences){
+    const seq=sequenceOffset+sequence*176,frames=bytes.readInt32LE(seq+56),fps=bytes.readFloatLE(seq+32);
+    for(const blend of new Set([0,bytes.readInt32LE(seq+120)-1])){
+      const clip=scene.animations.find(c=>c.name.startsWith(`${sequence}:`)&&(blend?c.name.endsWith(` [blend ${blend}]`):!c.name.includes('[blend')));
+      assert.ok(clip);const playback=new THREE.AnimationMixer(scene),action=playback.clipAction(clip);
+      action.setLoop(THREE.LoopOnce,1);action.clampWhenFinished=true;action.play();
+      for(const sample of new Set([0,Math.floor((frames-1)/2),frames-1])){
+        playback.setTime(sample/fps);scene.updateMatrixWorld(true);
+        const world=nativeWorld(sequence,sample,blend),movement=nativeVector(seq+76).multiplyScalar(frames>1?sample/(frames-1):0);
+        const outer=nativeScene.clone().multiply(new THREE.Matrix4().makeTranslation(movement.x,movement.y,movement.z));
+        for(const mesh of meshes){
+          mesh.skeleton.update();const records=nativeMeshVertices.get(mesh.name);
+          for(let vertex=0;vertex<records.length;vertex+=31){
+            const record=records[vertex],expected=record.position.clone().applyMatrix4(world[record.bone]).applyMatrix4(outer);
+            mesh.getVertexPosition(vertex,point).applyMatrix4(mesh.matrixWorld);
+            assert.ok(point.distanceTo(expected)<.003,`${clip.name} frame ${sample}: controlled native world vertex ${mesh.name}/${vertex}`);
+          }
+        }
+      }
+      playback.stopAllAction();playback.uncacheRoot(scene);scene.updateMatrixWorld(true);
+    }
+  }
   // Deterministic native commands, retaining the real rig/texture metadata but no animation.
   // GoldSrc renders these clockwise fans/strips with GL_FRONT culled; Three needs reversed faces.
   // https://github.com/ValveSoftware/halflife/blob/b1b5cf5892918535619b2937bb927e46cb097ba1/utils/mdlviewer/studio_render.cpp#L653-L679
@@ -192,7 +329,70 @@ const {build} = require('esbuild');
   assert.equal(body.root.animations.length,367);
   const frame=new Float32Array(ngeom*7),x=new Float32Array(ngeom*3),r=new Float32Array(ngeom*9);
   for(let i=0;i<ngeom;i++){x.set(centers[i+1],i*3);r.set([1,0,0,0,1,0,0,0,1],i*9);frame.set([...centers[i+1],1,0,0,0],i*7);}
-  body.sync(x,r);const preview=body.preview(null,()=>{});let previewTriangles=0;
+  body.sync(x,r);
+  const bodyBones=new Map();body.root.traverse(object=>{if(object.isBone)bodyBones.set(object.userData.name,object);});
+  const bodyBone=name=>{const bone=bodyBones.get(name);assert.ok(bone,name);return bone;};
+  const bodyPosition=name=>bodyBone(name).getWorldPosition(new THREE.Vector3());
+  const pelvisPosition=bodyPosition('Bip01 Pelvis');
+  for(const [side,sign]of [['L',1],['R',-1]]){
+    assert.ok(sign*(bodyPosition(`Bip01 ${side} Arm1`).y-pelvisPosition.y)>.1,`${side} shoulder occupies its anatomical side`);
+    assert.ok(sign*(bodyPosition(`Bip01 ${side} Leg`).y-pelvisPosition.y)>.1,`${side} hip occupies its anatomical side`);
+  }
+  const toPhysics=nativeScene.clone().premultiply(new THREE.Matrix4().makeRotationFromQuaternion(anatomicalAlignment));
+  for(const name of ['Bip01 Spine','Bip01 Spine1','Bip01 Spine2','Bip01 Spine3','Bip01 Neck','Bip01 Head']){
+    const index=nativeIndex(name),bone=bodyBone(name),expectedWorld=toPhysics.clone().multiply(rawWorld[index]);
+    for(const axis of [[1,0,0],[0,1,0],[0,0,1]]){
+      const expected=new THREE.Vector3(...axis).transformDirection(expectedWorld);
+      const actual=new THREE.Vector3(...axis).transformDirection(bone.matrixWorld);
+      assert.ok(actual.distanceTo(expected)<1e-5,`${name}: no controller-induced torso/head twist`);
+    }
+    const expectedPosition=rawPosition(name).sub(rawPosition('Bip01 Pelvis')).applyMatrix4(toPhysics).multiplyScalar(body.root.scale.x);
+    assert.ok(bodyPosition(name).sub(pelvisPosition).distanceTo(expectedPosition)<1e-5,`${name}: raw neutral torso/head anatomy`);
+  }
+  const bodyEyes=body.meshes.find(mesh=>mesh.name===eyeMesh.name);assert.ok(bodyEyes);
+  const liveEyeCenter=new THREE.Vector3();
+  for(let vertex=0;vertex<bodyEyes.geometry.getAttribute('position').count;vertex++)
+    liveEyeCenter.add(bodyEyes.getVertexPosition(vertex,new THREE.Vector3()).applyMatrix4(bodyEyes.matrixWorld));
+  liveEyeCenter.multiplyScalar(1/bodyEyes.geometry.getAttribute('position').count).sub(bodyPosition('Bip01 Head'));
+  liveEyeCenter.z=0;liveEyeCenter.normalize();
+  assert.ok(liveEyeCenter.x>.99,'consumer-visible eye surface faces physics forward in neutral pose');
+  const handSurface=side=>{
+    const hand=nativeIndex(`Bip01 ${side} Hand`);
+    for(const mesh of body.meshes){
+      const records=nativeMeshVertices.get(mesh.name);
+      for(let vertex=0;vertex<records.length;vertex++){
+        let index=records[vertex].bone;
+        while(index>=0&&index!==hand)index=nativeBones[index].parent;
+        if(index===hand)return {mesh,vertex};
+      }
+    }
+    assert.fail(`${side}: missing authored hand surface`);
+  };
+  const surfaces={L:handSurface('L'),R:handSurface('R')};
+  const surfacePosition=side=>{
+    const {mesh,vertex}=surfaces[side];mesh.skeleton.update();
+    return mesh.getVertexPosition(vertex,new THREE.Vector3()).applyMatrix4(mesh.matrixWorld);
+  };
+  const neutralHands={L:bodyPosition('Bip01 L Hand'),R:bodyPosition('Bip01 R Hand')};
+  const neutralSurfaces={L:surfacePosition('L'),R:surfacePosition('R')};
+  // Move each physics arm independently, including its shoulder/elbow/wrist frames, never swapping aliases.
+  const armTurn=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),.5);
+  const armMatrix=new THREE.Matrix4().makeRotationFromQuaternion(armTurn),e=armMatrix.elements;
+  for(const [side,prefix,other]of [['L','left','R'],['R','right','L']]){
+    const movedX=x.slice(),movedR=r.slice(),pivot=new THREE.Vector3(...centers[names.indexOf(`${prefix}_shoulder_yaw_link`)]);
+    for(const segment of ['shoulder_yaw','elbow','wrist_roll']){
+      const id=names.indexOf(`${prefix}_${segment}_link`),geom=id-1;
+      const position=new THREE.Vector3(...centers[id]).sub(pivot).applyQuaternion(armTurn).add(pivot);
+      position.toArray(movedX,geom*3);movedR.set([e[0],e[4],e[8],e[1],e[5],e[9],e[2],e[6],e[10]],geom*9);
+    }
+    body.sync(movedX,movedR);
+    assert.ok(bodyPosition(`Bip01 ${side} Hand`).distanceTo(neutralHands[side])>.1,`${side} physics arm moves its named native hand`);
+    assert.ok(bodyPosition(`Bip01 ${other} Hand`).distanceTo(neutralHands[other])<1e-5,`${side} arm input leaves opposite hand still`);
+    assert.ok(surfacePosition(side).distanceTo(neutralSurfaces[side])>.1,`${side} arm input moves the actual skinned hand surface`);
+    assert.ok(surfacePosition(other).distanceTo(neutralSurfaces[other])<1e-5,`${side} arm input leaves opposite surface still`);
+    body.sync(x,r);
+  }
+  const preview=body.preview(null,()=>{});let previewTriangles=0;
   preview.traverse(object=>{if(object.isMesh){previewTriangles+=object.geometry.index.count/3;assert.ok(!object.isSkinnedMesh);}});
   assert.equal(previewTriangles,13980);
   const poses=new Float32Array(ngeom*14);poses.set(frame);poses.set(frame,ngeom*7);
@@ -215,6 +415,11 @@ const {build} = require('esbuild');
   await reject(b=>b.writeInt32LE(48,4),/version 10/);
   await assert.rejects(decodeGoldSrcScene({...source,model:source.model.slice(0,100)}),/out-of-bounds/);
   await reject(b=>b.writeInt32LE(0,boneOffset+32),/hierarchy/);
+  await reject(b=>b.writeInt32LE(meta.controllers.length,boneOffset+2*112+40+3*4),/controller/);
+  await reject(b=>{
+    const left=boneOffset+nativeIndex('Bip01 L Leg')*112,right=boneOffset+nativeIndex('Bip01 R Leg')*112;
+    for(let axis=0;axis<3;axis++)b.writeFloatLE(b.readFloatLE(right+64+axis*4),left+64+axis*4);
+  },/horizontal left\/right hip separation/);
   await reject(b=>b.writeInt32LE(0x7fffffff,tex+76),/out-of-bounds/);
   await reject(b=>{b.writeInt32LE(100000,sequenceOffset+56);b.writeInt32LE(4,sequenceOffset+120);},/decoded model.*limit/);
   const firstAnim=bytes.readInt32LE(sequenceOffset+124);let rleOffset;
@@ -247,5 +452,5 @@ const {build} = require('esbuild');
   skinsScene.traverse(o=>{if(o.isSkinnedMesh)assert.equal(o.userData.goldsrcSkinTextures.length,2);});
   console.log(JSON.stringify({assetSHA256:crypto.createHash('sha256').update(bytes).digest('hex'),bones:61,sequences:203,clips:367,
     textures:8,bodyparts:7,visibleMeshes:visibleMeshes.length,allMeshes:meshes.length,visibleTriangles:13980,allTriangles:16378,outwardFaces,
-    invariants:'native fan/strip winding, front/back raycasting, unchanged vertex attributes/bind/material flags, palette, bone-space geometry, bind skinning, RLE, clips, root motion, rig, authored material flags, malformed-data errors, required dependencies'},null,2));
+    invariants:'native fan/strip winding, front/back raycasting, raw controller-neutral anatomy with authored root yaw, anatomical sides and facial surface forward, independent bilateral arm and skinned-surface motion, controlled native clip world vertices/blends/root motion, unchanged bind/material flags, palette, RLE, malformed-data errors, required dependencies'},null,2));
 })().catch(error=>{console.error(error);process.exitCode=1;});
