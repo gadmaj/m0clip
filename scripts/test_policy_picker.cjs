@@ -172,11 +172,8 @@ const assert = require('node:assert/strict');
     assert.equal(await policy.isDisabled(), true);
     await select.evaluate(select => { select.disabled = false; });
     await page.evaluate(() => window.__app.panel.setPolicies([], ''));
-    await policy.click();
-    assert.equal(await cards.count(), 1);
-    assert.equal(await cards.first().isDisabled(), true);
-    assert.ok((await page.locator('#policy-description').textContent()).includes('Import a policy pack'));
-    await page.keyboard.press('Escape');
+    assert.equal(await policy.isDisabled(), true);
+    assert.equal(await gallery.count(), 0);
 
     // Imported labels remain literal text; legitimate preview images are allowed.
     const name = 'custom/' + 'long_checkpoint_'.repeat(12) + '<img src=x onerror=alert(1)>';

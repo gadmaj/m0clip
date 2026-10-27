@@ -24,6 +24,38 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def atomic_json(path, value):
+    """Replace a checkpoint only after its complete replacement is durable."""
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', prefix='.' + path.name + '-',
+                                     dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        json.dump(value, handle, ensure_ascii=False, indent=2)
+        handle.write('\n')
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def validate_completed(record, entry, output, count, fps):
+    """Reuse receipts only for this exact approved source/job and served bytes."""
+    if any(record.get(key) != value for key, value in entry.items()):
+        raise ValueError('Completed metadata differs from the explicit job: ' + entry['id'])
+    if digest(Path(entry['input'])) != entry['sha256']:
+        raise ValueError('Completed runtime asset hash changed: ' + entry['id'])
+    encoding = record['encoding']
+    if (len(encoding['sourceFrames']) != count
+            or encoding['animation']['durationMs'] != round(count * 100 / fps) * 10
+            or encoding['width'] != 320 or encoding['height'] != 240):
+        raise ValueError('Completed render format/timing differs from the explicit job: ' + entry['id'])
+    destination = output / 'assets' / entry['id']
+    for saved, filename in [(encoding['still']['preview'], 'still.min.png'),
+                            (encoding['animation'], 'turntable.gif')]:
+        if Path(saved['path']) != destination / filename or digest(destination / filename) != saved['sha256']:
+            raise ValueError('Completed encoded asset path/hash changed: ' + entry['id'])
+    if json.loads((destination / 'attribution.json').read_text()) != entry['attribution']:
+        raise ValueError('Completed attribution differs from the approved job: ' + entry['id'])
+
+
 def render(entry, output, count, fps):
     source = Path(entry['input']).resolve()
     if source.suffix != '.glb' or digest(source) != entry['sha256']:
@@ -89,18 +121,34 @@ def render(entry, output, count, fps):
     scene.frame_end = count - 1
     scene.render.filepath = str(masters) + os.sep
     bpy.ops.render.render(animation=True)
+    # Never encode into the public-facing identity directory: an interrupted
+    # encoder must leave evidence, not poison the destination of a later resume.
+    invocation = Path(tempfile.mkdtemp(prefix='encode-' + entry['id'] + '-', dir=output))
+    encoded_root = invocation / 'verified'
     encoder = Path(__file__).with_name('encode_character_previews.py')
     encoded = subprocess.run([os.environ.get('PYTHON', 'python3'), str(encoder),
-        '--animation-output', str(output / 'assets' / entry['id']), '--fps', str(fps), *frames],
+        '--animation-output', str(encoded_root), '--fps', str(fps), *frames],
         check=True, text=True, stdout=subprocess.PIPE)
     result = json.loads(encoded.stdout)
-    (output / 'assets' / entry['id'] / 'attribution.json').write_text(
-        json.dumps(entry['attribution'], ensure_ascii=False, indent=2) + '\n')
-    # Only this invocation's disposable render sequence is removed, and only
-    # after the encoder has decoded every GIF frame and verified the true still.
+    destination = output / 'assets' / entry['id']
+    result['still']['png']['path'] = str(destination / 'still.png')
+    result['still']['preview']['path'] = str(destination / 'still.min.png')
+    result['animation']['path'] = str(destination / 'turntable.gif')
+    atomic_json(encoded_root / 'encoding.json', result)
+    atomic_json(encoded_root / 'attribution.json', entry['attribution'])
+    record = {**entry, 'mode': '360-degree camera orbit, native rest pose; no simulated motion',
+              'encoding': result}
+    # The receipt travels with the verified directory. If publication succeeds
+    # but inventory checkpointing is interrupted, resume can validate and recover
+    # this complete transaction without re-rendering or trusting a partial folder.
+    atomic_json(encoded_root / '.completion.json', record)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        raise ValueError('Destination appeared during render; verified staging retained: ' + str(destination))
+    encoded_root.rename(destination)
+    invocation.rmdir()
     shutil.rmtree(masters)
-    return {**entry, 'mode': '360-degree camera orbit, native rest pose; no simulated motion',
-            'encoding': result}
+    return record
 
 
 def main():
@@ -118,36 +166,51 @@ def main():
         raise ValueError('Use 12–120 frames and 1–30 fps')
     output.mkdir(parents=True, exist_ok=args.resume)
     inventory_path = output / 'inventory.json'
-    previous = {}
+    previous = []
     if args.resume and inventory_path.is_file():
-        previous = {entry['id']: entry for entry in json.loads(inventory_path.read_text())}
-    inventory = []
+        previous = json.loads(inventory_path.read_text())
+    completed = {entry['id']: entry for entry in previous}
+    approved = {entry['id']: entry for entry in job['characters']}
+    if len(completed) != len(previous) or len(approved) != len(job['characters']):
+        raise ValueError('Duplicate character IDs in job or completed inventory')
+    if completed.keys() - approved.keys():
+        raise ValueError('Completed inventory contains characters outside the explicit job')
+    # Validate every existing receipt before adding anything. Crucially, keep
+    # the entire completed map; checkpointing an addition never drops records
+    # that a later iteration has not visited yet.
     for entry in job['characters']:
         if not entry['id'] or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789-' for c in entry['id']):
             raise ValueError('Invalid character ID')
         if not entry['approvedRuntimeAsset'] or not entry['attribution']['license']:
             raise ValueError('An approved runtime asset and its real attribution are required')
-        prior = previous.get(entry['id'])
-        if prior is not None:
-            if len(prior['encoding']['sourceFrames']) != count or prior['encoding']['animation']['durationMs'] != round(count * 100 / fps) * 10:
-                raise ValueError('Completed render timing differs from the explicit job: ' + entry['id'])
-            if prior['sha256'] != entry['sha256'] or digest(Path(entry['input'])) != entry['sha256']:
-                raise ValueError('Completed runtime asset hash changed: ' + entry['id'])
-            for record in [prior['encoding']['still']['preview'], prior['encoding']['animation']]:
-                if digest(Path(record['path'])) != record['sha256']:
-                    raise ValueError('Completed encoded asset hash changed: ' + entry['id'])
-            if json.loads((output / 'assets' / entry['id'] / 'attribution.json').read_text()) != entry['attribution']:
-                raise ValueError('Completed attribution differs from the approved job: ' + entry['id'])
-            inventory.append(prior)
-        else:
-            inventory.append(render(entry, output, count, fps))
-        inventory_path.write_text(json.dumps(inventory, indent=2) + '\n')
+        if entry['id'] in completed:
+            validate_completed(completed[entry['id']], entry, output, count, fps)
+    for entry in job['characters']:
+        if entry['id'] in completed:
+            continue
+        destination = output / 'assets' / entry['id']
+        if destination.exists():
+            receipt = destination / '.completion.json'
+            if receipt.is_file():
+                recovered = json.loads(receipt.read_text())
+                validate_completed(recovered, entry, output, count, fps)
+                completed[entry['id']] = recovered
+                atomic_json(inventory_path, list(completed.values()))
+                continue
+            # Legacy or interrupted output without a verified transaction marker
+            # is not accepted or overwritten. Preserve it verbatim before a new
+            # invocation encodes into its own fresh staging directory.
+            quarantine = Path(tempfile.mkdtemp(prefix='incomplete-' + entry['id'] + '-', dir=output))
+            destination.rename(quarantine / 'assets')
+            atomic_json(quarantine / 'origin.json', {'originalPath': str(destination), 'id': entry['id']})
+        completed[entry['id']] = render(entry, output, count, fps)
+        atomic_json(inventory_path, list(completed.values()))
     catalog = {'characters': {entry['id']: {
         'still': f"/assets/previews/animated/{entry['id']}/still.min.png",
         'animation': f"/assets/previews/animated/{entry['id']}/turntable.gif",
         'caption': '360° view · rest pose',
-    } for entry in inventory}, 'policies': {}}
-    (output / 'catalog.json').write_text(json.dumps(catalog, indent=2) + '\n')
+    } for entry in job['characters']}, 'policies': {}}
+    atomic_json(output / 'catalog.json', catalog)
 
 
 if __name__ == '__main__':

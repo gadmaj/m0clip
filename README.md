@@ -133,6 +133,9 @@ add only approved image URLs and captions to
 [`animated-preview-catalog.json`](src/ui/animated-preview-catalog.json).
 For an interrupted private batch, `--resume` reuses completed entries only when
 their source, image hashes, timing and attribution still match the explicit job.
+Completed receipts are checkpointed atomically without dropping earlier entries.
+Encoding uses fresh staging; only verified output is published to its final
+identity. Incomplete older output is preserved separately rather than overwritten.
 Policy animations require captures from the exact robot and checkpoint, not
 motion inferred from a policy name. Where no such capture exists, the gallery
 labels the robot-only picture rather than implying policy playback.
