@@ -89,18 +89,35 @@ const { chooseVisual } = require('./choose-visual.cjs');
     assert.deepEqual(configured.shot, liveShot);
     assert.equal(configured.out.glbFps, 25); assert.equal(configured.out.csvFps, 50); assert.equal(configured.out.glbCamera, false);
     assert.equal(configured.out.transparent, true); assert.equal(configured.out.floor, false);
-    const setupRestored = await page.evaluate(() => {
-      const app = window.__app;
-      app.dialog.close();
-      const camera = app.view.camera;
-      const restored = { position: camera.position.toArray(), target: app.view.controls.target.toArray(),
+    await page.locator('#viewport canvas').focus();
+    await page.keyboard.press('Escape');
+    assert.equal(await root.isHidden(), true, 'Escape closes LIVE static setup even when the scene retains keyboard focus');
+    const escapedCamera = await page.evaluate(() => {
+      const app = window.__app, camera = app.view.camera;
+      return { position: camera.position.toArray(), target: app.view.controls.target.toArray(),
         orientation: camera.quaternion.toArray(), up: camera.up.toArray(), fov: camera.fov,
         noclip: app.noclip, speed: app.flight.speed, hover: app.flight.hover };
-      app.startRecording();
-      return restored;
     });
-    assert.deepEqual(setupRestored, setupBaseline, 'Static setup restores the exact live camera and flight/physics settings');
+    assert.deepEqual(escapedCamera, setupBaseline, 'Escape restores the exact live camera, not the static shot preview');
+    const setupRestored = await page.evaluate(() => {
+      const app = window.__app;
+      app.openExport('video');
+      app.startRecording();
+      const preparing = app.recordStarting;
+      app.openExport('video');
+      const camera = app.view.camera;
+      return { restored: { position: camera.position.toArray(), target: app.view.controls.target.toArray(),
+        orientation: camera.quaternion.toArray(), up: camera.up.toArray(), fov: camera.fov,
+        noclip: app.noclip, speed: app.flight.speed, hover: app.flight.hover },
+        preparing, setupOpen: app.dialog.isOpen, shot: { ...app.shot } };
+    });
+    assert.equal(setupRestored.preparing, true, 'The consumer regression exercises pending real visual preparation');
+    assert.equal(setupRestored.setupOpen, false, 'Recording closes static setup and cannot reopen it during preparation');
+    assert.deepEqual(setupRestored.restored, setupBaseline, 'Recording starts from the restored presented live camera');
+    assert.deepEqual(setupRestored.shot, liveShot, 'Beginning recording preserves pre-record output shot settings');
     await page.waitForFunction(() => window.__app.rec?.frames >= 10, null, { timeout: 120000 });
+    await page.evaluate(() => window.__app.openExport('video'));
+    assert.equal(await root.isHidden(), true, 'Active recording cannot replace the recorded viewport with an unrecorded shot camera');
     const reviewBaseline = await page.evaluate(() => {
       const app = window.__app, camera = app.view.camera;
       const before = { position: camera.position.toArray(), target: app.view.controls.target.toArray(),
@@ -111,6 +128,12 @@ const { chooseVisual } = require('./choose-visual.cjs');
     });
     await page.waitForFunction(() => window.__app.timeline.isOpen && window.__app.take?.n >= 10);
     assert.equal(await page.evaluate(() => window.__app.noclip), reviewBaseline.noclip, 'Opening review never rewrites noclip physics');
+    const recordedCamera = await page.evaluate(() => window.__app.take.camAt(0));
+    for (const [key, expected] of [['pos', setupBaseline.position], ['target', setupBaseline.target], ['orientation', setupBaseline.orientation]]) {
+      recordedCamera[key].forEach((value, index) => assert.ok(Math.abs(value - expected[index]) < 1e-4,
+        `Recorded ${key}[${index}] must match the presented live camera after setup closes`));
+    }
+    assert.equal(recordedCamera.fov, setupBaseline.fov);
     await page.evaluate(() => window.__app.openExport('data'));
     assert.match(await root.innerText(), /Motion preview/);
     for (const name of ['Export .glb', 'Export .csv', 'Save take']) assert.equal(await root.getByRole('button', { name, exact: true }).isEnabled(), true);
@@ -144,6 +167,7 @@ const { chooseVisual } = require('./choose-visual.cjs');
     assert.equal(await page.locator('#scene-actions').evaluate(element => element.inert), true,
       'Relocated robot/map/record/capture controls freeze during encoding');
     const frozen = await page.evaluate(() => ({ shot: { ...window.__app.shot }, out: { ...window.__app.dialog.out } }));
+    await page.locator('#viewport canvas').focus();
     await page.keyboard.press('Escape');
     assert.equal(await root.isVisible(), true, 'encoding cannot close the dialog');
     assert.deepEqual(await page.evaluate(() => ({ shot: { ...window.__app.shot }, out: { ...window.__app.dialog.out } })), frozen);
@@ -184,6 +208,15 @@ const { chooseVisual } = require('./choose-visual.cjs');
     assert.deepEqual(await page.evaluate(() => {
       const host = window.__app.dialog.host; return [host.take(), host.path(), host.range()];
     }), [null, null, null], 'an old recording does not make live setup exportable');
+    await page.locator('#viewport canvas').focus();
+    await page.keyboard.press('v');
+    assert.equal(await root.isHidden(), true, 'The V shortcut closes LIVE static preview before recording its actual viewport');
+    await page.waitForFunction(() => window.__app.rec?.frames >= 10, null, { timeout: 120000 });
+    assert.deepEqual(await page.evaluate(() => ({ ...window.__app.shot })), liveShot, 'V preserves the pre-record export recipe');
+    await page.keyboard.press('v');
+    await page.waitForFunction(() => window.__app.timeline.isOpen && !window.__app.rec);
+    const shortcutCamera = await page.evaluate(() => window.__app.take.camAt(0));
+    assert.equal(shortcutCamera.fov, reviewBaseline.fov, 'V records the restored live FOV, not the output preview lens');
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ liveSetup: true, realTake: true, reviewIsolation: true, cancellation: true, rendered, errors }));
   } finally { await browser.close(); }

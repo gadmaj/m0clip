@@ -227,10 +227,12 @@ and readiness. Pong appears only if an unfinished load lasts more than 30 second
 Open **Camera / output** before recording to set the static camera, lens and output
 format. **Scene** remains available above setup for look, parts, lighting and
 display controls. Motion/video/data exports require an open recorded take; static
-setup does not create one. In review, appearance, display, flashlight, added lights
-and camera edits belong to that shot, not live preferences. Robot, map, policy and
-other simulation controls are LIVE-only. Controls lock while encoding, not merely
-while setup is open.
+setup does not create one. Press **Escape** to close setup. Starting a recording
+also closes it and restores the live camera without losing the output recipe;
+setup cannot open while a recording is starting or active. In review, appearance,
+display, flashlight, added lights and camera edits belong to that shot, not live
+preferences. Robot, map, policy and other simulation controls are LIVE-only.
+Controls lock while encoding, not merely while setup is open.
 
 In **Render controls**, enable **Character wireframe** and leave **Map wireframe**
 off to keep the map solid. Keep **Textures** and **Map geometry** enabled to see

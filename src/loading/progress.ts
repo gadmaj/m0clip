@@ -100,8 +100,10 @@ export class SceneProgress {
     let loaded = 0;
     for (const [url, resource] of this.resources) {
       const bytes = this.budget?.get(url);
-      if (this.budget && (bytes === undefined || resource.loaded > bytes
-        || resource.state === 'done' && resource.loaded !== bytes)) this.mismatch = true;
+      // A zero-byte probe is not an asset payload. Once bytes arrive, every
+      // unplanned body and every completed planned size must still match.
+      if (this.budget && (bytes === undefined ? resource.loaded > 0
+        : resource.loaded > bytes || resource.state === 'done' && resource.loaded !== bytes)) this.mismatch = true;
       if (this.budget && bytes === undefined) continue;
       loaded += bytes === undefined ? resource.loaded : Math.min(bytes, resource.loaded);
     }
@@ -124,8 +126,8 @@ export class SceneProgress {
     let knownTotal = this.maximum, active = 0, unknown = 0, unexpected = 0;
     for (const [url, resource] of this.resources) {
       const bytes = this.budget?.get(url);
-      if (this.budget && (bytes === undefined || resource.loaded > bytes
-        || resource.state === 'done' && resource.loaded !== bytes)) unexpected++;
+      if (this.budget && (bytes === undefined ? resource.loaded > 0
+        : resource.loaded > bytes || resource.state === 'done' && resource.loaded !== bytes)) unexpected++;
       if (resource.state === 'loading') {
         active++;
         if (resource.total === null && bytes === undefined) unknown++;

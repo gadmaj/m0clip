@@ -985,6 +985,7 @@ class App {
     if(this.pendingViewRestore){this.panel.setRecordInfo('Wait for the saved view to finish restoring.');return;}
     if (this.recordStarting || this.rec || !this.model || this.exporting) return;
     if (this.timeline.isOpen) this.closeReview();
+    if (this.dialog.isOpen) this.dialog.close();
     this.recordStarting = true;
     const generation=this.viewBuildGeneration,model=this.model;
     this.look.setHeadLocked(true);
@@ -1258,6 +1259,10 @@ class App {
 
   private openExport(tab: "video" | "data") {
     if (this.exporting) return;
+    if (this.rec || this.recordStarting) {
+      this.panel.setRecordInfo('Stop recording before opening camera / output setup.');
+      return;
+    }
     if (!this.dialog.isOpen) {
       this.viewBeforeDialog = this.timeline.mode;
       if (!this.timeline.isOpen) {
@@ -1841,6 +1846,11 @@ class App {
   // ---- input ----------------------------------------------------------
   private onKey(e: KeyboardEvent) {
     if (e.defaultPrevented || this.inputBlocked || launch.ownsKey(e.code) || this.modalKeys.has(e.code)) return;
+    if (e.key === 'Escape' && this.dialog.isOpen) {
+      e.preventDefault();
+      if (!this.exporting) this.dialog.close();
+      return;
+    }
     if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target instanceof HTMLElement && e.target.isContentEditable)) return;
     // Native buttons and details summaries own activation, including Workspace tools.
     if ((e.target instanceof HTMLButtonElement || e.target instanceof HTMLElement && e.target.closest('summary'))
@@ -1860,7 +1870,6 @@ class App {
     }
     if (this.timeline.isOpen) {
       // the deck owns the keyboard while reviewing; the sim is paused, so nothing drives it
-      if (e.key === "Escape" && this.dialog.isOpen) { this.dialog.close(); e.preventDefault(); return; }
       if (this.timeline.onKey(e)) e.preventDefault();
       return;
     }

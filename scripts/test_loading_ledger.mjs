@@ -67,6 +67,16 @@ progress.update(second, [transfer('current', '/current.bin', 800, null)], 12000)
 value = progress.snapshot(12000);
 assert.equal(value.stalled, false);
 assert.ok(value.etaSeconds > 0 && Number.isFinite(value.etaSeconds));
+progress.update(second, [transfer('optional:pending', '/optional.json', 0, null)], 12100);
+assert.equal(progress.hasCatalogueMismatch, false, 'A probe without consumed payload cannot contradict the fixed payload maximum');
+progress.update(second, [transfer('optional:pending', '/optional.json', 0, null, 'failed')], 12200);
+value = progress.snapshot(12200);
+assert.equal(value.knownTotal, 1000);
+assert.equal(value.loaded, 800);
+assert.equal(value.unexpected, 0, 'An absent optional zero-byte resource is not an unplanned successful payload');
+assert.equal(progress.hasCatalogueMismatch, false);
+assert.equal([...progress.transfers()].find(resource => resource.url === '/optional.json').state, 'failed',
+  'The failed probe stays useful in observed Details without becoming budget inventory');
 progress.update(second, [transfer('unexpected', '/unplanned.bin', 4000, 4000, 'done')], 12500);
 value = progress.snapshot(12500);
 assert.equal(value.knownTotal, 1000, 'Unexpected observations must not silently expand the fixed maximum');
@@ -92,5 +102,11 @@ assert.equal(progress.snapshot(15000).loaded, 300, 'Overlapping readers contribu
 progress.update(fourth, [transfer('shared:b', '/shared.bin', 1000, 1000, 'done')], 15500);
 assert.equal(progress.snapshot(15500).active, 0);
 assert.equal(progress.snapshot(15500).loaded, 1000);
+
+const fifth = progress.begin(16000);
+progress.freeze(fifth, [{ url: '/required.bin', bytes: 1000 }], 16001);
+progress.update(fifth, [transfer('required:empty', '/required.bin', 0, 0, 'done')], 16500);
+assert.equal(progress.hasCatalogueMismatch, true, 'An empty successful planned asset must not hide a real declared-size mismatch');
+assert.equal(progress.snapshot(16500).knownTotal, 1000);
 console.log(JSON.stringify({ fixedMaximum: true, uniqueEntities: true, retainedPreflight: true,
   retryIsolation: true, generationIsolation: true, realRate: true, stalledEstimate: true, catalogueMismatch: true }));
