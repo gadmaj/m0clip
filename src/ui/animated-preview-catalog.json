@@ -451,5 +451,11 @@
       "caption": "360° view · rest pose"
     }
   },
-  "policies": {}
+  "policies": {
+    "r1:dances/604_niuniuwu": {
+      "still": "/assets/previews/animated/policies/r1-430252b51f5a/still.min.png",
+      "animation": "/assets/previews/animated/policies/r1-430252b51f5a/turntable.gif",
+      "caption": "Policy playback · 360° view"
+    }
+  }
 }

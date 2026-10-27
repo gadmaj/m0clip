@@ -9,11 +9,10 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
-const exposeApp = require('./expose-app.cjs');
 const { chooseVisual } = require('./choose-visual.cjs');
 const root = path.resolve(__dirname, '..');
 const out = process.env.PREVIEW_OUTPUT && path.resolve(process.env.PREVIEW_OUTPUT);
-if (!out || out.startsWith(path.join(root, 'public') + path.sep)) throw new Error('PREVIEW_OUTPUT must name private staging outside public assets');
+if (!out || out === path.join(root, 'public') || out.startsWith(path.join(root, 'public') + path.sep)) throw new Error('PREVIEW_OUTPUT must name private staging outside public assets');
 const base = process.env.BASE_URL;
 if (!base) throw new Error('BASE_URL must name a deployed gallery-enabled release');
 const width = 320, height = 240, timeout = 300000;
@@ -22,6 +21,40 @@ const styles = ['stock', 'boxy', 'round', 'prism'];
 const builtins = ['flat', 'rough', 'slope', 'stairs', 'park'];
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const selected = filename => !process.env.PREVIEW_ONLY || new RegExp(process.env.PREVIEW_ONLY).test(filename);
+
+async function attachReadyApp(context, page) {
+  const cdp = await context.newCDPSession(page);
+  try {
+    const window = await cdp.send('Runtime.evaluate', { expression: 'window', objectGroup: 'preview-app-scope' });
+    const { listeners } = await cdp.send('DOMDebugger.getEventListeners', { objectId: window.result.objectId });
+    const listener = listeners.find(entry => entry.type === 'keydown' && entry.handler?.description?.includes('this.onKey('));
+    if (!listener) throw new Error('Actual App keyboard listener is unavailable');
+    const properties = await cdp.send('Runtime.getProperties', { objectId: listener.handler.objectId, ownProperties: true });
+    const scopes = properties.internalProperties.find(entry => entry.name === '[[Scopes]]')?.value;
+    if (!scopes) throw new Error('Actual App listener scopes are unavailable');
+    const scopeProperties = await cdp.send('Runtime.getProperties', { objectId: scopes.objectId, ownProperties: true });
+    const closures = scopeProperties.result.map(entry => entry.value).filter(value => value?.subtype === 'internal#scope' && value.description !== 'Global');
+    const names = new Set(closures.map(value => /^Closure \(([^)]+)\)$/.exec(value.description)?.[1]).filter(Boolean));
+    let constructor;
+    for (const scope of closures) {
+      const bindings = await cdp.send('Runtime.getProperties', { objectId: scope.objectId, ownProperties: true });
+      constructor = bindings.result.find(entry => names.has(entry.name) && entry.value?.type === 'function'
+        && entry.value.description?.startsWith('class ') && entry.value.description.includes('poseTake('));
+      if (constructor) break;
+    }
+    if (!constructor) throw new Error('Actual App constructor is unavailable');
+    const prototype = await cdp.send('Runtime.callFunctionOn', { objectId: constructor.value.objectId,
+      functionDeclaration: 'function(){return this.prototype}', returnByValue: false });
+    const instances = await cdp.send('Runtime.queryObjects', { prototypeObjectId: prototype.result.objectId, objectGroup: 'preview-app-instance' });
+    const attachment = await cdp.send('Runtime.callFunctionOn', { objectId: instances.objects.objectId,
+      functionDeclaration: 'function(){if(this.length!==1||!this[0].lastFrame)throw Error("Actual Ready must have one App and its first frame");globalThis.__app=this[0];return {instanceCount:this.length,actualLastFrame:true}}',
+      returnByValue: true });
+    if (attachment.exceptionDetails || !attachment.result.value?.actualLastFrame) throw new Error('Actual Ready App could not be attached');
+    await cdp.send('Runtime.releaseObjectGroup', { objectGroup: 'preview-app-instance' });
+    await cdp.send('Runtime.releaseObjectGroup', { objectGroup: 'preview-app-scope' });
+    return attachment.result.value;
+  } finally { await cdp.detach(); }
+}
 
 async function launch(robot, terrain) {
   const args = process.env.PREVIEW_CHROME_ARGS ? JSON.parse(process.env.PREVIEW_CHROME_ARGS)
@@ -38,10 +71,14 @@ async function launch(robot, terrain) {
     page.on('console', message => {
       if (message.type() === 'error' && /shader|WebGLProgram|context.*lost/i.test(message.text())) errors.push(message.text());
     });
-    await page.route('**/assets/main-*.js', async route => {
-      const response = await route.fetch(), source = await response.text();
-      provenance.main = { url: route.request().url(), sha256: hash(source) };
-      await route.fulfill({ response, body: exposeApp(source) });
+    const provenanceJobs = [];
+    page.on('response', response => {
+      if (!/\/assets\/main-[^/]+\.js$/.test(new URL(response.url()).pathname)) return;
+      const pending = response.body().then(bytes => {
+        (provenance.sources ??= []).push({ url: response.url(), bytes: bytes.length, sha256: hash(bytes), responseMutated: false });
+      });
+      provenanceJobs.push(pending);
+      void pending.catch(error => errors.push('Source provenance: ' + error.message));
     });
     // Seed exact remembered identity and policy opt-out before application startup.
     // A fresh nonpersistent browser context means no visitor preferences are read or changed.
@@ -74,8 +111,10 @@ async function launch(robot, terrain) {
       const message = document.querySelector('#overlay-msg');
       if (message?.dataset.kind === 'error') throw new Error(message.textContent);
       const enter = document.querySelector('#launch-enter');
-      return enter && !enter.hidden && !enter.disabled && window.__app?.lastFrame;
+      return enter && !enter.hidden && !enter.disabled;
     }, null, { timeout });
+    provenance.app = await attachReadyApp(context, page);
+    await Promise.all(provenanceJobs);
     await page.locator('#launch-enter').click();
     const identity = await page.evaluate(async () => {
       const a = window.__app;
