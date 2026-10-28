@@ -101,6 +101,25 @@ export class PhotoLibrary {
     return { info: record.info, png: data.png };
   }
 
+  /** Name-only edit: the original PNG record is never read or rewritten. */
+  async rename(id: string, name: string): Promise<SavedPhotoInfo> {
+    if (typeof id !== 'string' || !id) throw invalid();
+    const label = typeof name === 'string' ? name.trim() : '';
+    if (!label) throw new Error('Name is empty. Enter a name.');
+    const db = await connect();
+    try {
+      return await transact<SavedPhotoInfo>(db, ['photos'], 'readwrite', (tx, request, result) => {
+        const store = tx.objectStore('photos');
+        request(store.get(id), (record: PhotoRecord | undefined) => {
+          if (!record) throw new Error('Saved PNG no longer exists.');
+          if (!object(record) || record.id !== id || !validInfo(record.info) || record.info.id !== id) throw invalid();
+          record.info.name = label; record.info.updated = new Date().toISOString();
+          store.put(record); result(record.info);
+        });
+      });
+    } finally { db.close(); }
+  }
+
   async remove(id: string): Promise<void> {
     const db = await connect();
     try {

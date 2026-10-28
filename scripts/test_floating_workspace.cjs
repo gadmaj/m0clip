@@ -287,7 +287,7 @@ async function desktop(page, base, directory) {
   await openSceneGroup(page, 'Robot appearance'); await chooseVisual(page, 'robot-colorway', 'product'); await chooseVisual(page, 'robot-colorway', 'grey');
   await page.locator('#source-head-visual-trigger').click(); await page.locator('dialog[data-visual-picker="source-head-visual"]').waitFor({ state: 'visible' }); await page.keyboard.press('Escape');
   await openSceneGroup(page, 'Lighting'); await openSceneGroup(page, 'Render controls'); await openSceneGroup(page, 'Saved views');
-  await page.getByLabel('View name', { exact: true }).fill('Workspace view'); await page.getByRole('button', { name: 'Save view', exact: true }).click();
+  await page.getByRole('textbox', { name: /^View name\b/ }).fill('Workspace view'); await page.getByRole('button', { name: 'Save view', exact: true }).click();
   await page.getByRole('button', { name: 'Workspace view', exact: true }).waitFor();
   await openTools(page); await page.locator('#toggle-inspector').click(); assert.equal(await page.locator('#inspector').isVisible(), true);
   await openTools(page); await page.locator('#toggle-inspector').click(); assert.equal(await page.locator('#inspector').isVisible(), false);

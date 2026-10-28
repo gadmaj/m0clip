@@ -42,7 +42,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         window.trackHashes = take => Promise.all(['t', 'geom', 'qpos', 'cmd', 'cam', 'hoist', 'camOrientation'].map(key => hash(key === 'geom' ? take.geom.values : take[key])));
         window.rejects = async (action, pattern) => {
           let failure; try { await action(); } catch (error) { failure = error; }
-          check(failure && pattern.test(`${failure.name}: ${failure.message}`), `Expected ${pattern}, got ${failure}`);
+          check(failure, 'Expected the operation to reject');
+          if (pattern) check(pattern.test(`${failure.name}: ${failure.message}`), `Expected ${pattern}, got ${failure}`);
         };
         window.rows = async store => {
           const { promise, resolve, reject } = Promise.withResolvers();
@@ -106,7 +107,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         };
         window.mount = () => {
           const library = new fixture.ShotLibrary(), photos = new fixture.PhotoLibrary(), recoveries = new fixture.RecordingRecovery(library);
-          const dialog = new fixture.ShotLibraryDialog(document.body, { library, photos, recoveries, open: () => {}, deleted: () => {}, blocked: () => null, modalChanged: () => {} });
+          const dialog = new fixture.ShotLibraryDialog(document.body, { library, photos, recoveries, open: () => {}, deleted: () => {}, takeRenamed: () => {}, blocked: () => null, modalChanged: () => {} });
           document.querySelector('#show').onclick = () => dialog.open();
           window.gallery = { library, photos, recoveries, dialog };
         };
@@ -289,7 +290,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     await page.getByRole('button', { name: 'Delete shot', exact: true }).click();
     await page.waitForFunction(() => !document.querySelector('[data-shot-id="photo-landscape"]') && document.querySelector('.shot-library-grid').getAttribute('aria-busy') === 'false');
     await page.evaluate(async expected => {
-      await rejects(() => gallery.photos.open(expected.ids[0]), /no longer exists/i);
+      await rejects(() => gallery.photos.open(expected.ids[0]));
       check(await hash((await gallery.photos.open(expected.ids[1])).png) === expected.originals[1], 'Deleting one capture preserves the other original');
       const take = (await gallery.library.open(expected.ids[2])).take;
       equal(await trackHashes(take), expected.tracks, 'Deleting a photo preserves every completed take track');

@@ -8,7 +8,7 @@ import { sharedView } from './explore';
 import { Pong } from './pong';
 import { VisualPicker } from './visual-picker';
 import { previewImage, staticPreviewOptions, characterOptions, characterDescription, sourceModelCatalog } from './preview-catalog';
-import { SceneProgress, downloadTime, type LoadingSnapshot } from '../loading/progress';
+import { SceneProgress, downloadEstimate, type LoadingSnapshot } from '../loading/progress';
 import { observeTransfers, type TransferUpdate } from '../loading/transfers';
 import type { PlannedAsset, PriorModuleIntake } from '../loading/asset-plan';
 import { registerPreviewAsset } from '../loading/preview-assets';
@@ -409,14 +409,7 @@ class LaunchController {
     } else this.meter.removeAttribute('value');
     this.meter.setAttribute('aria-valuetext', this.failed ? 'Loading interrupted' : ready ? 'Scene ready' : bytes);
 
-    const eta = this.failed ? ''
-      : ready ? ''
-      : !snapshot.frozen ? 'ETA pending'
-      : snapshot.remaining === 0 ? 'Preparing scene…'
-      : snapshot.stalled ? 'Waiting for data…'
-      : snapshot.etaSeconds !== null ? `~${downloadTime(snapshot.etaSeconds)} download`
-      : snapshot.active > 0 ? 'Measuring speed…'
-      : 'Assets incomplete';
+    const eta = this.failed || ready ? '' : downloadEstimate(snapshot);
     if (this.eta.textContent !== eta) this.eta.textContent = eta;
     this.renderDetails(snapshot);
   }
@@ -430,7 +423,9 @@ class LaunchController {
     if (this.detailStatus.textContent !== message) this.detailStatus.textContent = message;
     const readiness = `Simulation: ${this.simulation ? 'ready' : 'pending'} · Visuals: ${this.visuals ? 'ready' : 'pending'} · First frame: ${this.frame ? 'ready' : 'pending'}`;
     if (this.detailReadiness.textContent !== readiness) this.detailReadiness.textContent = readiness;
-    const bytes = `${snapshot.loaded} B received · ${snapshot.knownTotal} B ${snapshot.frozen ? 'fixed maximum' : 'discovered'}${snapshot.unknown ? ` · ${snapshot.unknown} sizes pending` : ''}${snapshot.unexpected ? ` · ${snapshot.unexpected} catalogue mismatches` : ''}`;
+    // Fixed plan only: open + queued + stopped is exactly the main row's remaining payload.
+    const split = snapshot.frozen ? ` · ${snapshot.activeBytes} B downloading · ${snapshot.queuedBytes} B queued${snapshot.stoppedBytes ? ` · ${snapshot.stoppedBytes} B stopped` : ''}` : '';
+    const bytes = `${snapshot.loaded} B received · ${snapshot.knownTotal} B ${snapshot.frozen ? 'fixed maximum' : 'discovered'}${split}${snapshot.unknown ? ` · ${snapshot.unknown} sizes pending` : ''}${snapshot.unexpected ? ` · ${snapshot.unexpected} catalogue mismatches` : ''}`;
     if (this.detailBytes.textContent !== bytes) this.detailBytes.textContent = bytes;
     const counts = { loading: 0, done: 0, failed: 0, cancelled: 0 };
     for (const transfer of this.progress.transfers()) {

@@ -369,7 +369,7 @@ async function restores(page, run, out) {
   const sceneCollapse = page.locator('#scene-window .floating-collapse');
   if (await sceneCollapse.getAttribute('aria-expanded') === 'false') await sceneCollapse.click();
   await page.getByText('Saved views', { exact: true }).click();
-  await page.getByLabel('View name', { exact: true }).fill('Overlap Bullet');
+  await page.getByRole('textbox', { name: /^View name\b/ }).fill('Overlap Bullet');
   await page.getByRole('button', { name: 'Save view', exact: true }).click();
   const bookmark = await page.evaluate(() => JSON.parse(localStorage.getItem('ume-saved-views-v1')).find(bookmark => bookmark.name === 'Overlap Bullet'));
   assert.equal(bookmark.view.terrain, `map:${MAP}`);

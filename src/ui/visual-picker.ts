@@ -22,6 +22,8 @@ export class VisualPicker {
   static get active(){return this.opened.size > 0;}
   readonly root = document.createElement('div');
   readonly button = document.createElement('button');
+  /** Selected option's dataset.detail, associated with the trigger as a description. */
+  private readonly triggerDetail = document.createElement('span');
   private dialog:HTMLDialogElement|null = null;
   private observer:IntersectionObserver|null = null;
   private generation = 0;
@@ -35,7 +37,8 @@ export class VisualPicker {
     this.button.type='button'; this.button.className='btn visual-picker-trigger';
     this.button.id=`${config.id}-trigger`; this.button.dataset.visualPicker=config.id;
     this.button.setAttribute('aria-label',config.label); this.button.setAttribute('aria-haspopup','dialog');
-    select.before(this.root); this.root.append(select,this.button);
+    this.triggerDetail.id=`${config.id}-trigger-detail`; this.triggerDetail.hidden=true;
+    select.before(this.root); this.root.append(select,this.button,this.triggerDetail);
     select.hidden=true; select.tabIndex=-1; select.setAttribute('aria-hidden','true');
     this.button.addEventListener('click',()=>this.open());
     this.button.addEventListener('keydown',event=>{
@@ -44,8 +47,18 @@ export class VisualPicker {
     select.addEventListener('change',this.changed); this.sync();
   }
   sync(preserveSearch=false){
-    this.button.textContent=`${this.select.selectedOptions[0]?.label || this.config.label} ▦`;
-    const thumbnail=this.select.selectedOptions[0]?.dataset.preview;
+    // Optional dataset.label is compact visible text; option.label stays the complete accessible identity.
+    const selected=this.select.selectedOptions[0],compact=selected?.dataset.label,full=selected?.label??'';
+    const shortened=!!compact&&!!full&&compact!==full;
+    this.button.textContent=`${(shortened?compact:full) || this.config.label} ▦`;
+    this.button.setAttribute('aria-label',shortened?`${this.config.label}: ${full}`:this.config.label);
+    if(shortened)this.button.title=full;else this.button.removeAttribute('title');
+    this.triggerDetail.textContent=selected?.dataset.detail??'';
+    // Keep caller-owned description ids (e.g. live instructions) beside the selected metadata.
+    const described=(this.button.getAttribute('aria-describedby')??'').split(/\s+/).filter(id=>id&&id!==this.triggerDetail.id);
+    if(this.triggerDetail.textContent)described.push(this.triggerDetail.id);
+    if(described.length)this.button.setAttribute('aria-describedby',described.join(' '));else this.button.removeAttribute('aria-describedby');
+    const thumbnail=selected?.dataset.preview;
     if(thumbnail){registerPreviewAsset(thumbnail);const image=document.createElement('img');image.crossOrigin='anonymous';image.loading='lazy';image.decoding='async';image.src=thumbnail;image.alt='';image.onerror=()=>{image.remove();this.button.append(' · Preview unavailable');};this.button.prepend(image);}
     this.button.disabled=this.disabled;
     if(this.dialog){
@@ -90,6 +103,8 @@ export class VisualPicker {
     let search:HTMLInputElement|undefined;
     if(this.config.search!==false||this.config.catalog){search=document.createElement('input'); search.type='search'; search.placeholder=`Search ${this.config.label.toLowerCase()}…`; search.setAttribute('aria-label',`Search ${this.config.label}`); dialog.append(search);}
     const grid=document.createElement('div'); grid.className='visual-picker-grid'; dialog.append(grid);
+    // Complete identity of the focused, otherwise selected, visible card (dataset.detail / compact labels only).
+    const detail=document.createElement('p');detail.id=`${this.config.id}-gallery-detail`;detail.dataset.visualPickerDetail='';detail.hidden=true;dialog.append(detail);
     const status=document.createElement('p');status.setAttribute('role','status');status.setAttribute('aria-live','polite');status.hidden=true;dialog.append(status);
     if(this.config.intake){
       const input=document.createElement('input');input.type='file';input.accept='.zip,application/zip';input.hidden=true;dialog.append(input);
@@ -103,17 +118,25 @@ export class VisualPicker {
     const retry=action('Retry',()=>{void loadSource();});
     const cancel=action('Cancel search',()=>{this.cancelRequest();++this.generation;grid.removeAttribute('aria-busy');status.hidden=false;status.textContent='Search cancelled.';cancel.hidden=true;retry.hidden=false;});
     navigation.append(previous,next,retry,cancel);dialog.append(navigation);
-    const cards:Array<{button:HTMLButtonElement;option:HTMLOptionElement;group:string;slot:HTMLElement;loaded:boolean}>=[];
+    const cards:Array<{button:HTMLButtonElement;option:HTMLOptionElement;group:string;slot:HTMLElement;loaded:boolean;detail:string}>=[];
     const groups:Array<{heading:HTMLElement;buttons:HTMLButtonElement[]}>=[];
-    const reset=()=>{++this.generation;this.cancelRequest();this.observer?.disconnect();grid.replaceChildren();cards.length=0;groups.length=0;grid.scrollTop=0;status.hidden=true;};
+    const reset=()=>{++this.generation;this.cancelRequest();this.observer?.disconnect();grid.replaceChildren();cards.length=0;groups.length=0;grid.scrollTop=0;status.hidden=true;detail.hidden=true;detail.textContent='';};
     const add=(option:HTMLOptionElement,group:string,parentDisabled:boolean,remote=false)=>{
       const button=document.createElement('button'); button.type='button'; button.className='visual-picker-card'; button.dataset.value=option.value;
       button.disabled=option.disabled||parentDisabled; button.setAttribute('aria-pressed',String(this.select.value===option.value));
       const slot=document.createElement('span'); slot.className='visual-picker-preview'; slot.textContent='Preview loading…';
-      const name=document.createElement('span'); name.textContent=option.label;button.append(slot,name);
+      const compact=option.dataset.label,shortened=!!compact&&compact!==option.label,metadata=option.dataset.detail;
+      const name=document.createElement('span'); name.textContent=shortened?compact:option.label;button.append(slot,name);
+      const described:string[]=[];
+      const note=(text:string)=>{const small=document.createElement('small');small.id=`${this.config.id}-option-${cards.length}-note`;small.textContent=text;button.append(small);described.push(small.id);};
       const description=option.title||(!remote?this.config.description?.(option.value):undefined);
-      if(description){const text=document.createElement('small');text.textContent=description;button.append(text);}
-      if(button.disabled&&!description){const text=document.createElement('small');text.textContent='Unavailable';button.append(text);}
+      if(description)note(description);
+      if(button.disabled&&!description)note('Unavailable');
+      const full=shortened||metadata?[option.label,metadata].filter(Boolean).join(' · '):'';
+      // Shortened visible text: the accessible name carries the exact option label and notes become descriptions.
+      if(shortened)button.setAttribute('aria-label',option.label);else described.length=0;
+      if(metadata){const text=document.createElement('span');text.id=`${this.config.id}-option-${cards.length}-detail`;text.hidden=true;text.textContent=metadata;button.append(text);described.unshift(text.id);}
+      if(full){button.title=full;button.setAttribute('aria-describedby',described.join(' '));}
       button.onclick=()=>{
         if(this.select.disabled||button.disabled)return;
         if(remote){
@@ -126,7 +149,7 @@ export class VisualPicker {
         if(changed||this.config.catalog)this.select.dispatchEvent(new Event('change',{bubbles:true}));
         this.sync();
       };
-      grid.append(button);const card={button,option,group,slot,loaded:false};cards.push(card);
+      grid.append(button);const card={button,option,group,slot,loaded:false,detail:full};cards.push(card);
       this.observer?.observe(button);
       return button;
     };
@@ -140,7 +163,19 @@ export class VisualPicker {
       }).then(preview=>{if(!preview){card.loaded=false;return;}if(this.generation!==generation||this.dialog!==dialog){preview.remove();return;}card.slot.replaceChildren(preview);}).catch(()=>{if(this.generation===generation)card.slot.textContent='Preview unavailable';});
     };
     this.observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){const card=cards.find(c=>c.button===entry.target);if(card)loadPreview(card);}},{root:grid,rootMargin:'100px'});
-    const filter=()=>{const tokens=search?.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)??[];for(const card of cards){const text=`${card.option.label} ${card.option.value} ${card.group} ${card.option.title}`.toLocaleLowerCase();card.button.hidden=!tokens.every(token=>text.includes(token));if(!card.button.hidden)this.observer?.observe(card.button);}for(const group of groups)group.heading.hidden=group.buttons.every(b=>b.hidden);status.textContent='No matching options.';status.hidden=cards.some(c=>!c.button.hidden);};
+    const cardFor=(node:EventTarget|null)=>node instanceof Node?cards.find(card=>card.button.contains(node)):undefined;
+    /** Focused card, else the selected card; never a filtered-out or previously rendered card. */
+    const showDetail=()=>{
+      const focused=cardFor(document.activeElement);
+      const card=focused&&!focused.button.hidden?focused:cards.find(item=>item.option.value===this.select.value&&!item.button.hidden);
+      const text=card?.detail??'';
+      if(detail.textContent!==text){detail.textContent=text;if(focused&&card===focused)focused.button.scrollIntoView({block:'nearest'});}
+      // Reserve the line while any card has details so focus moves do not resize the grid.
+      detail.hidden=!cards.some(item=>item.detail);
+    };
+    const filter=()=>{const tokens=search?.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)??[];for(const card of cards){const text=`${card.option.dataset.label??''} ${card.option.label} ${card.option.value} ${card.group} ${card.option.title} ${card.option.dataset.detail??''}`.toLocaleLowerCase();card.button.hidden=!tokens.every(token=>text.includes(token));if(!card.button.hidden)this.observer?.observe(card.button);}for(const group of groups)group.heading.hidden=group.buttons.every(b=>b.hidden);status.textContent='No matching options.';status.hidden=cards.some(c=>!c.button.hidden);showDetail();};
+    grid.addEventListener('focusin',showDetail);
+    grid.addEventListener('focusout',showDetail);
     const renderIncluded=()=>{
       reset();navigation.hidden=true;
       for(const child of this.select.children){

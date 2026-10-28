@@ -2,6 +2,7 @@
  * BASE_URL=http://127.0.0.1:PORT PLAYWRIGHT_MODULE=/path/to/playwright \
  *   node scripts/test_loading_progress.cjs
  * Optional: LOADING_SCENARIOS=cold,warm,concurrent,unknown,compressed,stall,interrupt,failure,original,mobile
+ * The deterministic SceneProgress staging contract always runs first; LOADING_SCENARIOS=estimate runs only it.
  * MOBILE_WIDTH=320 or 390 selects the loading-layout viewport for the mobile scenario.
  * A loopback reverse proxy streams unchanged real asset payloads; no readiness/render hooks.
  * Covers transfer accounting and real scene/error behavior independently of delayed Pong;
@@ -17,6 +18,160 @@ const { chooseVisual } = require('./choose-visual.cjs');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const wasm = '/wasm/mujoco.wasm';
 const isSceneAsset = pathname => /\/wasm\/|\/assets\/(?:models|source-robots|packs)\/|\.(?:wasm|onnx)$/.test(pathname);
+
+/** Deterministic staging contract: the real SceneProgress ledger with an explicit clock, no browser. */
+async function runEstimateContract() {
+  const { build } = require('esbuild');
+  globalThis.location ??= new URL('https://scene.test/');
+  const built = await build({ stdin: { resolveDir: path.join(__dirname, '..'), sourcefile: 'loading-estimate-fixture.ts',
+    contents: "export { SceneProgress, downloadEstimate } from './src/loading/progress';" },
+  bundle: true, platform: 'node', format: 'cjs', write: false });
+  const fixture = { exports: {} };
+  new Function('module', 'require', built.outputFiles[0].text)(fixture, require);
+  const { SceneProgress, downloadEstimate } = fixture.exports;
+  const transfer = (id, url, loaded, total, state = 'loading', realm) => ({ id, url, loaded, total, state, ...(realm ? { realm } : {}) });
+  const view = (progress, now, maximum) => {
+    const value = progress.snapshot(now);
+    assert.ok([value.activeBytes, value.queuedBytes, value.stoppedBytes].every(bytes => Number.isSafeInteger(bytes) && bytes >= 0),
+      'Byte partition parts are exact non-negative integers');
+    assert.equal(value.activeBytes + value.queuedBytes + value.stoppedBytes, value.remaining, 'Active, queued and stopped bytes partition exactly the remaining payload');
+    if (maximum !== undefined) {
+      assert.equal(value.knownTotal, maximum, 'The fixed maximum never changes across staging');
+      assert.equal(value.remaining, maximum - value.loaded, 'Remaining stays the exact unreceived fixed payload');
+    }
+    if (value.etaSeconds !== null) assert.equal(value.activeBytes, value.remaining, 'A download ETA covers only payload already in open requests');
+    return { ...value, label: downloadEstimate(value) };
+  };
+
+  // Small active read while a large planned runtime is not requested until after compilation.
+  const mujoco = 8_607_662, small = 100_000, ort = 13_479_978, maximum = mujoco + small + ort;
+  const smallUrl = '/assets/models/r1/small.bin', ortUrl = '/assets/ort-wasm-simd-threaded.wasm';
+  const progress = new SceneProgress(), generation = progress.begin(0);
+  progress.freeze(generation, [{ url: wasm, bytes: mujoco }, { url: smallUrl, bytes: small }, { url: ortUrl, bytes: ort }], 100);
+  let value = view(progress, 100, maximum);
+  assert.equal(value.queuedBytes, maximum, 'Nothing requested yet: the whole fixed payload is queued');
+  assert.equal(value.etaSeconds, null);
+  progress.update(generation, [transfer('worker:wasm', wasm, mujoco, mujoco, 'done')], 1000);
+  view(progress, 1000, maximum);
+  for (let second = 7; second <= 13; second++) {
+    progress.update(generation, [transfer('worker:small', smallUrl, (second - 6) * 3000, null)], second * 1000);
+    value = view(progress, second * 1000, maximum);
+  }
+  assert.ok(value.remaining / 3000 > 3600, 'Fixture reproduces the hour-scale scene-wide division by a 3000 B/s trickle');
+  assert.equal(value.stalled, false, 'The small read is genuinely advancing');
+  assert.equal(value.activeBytes, small - 21_000);
+  assert.equal(value.queuedBytes, ort, 'The unrequested runtime stays visible as queued payload');
+  assert.equal(value.etaSeconds, null, 'A queued large asset after a small active read cannot produce an aggregate download ETA');
+  assert.equal(numericEta(value.label), false);
+
+  // Compilation: no open request, queued bytes remain, nothing is stalled, finished or timed.
+  progress.update(generation, [transfer('worker:small', smallUrl, small, small, 'done')], 14000);
+  for (const now of [14000, 20000]) {
+    value = view(progress, now, maximum);
+    assert.equal(value.active, 0);
+    assert.equal(value.stalled, false, 'No open request means no transfer stall');
+    assert.equal(value.activeBytes, 0);
+    assert.equal(value.queuedBytes, ort);
+    assert.equal(value.etaSeconds, null);
+    assert.equal(numericEta(value.label), false);
+    assert.notEqual(value.label, downloadEstimate({ ...value, remaining: 0, queuedBytes: 0 }), 'Queued bytes keep the payload visibly unfinished');
+  }
+
+  // The runtime request opens; with every remaining byte active, the real sampled rate times it.
+  progress.update(generation, [transfer('worker:ort', ortUrl, 0, null)], 21000);
+  value = view(progress, 21000, maximum);
+  assert.equal(value.activeBytes, ort);
+  assert.equal(value.queuedBytes, 0);
+  assert.equal(value.etaSeconds, null, 'An open request without new sampled bytes has no rate');
+  for (let second = 22; second <= 26; second++) {
+    progress.update(generation, [transfer('worker:ort', ortUrl, (second - 21) * 1_000_000, null)], second * 1000);
+    value = view(progress, second * 1000, maximum);
+  }
+  assert.equal(value.stalled, false);
+  assert.ok(Math.abs(value.etaSeconds - (ort - 5_000_000) / 1_000_000) < 1e-9,
+    'All-active payload uses the exact 5 s sampled rate, independent of an unadvertised response size');
+  assert.ok(numericEta(value.label));
+  value = view(progress, 29500, maximum);
+  assert.equal(value.stalled, true);
+  assert.equal(value.etaSeconds, null, 'Stalled bytes expire the estimate');
+  assert.equal(numericEta(value.label), false);
+  progress.update(generation, [transfer('worker:ort', ortUrl, ort, ort, 'done')], 30000);
+  value = view(progress, 30000, maximum);
+  assert.equal(value.remaining, 0);
+  assert.equal(value.etaSeconds, null, 'Finished bytes never time compilation or rendering');
+  assert.equal(numericEta(value.label), false);
+
+  // Sampled throughput cannot promise how fast later bytes will arrive.
+  const accelerating = new SceneProgress(), ag = accelerating.begin(0), fastUrl = '/assets/accelerating.bin';
+  accelerating.freeze(ag, [{ url: fastUrl, bytes: 1_000_000 }], 0);
+  accelerating.update(ag, [transfer('accelerating', fastUrl, 0, null)], 0);
+  accelerating.update(ag, [transfer('accelerating', fastUrl, 1000, null)], 1000);
+  accelerating.update(ag, [transfer('accelerating', fastUrl, 2000, null)], 2000);
+  value = view(accelerating, 2000, 1_000_000);
+  assert.ok(Math.abs(value.etaSeconds - 998) < 1e-9, 'Estimate follows observed bytes, not future throughput');
+  accelerating.update(ag, [transfer('accelerating', fastUrl, 1_000_000, 1_000_000, 'done')], 3000);
+  value = view(accelerating, 3000, 1_000_000);
+  assert.equal(value.remaining, 0);
+  assert.equal(value.etaSeconds, null);
+
+  // Failed or cancelled remainders are stopped, never timed by other transfers, and reopen only on a real retry.
+  for (const ended of ['failed', 'cancelled']) {
+    const stopped = new SceneProgress(), g = stopped.begin(0), a = '/assets/a.bin', b = '/assets/b.bin';
+    stopped.freeze(g, [{ url: a, bytes: 1_000_000 }, { url: b, bytes: 2_000_000 }], 0);
+    stopped.update(g, [transfer('a', a, 0, null), transfer('b', b, 0, null)], 1000);
+    view(stopped, 1000, 3_000_000);
+    stopped.update(g, [transfer('a', a, 200_000, null), transfer('b', b, 500_000, null, ended)], 2000);
+    view(stopped, 2000, 3_000_000);
+    stopped.update(g, [transfer('a', a, 400_000, null)], 3000);
+    value = view(stopped, 3000, 3_000_000);
+    assert.equal(value.stoppedBytes, 1_500_000);
+    assert.equal(value.activeBytes, 600_000);
+    assert.equal(value.etaSeconds, null, `A ${ended} remainder is not timed by other open transfers`);
+    assert.equal(numericEta(value.label), false);
+    stopped.update(g, [transfer('a', a, 1_000_000, 1_000_000, 'done')], 3500);
+    value = view(stopped, 3500, 3_000_000);
+    assert.equal(value.active, 0);
+    assert.equal(value.remaining, 1_500_000, `A ${ended} remainder cannot look complete`);
+    assert.equal(value.etaSeconds, null);
+    stopped.update(g, [transfer('b:retry', b, 0, null)], 4000);
+    stopped.update(g, [transfer('b:retry', b, 1_000_000, null)], 5000);
+    value = view(stopped, 5000, 3_000_000);
+    assert.equal(value.stoppedBytes, 0, 'A real retry reopens the same entity as active');
+    assert.equal(value.activeBytes, 1_000_000);
+    assert.ok(Math.abs(value.etaSeconds - 1_000_000 / 400_000) < 1e-9);
+  }
+
+  // Planning: the discovered total is partitioned too, but never timed.
+  const planning = new SceneProgress(), pg = planning.begin(0);
+  planning.update(pg, [transfer('meta', '/metadata.json', 100, 1000), transfer('probe', '/optional.json', 0, null, 'failed'),
+    transfer('module', '/module.js', 300, 300, 'done')], 2000);
+  value = view(planning, 2000);
+  assert.equal(value.frozen, false);
+  assert.equal(value.remaining, 900);
+  assert.equal(value.activeBytes, 900);
+  assert.equal(value.queuedBytes, 0, 'Queued payload exists only for a fixed plan');
+  assert.equal(value.etaSeconds, null);
+  assert.equal(numericEta(value.label), false);
+
+  // Realms and generations: page bodies cannot satisfy or activate the verification realm.
+  const realms = new SceneProgress(), rg = realms.begin(0), shared = '/assets/shared.js';
+  realms.freeze(rg, [{ url: shared, bytes: 500 }, { url: shared, bytes: 500, realm: 'map-verification' }], 0);
+  realms.update(rg, [transfer('page', shared, 500, 500, 'done')], 100);
+  value = view(realms, 100, 1000);
+  assert.equal(value.queuedBytes, 500);
+  assert.equal(value.activeBytes, 0);
+  realms.update(rg, [transfer('worker', shared, 200, null, 'loading', 'map-verification')], 200);
+  value = view(realms, 200, 1000);
+  assert.equal(value.activeBytes, 300);
+  assert.equal(value.queuedBytes, 0);
+  const newer = realms.begin(300);
+  realms.freeze(newer, [{ url: shared, bytes: 500, realm: 'map-verification' }], 300);
+  realms.update(rg, [transfer('late', shared, 500, 500, 'done', 'map-verification')], 400);
+  value = view(realms, 400, 500);
+  assert.equal(value.loaded, 0, 'Old generations cannot credit a new plan');
+  assert.equal(value.queuedBytes, 500);
+  return { queuedNotTimed: true, allActiveRate: true, accelerating: true, compile: true, stopped: true, planning: true, realms: true };
+}
 
 async function createProxy(upstream) {
   const origin = new URL(upstream), sockets = new Set(), runs = [], timers = new Set();
@@ -212,7 +367,15 @@ async function inspectDetails(page, { failed = false } = {}) {
     live: node.querySelectorAll('[aria-live], [role="status"], [role="alert"]').length,
   }));
   assert.match(details.readiness, /Simulation: (ready|pending) · Visuals: (ready|pending) · First frame: (ready|pending)/);
-  assert.match(details.bytes, /^\d+ B received · \d+ B (?:fixed maximum|discovered)/);
+  const amount = label => { const match = details.bytes.match(new RegExp(`(\\d+) B ${label}`)); return match ? Number(match[1]) : null; };
+  const received = amount('received'), maximum = amount('fixed maximum');
+  assert.ok(received !== null && (maximum !== null || amount('discovered') !== null), 'Details must report exact received and total bytes');
+  if (maximum !== null) {
+    details.split = { remaining: maximum - received, downloading: amount('downloading'), queued: amount('queued'), stopped: amount('stopped') ?? 0 };
+    assert.ok(details.split.downloading !== null && details.split.queued !== null, 'A fixed plan must expose its active/queued byte split');
+    assert.equal(details.split.downloading + details.split.queued + details.split.stopped, details.split.remaining,
+      'Details byte split must sum exactly to the remaining fixed payload');
+  }
   if (before.ready) assert.equal(details.readiness, 'Simulation: ready · Visuals: ready · First frame: ready', 'Final readiness details must reflect the actual scene gates');
   assert.ok(details.rows.every(row => ['loading', 'done', 'failed', 'cancelled'].includes(row.state)));
   assert.ok(details.rows.every(row => /^\d+ B received/.test(row.amount)), 'Every resource amount must report observed bytes');
@@ -286,7 +449,14 @@ async function runSuite() {
           while (!run.resources.some(resource => resource.path === wasm && resource.bytes > 0 && resource.controlled) && Date.now() < deadline) await delay(50);
           await page.screenshot({ path: path.join(out, `${name}-streaming.png`), fullPage: mobile });
         }
-        if (['cold', 'unknown', 'compressed', 'mobile'].includes(name)) result.details = await inspectDetails(page);
+        if (['cold', 'unknown', 'compressed', 'mobile'].includes(name)) {
+          result.details = await inspectDetails(page);
+          const streaming = run.resources.find(resource => resource.path === wasm && resource.controlled);
+          if (name !== 'mobile' && streaming && !streaming.ended) {
+            assert.ok(result.details.split, 'The plan is fixed before MuJoCo WASM streams');
+            assert.ok(result.details.split.queued > 0, 'Model payload awaiting the WASM response must be shown as queued, not active or received');
+          }
+        }
         if (mobile) await page.screenshot({ path: path.join(out, 'mobile-loading.png'), fullPage: true });
         if (name === 'stall') {
           const deadline = Date.now() + 45000;
@@ -378,21 +548,26 @@ async function runSuite() {
           if (sample.value === 1 && !sample.ready) assert.equal(numericEta(sample.eta), false, 'A complete payload cannot pretend to time unfinished scene preparation');
           if (sample.state === 'preparing') assert.equal(numericEta(sample.eta), false, 'Download estimates must not pretend to time CPU/graphics preparation');
         }
-        if (name === 'unknown' || name === 'compressed') {
-          const transfer = run.resources.find(resource => resource.path === wasm);
-          const during = active.filter(sample => sample.at >= transfer.chunks[0].at + 250 && sample.at <= transfer.ended - 250);
-          assert.ok(during.length >= 3, 'Unknown/compressed response must remain genuinely streaming across observations');
-          assert.ok(during.some(sample => numericEta(sample.eta)), 'The fixed exact selected payload supports real-rate ETA independently of chunked/compressed response headers');
+        const controlled = run.resources.find(resource => resource.path === wasm && resource.controlled && resource.chunks.length);
+        if (controlled && ['cold', 'unknown', 'compressed', 'stall', 'concurrent'].includes(name)) {
+          // Engine.create awaits MuJoCo WASM before mounting model files, so planned model payload is queued here.
+          const during = samples.filter(sample => sample.loadingVisible && !sample.error
+            && sample.at >= controlled.chunks[0].at + 250 && sample.at <= controlled.ended - 250);
+          assert.ok(during.length >= 3, 'The controlled WASM response must remain genuinely streaming across observations');
+          assert.ok(during.every(sample => !numericEta(sample.eta)), 'Queued planned payload cannot be timed by the current transfer rate');
+          assert.ok(during.every(sample => !sample.ready && sample.value !== 1), 'Queued planned payload keeps the scene visibly unfinished');
         }
-        if (name === 'cold' || name === 'stall') assert.ok(active.some(sample => numericEta(sample.eta)), 'Known streaming downloads must yield a current-download estimate after real rate samples');
+        // Retain observed completion timings as diagnostics, not a guarantee of future throughput.
+        const fullAt = samples.find(sample => sample.value === 1)?.at;
+        if (fullAt !== undefined) {
+          result.etaEvidence = samples.filter(sample => sample.at < fullAt && numericEta(sample.eta))
+            .map(sample => ({ displayed: etaSeconds(sample.eta), actualRemaining: (fullAt - sample.at) / 1000 }));
+        }
         const maxima = samples.filter(sample => sample.maximum !== null && sample.loadingVisible).map(sample => sample.maximum);
         assert.ok(maxima.length, 'The selected scene must declare its exact payload maximum');
         assert.equal(new Set(maxima).size, 1, 'The payload maximum cannot grow or shrink across discovery, streaming, failures or preparation');
         if (name === 'cold') {
           const transfer = run.resources.find(resource => resource.path === wasm);
-          const stable = active.filter(sample => sample.at > transfer.chunks[0].at + 2000 && sample.at < transfer.ended - 600 && numericEta(sample.eta));
-          result.etaEvidence = stable.map(sample => ({ displayed: etaSeconds(sample.eta), actualRemaining: (transfer.ended - sample.at) / 1000 }));
-          assert.ok(result.etaEvidence.some(({ displayed, actualRemaining }) => Math.abs(displayed - actualRemaining) <= Math.max(2, actualRemaining * .6)), 'Current-download ETA must correspond to observed response completion, not an invented scene countdown');
           const during = active.filter(sample => sample.at >= transfer.chunks[0].at && sample.at <= transfer.ended);
           const values = during.map(sample => loadedMB(sample.bytes)).filter(value => value !== null);
           assert.ok(values.length >= 3 && values.at(-1) > values[0] + 1, 'Actual decoded MB must advance visibly while the response streams');
@@ -420,5 +595,8 @@ async function runSuite() {
   console.log(JSON.stringify(results.map(({ name, passed, failureMessage, playback }) => ({ name, passed: !!passed, failureMessage, playback })), null, 2));
   assert.ok(results.every(result => result.passed), 'One or more real-network loading scenarios failed; inspect results.json and screenshots');
 }
-module.exports = { createProxy, snapshot, raf };
-if (require.main === module) runSuite().catch(error => { console.error(error); process.exitCode = 1; });
+module.exports = { createProxy, snapshot, raf, runEstimateContract };
+if (require.main === module) runEstimateContract().then(estimate => {
+  console.log(JSON.stringify({ estimate }));
+  if (process.env.LOADING_SCENARIOS !== 'estimate') return runSuite();
+}).catch(error => { console.error(error); process.exitCode = 1; });
