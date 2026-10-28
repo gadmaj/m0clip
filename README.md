@@ -305,6 +305,10 @@ Controls lock while encoding, not merely while setup is open.
 Finished motion clips report completion in **Play** without opening a dialog.
 The flashlight’s **F** shortcut is LIVE-only; use its button while reviewing a take.
 
+Open **Reference clip** to load a motion CSV and set its playback FPS. It starts
+collapsed; your panel layout and open/closed choices are remembered. **Stop**
+returns control to the selected policy.
+
 In **Render controls**, enable **Character wireframe** and leave **Map wireframe**
 off to keep the map solid. Keep **Textures** and **Map geometry** enabled to see
 the textured environment.
