@@ -16,8 +16,8 @@ html, body { height: 100%; height: 100dvh; overflow: hidden; }
 #viewport-tools .btn:hover:not(:disabled) { background: var(--raised-hi); border-color: var(--text-3); }
 #viewport-tools .btn:active:not(:disabled) { box-shadow: inset 1px 1px 0 var(--shadow); }
 #viewport-tools .btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
-#workspace-panels { display: none; flex: 1 1 100%; gap: 6px; }
-#workspace-panels .btn { flex: 1; justify-content: center; min-height: 44px; }
+#workspace-panels { display: none; flex: 1 1 100%; flex-wrap: wrap; gap: 6px; }
+#workspace-panels .btn { flex: 1 1 100px; justify-content: center; min-height: 44px; }
 body.menu-hidden #workspace-panels { display: none; }
 body.output-setup #workspace-panels { display: flex; flex: 0 1 auto; }
 .playpen-brand { margin-right: auto; padding: 6px 10px; color: var(--accent); background: var(--panel); border: 1px solid var(--line-hi); }
@@ -26,26 +26,30 @@ body.output-setup #workspace-panels { display: flex; flex: 0 1 auto; }
 #scene-actions {
   position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 201;
   width: min(1040px, calc(100% - 24px)); max-height: calc(100dvh - 140px);
-  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 12px;
-  padding: 10px; overflow: auto; overscroll-behavior: contain;
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 8px;
+  padding: 8px; overflow: auto; overscroll-behavior: contain;
   color: var(--text); background: var(--panel); border: 1px solid var(--line-hi);
   border-radius: var(--r); box-shadow: 2px 2px 0 var(--shadow);
 }
-.scene-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.scene-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; align-self: end; }
 .scene-choice { min-width: 0; }
 .scene-choice label { display: block; margin: 0 0 4px; color: var(--text-2); font-size: 11px; }
 #scene-actions .visual-picker-trigger { min-height: 44px; padding: 6px 8px; font-size: 12px; overflow-wrap: anywhere; }
 #scene-actions .visual-picker-trigger img { width: 40px; height: 28px; flex: none; margin-right: 6px; }
 .scene-capture { min-width: 0; align-self: end; }
-#scene-actions .row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+#scene-actions .row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
 #scene-actions .btn { min-height: 44px; }
-#scene-actions .row .btn { justify-content: center; padding: 6px; white-space: normal; }
+#scene-actions .row .btn { justify-content: center; padding: 6px; white-space: nowrap; }
 #scene-actions .sub, #scene-actions .screenshot-status { margin: 5px 0 0; font-size: 11px; overflow-wrap: anywhere; }
 #scene-actions .screenshot-status { color: var(--text); }
 #scene-actions .screenshot-status:empty { display: none; }
 .workspace-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
 .workspace-tools .btn { white-space: normal; min-height: 44px; }
 body.x-open #scene-actions { display: none; }
+@media (min-width: 1100px) {
+  #scene-actions { grid-template-columns: 288px minmax(0, 1fr); }
+  #scene-actions .row { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
 
 .floating-window, #inspector.floating-window, #policy-manager.floating-window,
 #export.floating-window, #deck.floating-window {
@@ -58,15 +62,15 @@ body.x-open #scene-actions { display: none; }
   z-index: 20;
 }
 .floating-window.is-dragging { box-shadow: 3px 3px 0 var(--shadow); border-color: var(--accent); }
-.floating-titlebar { display: flex; align-items: center; gap: 4px; padding: 5px 8px 5px 5px;
-  min-height: 40px; flex: none; border-bottom: 1px solid var(--line-hi); background: var(--raised); }
+.floating-titlebar { display: flex; align-items: center; gap: 4px; padding: 0 4px 0 0;
+  min-height: 44px; flex: none; border-bottom: 1px solid var(--line-hi); background: var(--raised); }
 .floating-grip { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0;
-  padding: 6px; border: 0; border-radius: var(--r); background: none; color: var(--text);
+  min-height: 44px; padding: 6px; border: 0; border-radius: var(--r); background: none; color: var(--text);
   font: 600 12px var(--sans); text-align: left; cursor: grab; touch-action: none; user-select: none; }
 .floating-grip:hover { background: var(--raised-hi); }
 .is-dragging .floating-grip { cursor: grabbing; }
 .grip-dots { color: var(--text-3); font-size: 18px; font-weight: 400; line-height: 1; }
-.floating-collapse { width: 26px; height: 26px; flex: none; border: 1px solid var(--line-hi); border-radius: var(--r);
+.floating-collapse { width: 44px; height: 44px; flex: none; border: 1px solid var(--line-hi); border-radius: var(--r);
   background: var(--panel); color: var(--text-2); font: 18px var(--sans); cursor: pointer; }
 .floating-collapse:hover { background: var(--raised-hi); color: var(--text); }
 .floating-body { min-height: 0; overflow: auto; overscroll-behavior: contain; }
@@ -124,8 +128,7 @@ body.inspector-hidden #inspector, body.menu-hidden #panel, body.menu-hidden #pol
   .playpen-brand { min-width: 0; flex: 1; }
   .playpen-brand h1 { font-size: 15px; }
   #viewport-tools .btn { padding: 7px 9px; min-height: 44px; font-size: 11px; }
-  .floating-window .btn, .floating-window input, .floating-window select { min-height: 36px; }
-  .floating-window .saved-view-actions .btn { min-height: 44px; }
+  .floating-window .btn, .floating-window button, .floating-window input, .floating-window select { min-height: 44px; }
   #deck.floating-window { height: 340px; }
   #scene-actions { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 8px; }
   #scene-actions .row .btn { font-size: 11px; padding: 6px 3px; gap: 4px; }
@@ -133,4 +136,7 @@ body.inspector-hidden #inspector, body.menu-hidden #panel, body.menu-hidden #pol
   #scene-actions .visual-picker-trigger { font-size: 11px; }
   #scene-actions .visual-picker-trigger img { width: 32px; height: 24px; }
   #flight-hint { display: none; }
+}
+@media (max-width: 360px) {
+  #scene-actions .row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

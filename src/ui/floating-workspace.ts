@@ -17,7 +17,7 @@ export class FloatingWorkspace {
     try { this.saved = JSON.parse(localStorage.getItem(STORAGE) || '{}') || {}; } catch { /* Use the default layout. */ }
     const menu = element('panel'), original = [...menu.children] as HTMLElement[];
     const play = this.window('play-window', 'Play', menu);
-    const capture = this.window('capture-window', 'Capture', menu);
+    const capture = this.window('capture-window', 'Reference clip', menu);
     const scene = this.window('scene-window', 'Scene', menu);
     const inspector = element('inspector');
     for (const child of original) {
@@ -32,7 +32,7 @@ export class FloatingWorkspace {
     }
     this.register(play.root, play.body, 'Play', () => ({ x: 20, y: 96, collapsed: innerWidth <= 760 }));
     this.register(scene.root, scene.body, 'Scene', () => ({ x: innerWidth <= 760 ? 12 : innerWidth - 324, y: innerWidth <= 760 ? 148 : 96, collapsed: innerWidth <= 760 }));
-    this.register(capture.root, capture.body, 'Capture', () => ({ x: innerWidth <= 760 ? 12 : innerWidth - 324, y: innerWidth <= 760 ? 200 : Math.min(352, innerHeight - 310), collapsed: innerWidth <= 760 }));
+    this.register(capture.root, capture.body, 'Reference clip', () => ({ x: innerWidth <= 760 ? 12 : innerWidth - 324, y: innerWidth <= 760 ? 200 : Math.min(352, innerHeight - 310), collapsed: true }));
     this.adapt(inspector, 'Inspector', () => ({ x: 20, y: innerHeight - 62, collapsed: true }));
     this.adapt(element('policy-manager'), 'Policy packs', () => ({ x: Math.max(32, (innerWidth - 340)/2), y: 100, collapsed: false }));
     this.adapt(element('export'), 'Export', () => ({ x: Math.max(32, (innerWidth - 440)/2), y: 88, collapsed: false }));
@@ -190,21 +190,22 @@ export class FloatingWorkspace {
     // Keep the full panel above the real dock; scroll its body rather than its title offscreen.
     const width = root.getBoundingClientRect().width || Math.min(304, innerWidth - 24);
     const bottom = innerHeight - this.dockHeight - 24;
-    const top = Math.min(this.workspaceTop, Math.max(12, bottom - 44));
+    const barHeight = (root.querySelector<HTMLElement>('.floating-titlebar')!.offsetHeight || 44) + 2;
+    const top = Math.min(this.workspaceTop, Math.max(12, bottom - barHeight));
     placement.x = Math.max(12, Math.min(placement.x, innerWidth - width - 12));
     // A bottom-edge placement must still leave the expanded timeline its requested height.
     // Old small heights remain valid: its body scrolls when the wrapped toolbar cannot fit.
     const height = root.id === 'deck' && !placement.collapsed
       ? Math.min(Number.parseFloat(root.style.height) || (innerWidth <= 760 ? 340 : 270), bottom - top)
-      : 44;
+      : barHeight;
     placement.y = Math.max(top, Math.min(placement.y, bottom - height));
     root.style.left = `${placement.x}px`; root.style.top = `${placement.y}px`;
-    let space = Math.max(44, bottom - placement.y);
+    let space = Math.max(barHeight, bottom - placement.y);
     if (root.id === 'scene-window') {
       const capture = this.panels.get('capture-window');
       if (capture && !capture.root.hidden && !capture.root.classList.contains('hidden')) {
         const below = capture.placement, gap = below.y - placement.y - 12;
-        // Stacked controls scroll within Scene instead of covering Capture.
+        // Stacked controls scroll within Scene instead of covering Reference clip.
         if (gap >= 80 && below.x < placement.x + width && below.x + width > placement.x) space = Math.min(space, gap);
       }
     }

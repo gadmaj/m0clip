@@ -189,6 +189,7 @@ class App {
   private pendingViewRestore:ViewRestoreRequest|null=null;
   private viewRestoreAbort:AbortController|null=null;
   private viewRestoreWork:Promise<void>|null=null;
+  private captureNavigationNotice = false;
   private placingRobot = false;
   private placementPending = false;
   private placementPoint: THREE.Vector3 | null = null;
@@ -631,7 +632,7 @@ class App {
       if(this.pendingMap===pending){this.pendingMap=null;stage?.dispose();this.worker.postMessage({t:'cancelTerrain'});this.overlay.classList.add('hidden');}
       throw error;
     }finally{signal?.removeEventListener('abort',cancel);}
-    }finally{this.mapPreparing=false;}
+    }finally{this.mapPreparing=false;this.updateCaptureNavigationNotice();}
   }
 
   /** Existing sources stay synchronous so the initial shared-view worker barrier is installed before init. */
@@ -973,6 +974,7 @@ class App {
     const previous=this.viewRestoreWork;
     void this.cancelViewRestore();
     const controller=this.viewRestoreAbort=new AbortController(),id=++this.viewRestoreSequence;
+    this.updateCaptureNavigationNotice();
     const work=this.runViewRestore(view,navigate,controller,id,previous);
     this.viewRestoreWork=work;
     const finished=()=>{if(this.viewRestoreWork===work)this.viewRestoreWork=null;};
@@ -1033,6 +1035,7 @@ class App {
         this.viewRestoreAbort=null;
         if(!complete){this.heldView=heldBefore;this.view.controls.enabled=!this.noclip;}
       }
+      this.updateCaptureNavigationNotice();
     }
   }
 
@@ -1123,6 +1126,15 @@ class App {
     });
   }
 
+  private updateCaptureNavigationNotice(show = false): boolean {
+    const message = this.pendingViewRestore || this.viewRestoreAbort
+      ? 'Wait for the saved view to finish restoring.'
+      : this.mapPreparing || this.pendingMap ? 'Wait for the map to finish loading.' : null;
+    this.captureNavigationNotice = (show || this.captureNavigationNotice) && message !== null;
+    this.panel.setNavigationNotice(this.captureNavigationNotice ? message : null);
+    return message !== null;
+  }
+
   // ---- recording -------------------------------------------------------
   private toggleRecording() {
     if (this.rec) this.stopRecording();
@@ -1130,8 +1142,7 @@ class App {
   }
 
   private startRecording() {
-    if(this.mapPreparing||this.pendingMap){this.panel.setRecordInfo('Wait for the map to finish loading.');return;}
-    if(this.pendingViewRestore||this.viewRestoreAbort){this.panel.setRecordInfo('Wait for the saved view to finish restoring.');return;}
+    if(this.updateCaptureNavigationNotice(true))return;
     if (this.recordStarting || this.rec || !this.model || this.exporting) return;
     if (this.timeline.isOpen) this.closeReview();
     if (this.dialog.isOpen) this.dialog.close();
@@ -1229,8 +1240,7 @@ class App {
 
   // ---- review (timeline) ----------------------------------------------------
   private openReview() {
-    if(this.mapPreparing||this.pendingMap){this.panel.setRecordInfo('Wait for the map to finish loading.');return;}
-    if(this.pendingViewRestore||this.viewRestoreAbort){this.panel.setRecordInfo('Wait for the saved view to finish restoring.');return;}
+    if(this.updateCaptureNavigationNotice(true))return;
     const take = this.take, tm = this.takeModel;
     if (!take || !tm || this.exporting) return;
     this.cancelScreenshot();

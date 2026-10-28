@@ -276,6 +276,8 @@ async function desktop(page, base, directory) {
   await page.locator('#policy-manager').waitFor({ state: 'visible' });
   const packCards = await page.locator('#policy-manager .pack-card').count();
   await page.getByRole('button', { name: 'Close policy packs', exact: true }).click();
+  const referenceCollapse = page.locator('#capture-window .floating-collapse');
+  if (await referenceCollapse.getAttribute('aria-expanded') !== 'true') await referenceCollapse.click();
   const csvChooser = await fileEventFrom(page, 'filechooser', () => page.getByRole('button', { name: 'Load CSV…', exact: true }).click());
   await csvChooser.setFiles([]);
   const damping = page.getByRole('radiogroup', { name: 'FSM state', exact: true }).getByRole('radio', { name: 'Damp', exact: true });
