@@ -42,17 +42,31 @@ weights must be converted to `.onnx` before packing.
 - `robot` — the robot or variant the pack was built for. Use a supported
   identifier; changing this label does not make a policy compatible with another robot.
 - `group` — the obs-scheme label the picker clusters policies under.
-- `baseName` — the pack id and policy display name (`baseName@id` when a pack
-  holds several checkpoints).
+- `baseName` — the stable pack and policy identifier (`baseName@id` when a
+  pack holds several checkpoints).
 
-## Bundles (share a whole set)
+## Build a bundle
 
-A **bundle** is simply a `.zip` whose entries are pack `.zip`s — one file per
-robot model (`g1-all.zip`, `r1-all.zip`, `go2-all.zip`, built by
-`node scripts/build-packs.mjs --robot <g1|r1|go2>`). Upload it to any file host;
-whoever downloads it imports the **one** file and gets every pack at once. The
-importer auto-detects single pack vs bundle (a bundle has no top-level
-`pack.json`).
+A bundle is a ZIP of pack ZIPs. With compatible registry configurations, ONNX
+weights and required auxiliary files in your input checkout, run:
+
+```sh
+node scripts/build-packs.mjs --robot r1 --public . --out policy-packs/generated
+```
+
+`--public` selects the input checkout root, not its `public/` directory. Use
+`g1`, `r1` or `go2` for the corresponding registry. This example writes pack
+ZIPs under `policy-packs/generated/r1/` and the bundle to
+`policy-packs/generated/r1-all.zip`.
+
+Use a dedicated output directory: rebuilding removes stale ZIPs from the
+selected robot's directory. Back up hand-authored packs first. Check skipped-entry
+warnings; a completed command can still produce only part of the registry.
+
+The browser detects single packs and bundles automatically; a bundle has no
+top-level `pack.json`. Importing it adds its included packs, not missing
+configurations or weights. See the main [policy guide](../README.md#robot-policies)
+for optional hosted R1 catalogs and their redistribution requirements.
 
 Imported packs persist in the browser (IndexedDB); remove them any time from
 the Policy manager.

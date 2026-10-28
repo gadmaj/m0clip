@@ -33,6 +33,11 @@ characters, or adapt that catalog to the characters you can provide, before
 running development or build commands. Selecting Original at runtime does not
 remove these build-time imports.
 
+A permitted `public/assets/source/flashlight.png` is also required, even on a
+built-in terrain with Original selected and the flashlight off. Prepare it before
+development or build. The Source importer extracts it only when the selected
+asset mount contains `materials/effects/flashlight001.vtf`.
+
 ## Install and develop
 
 ```sh
@@ -48,7 +53,7 @@ python3 -m venv .venv
 runtime into `public/wasm/`. Do not skip install scripts unless you perform that
 copy yourself with `node scripts/copy-ort-wasm.mjs`.
 
-After preparing the character inputs above:
+After preparing the character inputs and flashlight texture above:
 
 ```sh
 npm run dev
@@ -58,10 +63,10 @@ Open the URL printed by Vite in Chrome or Chromium. Vite sets the isolation
 headers required by the simulator. Use the development server rather than
 opening `index.html` with `file://`.
 
-Built-in terrains do not require converted game maps. Choose one and the
-Original robot to avoid runtime dependencies on imported map and character
-binaries. Without a compatible policy pack, physics can run without a learned
-walking controller; character appearance does not supply one.
+Built-in terrains avoid converted game maps; Original avoids imported character
+binaries. Neither removes the asset prerequisites above. Without a compatible
+policy pack, physics can run without a learned walking controller; character
+appearance does not supply one.
 
 ## Supply your own assets
 
@@ -102,15 +107,11 @@ node scripts/package_map.mjs public/assets/maps/my_map \
   --output my_map.map.zip --name "My map" --game "Source"
 ```
 
-The packager requires Linux with `/proc/self/fd` and rejects symlinked input
-directories or files. It includes the selected world and props models, textures and physics,
-checks their contents, and never overwrites an existing ZIP. The resulting
-bundle is portable; the browser does not need Linux. Truncated compressed entries
-and entries with trailing compressed data are rejected.
-Inline physics data, repeated file references and uppercase GLB/glTF/XML extensions
-are supported without changing resource filenames.
-Unsafe paths and excessively complex dependency metadata are rejected before
-the map becomes active.
+The packager requires Linux with `/proc/self/fd`, rejects symlinked inputs and
+checks the selected world, props, texture and physics dependencies. It never
+overwrites an existing ZIP; output must stay below **4 GiB** (ZIP32). Bundles are
+portable—the browser does not need Linux. Unsafe paths and excessively complex
+dependency metadata are rejected before a map becomes active.
 
 Choose **Open map bundle…** in the map gallery. Files are checked locally in a
 dedicated worker, not uploaded. Cancel verification before installation to keep
@@ -151,31 +152,50 @@ separate PNG stills. A rest-pose turntable is not a motion or controller demo.
 Remote player models keep their upstream still pictures; browsing does not
 download unselected models or imply permission to publish new animations.
 
-To prepare previews for assets you already have permission to publish,
-[`generate-character-turntables.py`](scripts/generate-character-turntables.py)
-runs in Blender with an explicit `--job` JSON. The job supplies a new output
-directory, frame count/rate, and `characters` entries containing `id`, `input`,
-`sha256`, `approvedRuntimeAsset` and `attribution`. It renders a full camera orbit
-around each GLB's native rest pose. The encoder emits `turntable.gif` and
-`still.min.png`; GIF palette reduction is lossy, while PNG recompression preserves
-decoded pixels. Keep generation receipts private; add only approved image URLs
-and captions to [`animated-preview-catalog.json`](src/ui/animated-preview-catalog.json).
-
 Policy animations require captures from the exact robot and checkpoint, not
 motion inferred from a policy name. Where no such capture exists, the gallery
 labels the robot-only picture rather than implying policy playback.
 
-[`generate-policy-previews.cjs`](scripts/generate-policy-previews.cjs) captures
-controller motion from your running build. Set `BASE_URL` and a private
-`PREVIEW_OUTPUT`; supply an approved pack job with its SHA-256, exact robot and
-policy, frame count/rate and attribution. The helper retains actual joint states
-and simulation timestamps and checks the robot, checkpoint and joint identity.
-Publish only the approved GIF, still and attribution—not its receipts.
+<details>
+<summary>Prepare gallery previews (optional)</summary>
 
-For bounded artwork jobs, set `PREVIEW_BUDGET_ROOT` and byte values for
-`PREVIEW_BUDGET_BYTES`, `PREVIEW_MIN_FREE_BYTES` and `PREVIEW_RESERVE_BYTES`.
-Keep `PREVIEW_OUTPUT` inside that root; the encoder rejects output paths outside
-it. This budget covers retained job files, not browser memory.
+For assets you have permission to publish,
+[`generate-character-turntables.py`](scripts/generate-character-turntables.py)
+runs in Blender with an explicit `--job` JSON. Supply a new output directory,
+frame count/rate and `characters` entries containing `id`, `input`, `sha256`,
+`approvedRuntimeAsset` and `attribution`. It orbits each GLB's native rest pose.
+The encoder emits `turntable.gif` and `still.min.png`: GIF palette reduction is
+lossy; PNG recompression preserves decoded pixels.
+
+[`generate-policy-previews.cjs`](scripts/generate-policy-previews.cjs) captures
+controller motion from your running build. Its JSON job supplies
+`approvedRuntimeAsset`, `robot`, `policy`, `pack`, `packSHA256` and `attribution`;
+use `frames` and `fps` to set the capture length and rate. It checks the actual
+robot, checkpoint and joint identity and retains joint states and simulation times.
+
+Install Playwright separately so Node can resolve it, or set `PLAYWRIGHT_MODULE`
+to its installed module path; `npm ci` does not install it. Set `CHROMIUM_PATH`
+if Chrome is not at the helper's default `/usr/bin/google-chrome`. Use the Pillow
+virtual environment and pass the job filename as a positional argument:
+
+```sh
+PYTHON="$PWD/.venv/bin/python" BASE_URL=http://localhost:4173 \
+  PREVIEW_OUTPUT=/path/to/new-output \
+  node scripts/generate-policy-previews.cjs /path/to/job.json
+```
+
+`PREVIEW_OUTPUT` must be a new directory outside `public/`; its parent must exist.
+For bounded jobs, create the budget root first, then set `PREVIEW_BUDGET_ROOT`,
+`PREVIEW_BUDGET_BYTES` (retained-file cap), `PREVIEW_MIN_FREE_BYTES` (disk-space
+floor) and `PREVIEW_RESERVE_BYTES` (space for final files). Choose a fresh child
+output directory inside that root. The budget covers retained files, not browser
+memory.
+
+Keep generation receipts private. Publish only approved GIFs, stills and
+attribution; add their URLs and captions to
+[`animated-preview-catalog.json`](src/ui/animated-preview-catalog.json).
+
+</details>
 
 ### Robot policies
 
@@ -189,6 +209,19 @@ loader for arbitrary neural networks.
 
 Some motion clips run once, then switch to their configured next policy.
 Re-select a clip to play it again.
+
+If you have compatible local registry, YAML, ONNX and auxiliary inputs, the
+optional producer can build a bundle:
+
+```sh
+node scripts/build-packs.mjs --robot r1 --public . --out policy-packs/generated
+```
+
+Despite its name, `--public` is the **input checkout root**, not its `public/`
+folder. This writes `policy-packs/generated/r1-all.zip` and individual pack ZIPs.
+Use a dedicated output directory: stale ZIPs there are removed. Inspect warnings
+for skipped inputs; a successful command can produce a partial catalog. See the
+[policy-pack guide](policy-packs/README.md) for the input and output contract.
 
 For an optional hosted R1 catalog, provide your own compatible R1 bundle before
 building, replacing the example input path with your file:
@@ -284,19 +317,16 @@ Choose a map and character, then **Load scene**. The scene controls and **? Help
 list movement, camera and capture actions. Record takes, review them in Timeline
 and download saved files for backup.
 
-Loading first resolves the selected scene, model, appearance and policy. Selected
-external player models may need to finish downloading during this planning step;
-their prepared data is reused. Before the remaining scene downloads begin, the
-loader fixes its **scene asset payload** maximum. **MB LEFT** and download ETA use
-unique HTTP-decoded resources, including bytes read from browser cache—not billed
-network traffic or inflated texture/mesh memory. Transport compression can reduce
-wire bytes without changing this maximum. A full byte meter does not mean physics
-compilation or material preparation has finished; **Enter scene** waits for the
-simulation, visuals and a rendered frame. Expand **Details** for actual transfers
-and readiness. Pong appears only if an unfinished load lasts more than 30 seconds.
-Local-map verification is listed separately from downloads. Local file bytes and
-optional reader code already loaded during file selection do not increase the
-later scene download total.
+Loading plans the selected scene, model, appearance and policy. External player
+models may download during planning; their prepared data is reused. Before the
+remaining transfers, the loader fixes its **scene asset payload** maximum:
+unique HTTP-decoded resources, including cache reads—not wire traffic or GPU/RAM
+use. A full meter is not readiness: **Enter scene** also waits for simulation,
+visuals and a rendered frame. Expand **Details** for transfers and readiness.
+Pong appears only when an unfinished load exceeds 30 seconds.
+
+Local-map verification, local file bytes and optional reader code loaded during
+file selection are separate from the later scene download total.
 
 Open **Camera / output** before recording to set the static camera, lens and output
 format. **Scene** remains available above setup for look, parts, lighting and
