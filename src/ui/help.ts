@@ -111,10 +111,6 @@ export class HelpDialog {
     note.className = 'help-note';
     note.textContent = 'Shortcuts do not apply while typing in a field. Escape closes Help; Tab moves between its controls.';
     this.content.append(note);
-    if (this.options.storageConsent) {
-      this.content.append(this.options.storageConsent.helpSection);
-      void this.options.storageConsent.refresh();
-    }
     for (const section of ordered) {
       const element = document.createElement('section');
       const heading = document.createElement('h3');
@@ -139,6 +135,10 @@ export class HelpDialog {
       }
       element.append(list);
       this.content.append(element);
+    }
+    if (this.options.storageConsent) {
+      this.content.append(this.options.storageConsent.helpSection);
+      void this.options.storageConsent.refresh();
     }
     if (!this.dialog.isConnected) document.body.append(this.dialog);
     this.dialog.showModal();

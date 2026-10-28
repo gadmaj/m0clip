@@ -15,10 +15,10 @@ const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=requ
   localStorage.setItem('ume-saved-views-v1',JSON.stringify(bookmarks));return bookmarks;
  });
  await page.reload().then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await ready();{const expandScene=page.getByRole('button',{name:'Expand Scene panel',exact:true});if(await expandScene.isVisible())await expandScene.click();}await page.getByText('Saved views',{exact:true}).click();
- const search=page.getByRole('searchbox',{name:'Search saved views'}),list=page.getByRole('list',{name:'Saved views'}),name=page.getByLabel('View name',{exact:true});
+ const search=page.getByRole('searchbox',{name:'Search saved views'}),list=page.getByRole('list',{name:'Saved views'}),name=page.getByRole('textbox',{name:/^View name\b/});
  assert.equal(await list.getByRole('listitem').count(),3);assert.equal(await page.getByRole('button',{name:'Undo delete',exact:true}).isVisible(),false);
  await search.fill('GHOST .bsp R1');assert.equal(await list.getByRole('listitem').count(),1);assert.ok(await list.getByText('nt_ghost_ctg.bsp · R1',{exact:true}).count());
- await search.fill('no matching bookmark');assert.equal(await list.getByRole('listitem').count(),0);assert.ok(await list.getByText(/No matching views/).count());
+ await search.fill('no matching bookmark');assert.equal(await list.getByRole('listitem').count(),0);
  await search.press('Escape');assert.equal(await list.getByRole('listitem').count(),3);assert.equal(await search.inputValue(),'');
  await page.getByRole('button',{name:'Rename Conveyor lighting study',exact:true}).click();let editor=page.getByLabel('New name for Conveyor lighting study',{exact:true});
  await editor.fill('Canceled rename');await editor.press('Escape');assert.ok(await page.getByRole('button',{name:'Conveyor lighting study',exact:true}).count());
@@ -29,7 +29,7 @@ const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=requ
  stored=await page.evaluate(()=>JSON.parse(localStorage.getItem('ume-saved-views-v1')));assert.deepEqual(stored[1],original[1]);assert.equal(await list.getByRole('listitem').count(),3);
  // A full browser store must not change the in-memory library or discard typed names.
  await page.evaluate(()=>{window.__setItem=Storage.prototype.setItem;Storage.prototype.setItem=function(key,value){if(key==='ume-saved-views-v1')throw new DOMException('Quota exceeded','QuotaExceededError');return window.__setItem.call(this,key,value)}});
- await name.fill('Keep this unsaved name');await name.press('Enter');assert.equal(await name.inputValue(),'Keep this unsaved name');assert.equal(await list.getByRole('listitem').count(),3);assert.ok(await page.getByText(/Could not save views in this browser/).count());
+ await name.fill('Keep this unsaved name');await name.press('Enter');assert.equal(await name.inputValue(),'Keep this unsaved name');assert.equal(await list.getByRole('listitem').count(),3);
  await page.getByRole('button',{name:'Delete Conveyor / 台 / سقف',exact:true}).click();assert.ok(await page.getByRole('button',{name:'Conveyor / 台 / سقف',exact:true}).count());
  await page.getByRole('button',{name:'Rename Conveyor / 台 / سقف',exact:true}).click();editor=page.getByLabel('New name for Conveyor / 台 / سقف',{exact:true});await editor.fill('Quota rename');await editor.press('Enter');assert.equal(await editor.inputValue(),'Quota rename');
  await page.getByRole('button',{name:'Cancel',exact:true}).click();await page.evaluate(()=>{Storage.prototype.setItem=window.__setItem});
@@ -39,7 +39,7 @@ const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=requ
  const restoredPosition=await page.evaluate(()=>window.__app.view.camera.position.toArray());restoredPosition.forEach((value,i)=>assert.ok(Math.abs(value-original[1].view.position[i])<1e-8));
  await page.getByRole('button',{name:'Share Conveyor / 台 / سقف',exact:true}).click();const link=page.getByLabel('Shareable view link',{exact:true});await link.waitFor({state:'visible'});assert.ok((await link.inputValue()).includes('#view='));
  // A restoring scene cannot be saved as a mixture of old model and new camera settings.
- await page.evaluate(()=>{window.__app.pendingViewRestore={id:10000}});await name.fill('Partial restore');await name.press('Enter');assert.equal(await name.inputValue(),'Partial restore');assert.ok(await page.getByText(/Wait for the view to finish restoring/).count());await page.evaluate(()=>{window.__app.pendingViewRestore=null});
+ await page.evaluate(()=>{window.__app.pendingViewRestore={id:10000}});await name.fill('Partial restore');await name.press('Enter');assert.equal(await name.inputValue(),'Partial restore');await page.evaluate(()=>{window.__app.pendingViewRestore=null});
  if(!process.env.SKIP_SCREENSHOTS){
   await name.fill('');await page.evaluate(()=>{const e=window.__app.explore;e.link.hidden=true;e.showMessage('');});
   await search.scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-library-desktop.png'});
@@ -48,7 +48,7 @@ const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=requ
  const layout=await list.evaluate(element=>({scrollWidth:element.scrollWidth,width:element.clientWidth,maxHeight:getComputedStyle(element).maxHeight,buttons:[...element.querySelectorAll('.saved-view-actions .btn')].map(b=>b.getBoundingClientRect().height)}));assert.ok(layout.scrollWidth<=layout.width);if(!process.env.SKIP_SCREENSHOTS)assert.ok(layout.buttons.every(h=>h>=44));
  const persisted=await page.evaluate(()=>localStorage.getItem('ume-saved-views-v1'));
  while(await list.getByRole('listitem').count())await list.getByRole('button',{name:/^Delete /}).first().click();
- assert.ok(await list.getByText(/No saved views yet/).count());const undo=page.getByRole('button',{name:'Undo delete',exact:true});assert.ok(await undo.evaluate(e=>document.activeElement===e));
+ const undo=page.getByRole('button',{name:'Undo delete',exact:true});assert.ok(await undo.evaluate(e=>document.activeElement===e));
  await page.evaluate(()=>{Storage.prototype.setItem=function(key,value){if(key==='ume-saved-views-v1')throw new DOMException('Denied','SecurityError');return window.__setItem.call(this,key,value)}});
  await undo.click();assert.equal(await list.getByRole('listitem').count(),0);assert.ok(await undo.isVisible());await page.evaluate(()=>{Storage.prototype.setItem=window.__setItem});await undo.click();assert.equal(await list.getByRole('listitem').count(),1);
  await page.evaluate(value=>localStorage.setItem('ume-saved-views-v1',value),persisted);

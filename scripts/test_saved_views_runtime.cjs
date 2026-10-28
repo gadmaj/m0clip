@@ -33,7 +33,7 @@ const {chooseVisual}=require('./choose-visual.cjs');
       a.view.camera.position.set(2,3,4);a.view.controls.target.set(-1,0,1);a.view.camera.lookAt(a.view.controls.target);a.view.camera.rotateZ(.37);a.view.camera.fov=72;a.view.camera.updateProjectionMatrix();a.flight.setActive(true);
       a.explore.setDisplay({textures:true,wireframe:false,map:true,robot:true,decals:false});return a.captureView();
     });
-    await page.getByText('Saved views',{exact:true}).click();await page.getByLabel('View name',{exact:true}).fill('Dog inspection');await page.getByRole('button',{name:'Save view',exact:true}).click();
+    await page.getByText('Saved views',{exact:true}).click();await page.getByRole('textbox',{name:/^View name\b/}).fill('Dog inspection');await page.getByRole('button',{name:'Save view',exact:true}).click();
     await page.evaluate(()=>{const a=window.__app;a.look.setState({...a.look.getState(),antialiasing:'none'});a.look.restoreAppearance(a.viewModel.robot,{colorway:'product',sourceBody:'stock',parts:{},robotLight:{brightness:0,color:0xffffff,range:5,dull:true}});a.setNoclip(false);a.setFlashlight(false);a.flight.speed=12;a.flight.hover=false;a.view.camera.position.set(8,8,8);});
     await page.getByRole('button',{name:'Dog inspection',exact:true}).click();await restored(page);await page.waitForTimeout(150);await matches(page,saved);
     assert.equal(await page.evaluate(()=>window.__app.view.getBodyVisualState().applied),'dog');
@@ -83,7 +83,7 @@ const {chooseVisual}=require('./choose-visual.cjs');
     await race.evaluate(view=>{void window.__app.explore.restoreView(view)},saved);await race.waitForFunction(()=>window.__app.view.getBodyVisualState().loading);
     await chooseVisual(race,'robot','go2');assert.equal(await race.evaluate(()=>!!window.__app.pendingViewRestore),false);release();
     await race.waitForFunction(()=>window.__app.viewModel?.robot==='go2');await race.waitForTimeout(150);assert.equal(await race.evaluate(()=>window.__app.noclip),false);assert.equal(await race.evaluate(()=>window.__app.view.getBodyVisualState().applied),'stock');
-    if(!process.env.SKIP_SCREENSHOTS){await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-views-desktop.png'});await page.setViewportSize({width:390,height:844});await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-views-mobile.png'});}
+    if(!process.env.SKIP_SCREENSHOTS){await page.getByRole('textbox',{name:/^View name\b/}).scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-views-desktop.png'});await page.setViewportSize({width:390,height:844});await page.getByRole('textbox',{name:/^View name\b/}).scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-views-mobile.png'});}
     const bounds=await page.getByRole('button',{name:'Dog inspection',exact:true}).boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<= (process.env.SKIP_SCREENSHOTS?1440:390));
     assert.deepEqual(errors,[]);console.log(JSON.stringify({savedAppearance:true,sourceHead:true,robotLight:true,roll:true,flight:true,freshLink:true,crossModelTerrain:true,recordingGuard:true,reviewGuard:true,exportGuard:true,legacy:true,latestSelection:true,manualNavigationCancels:true,bounds,errors}));
   }finally{await browser.close();}
