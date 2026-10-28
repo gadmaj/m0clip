@@ -127,7 +127,7 @@ export class ExplorePanel {
     const views = fold(parent, 'Saved views');
     this.viewScope = document.createElement('div'); this.viewScope.className = 'sub'; this.viewScope.textContent = 'LIVE';
     views.append(this.viewScope);
-    const name = document.createElement('input'); name.type = 'text'; name.placeholder = 'View name'; name.setAttribute('aria-label', 'View name');
+    const name = document.createElement('input'); name.type = 'text'; name.placeholder = 'View name (optional)'; name.setAttribute('aria-label', 'View name (optional)');
     name.maxLength = 80; name.style.minWidth = '0'; name.style.flex = '1';
     const saveRow = document.createElement('div'); saveRow.className = 'row';
     const save=()=>{
@@ -161,7 +161,7 @@ export class ExplorePanel {
     this.link.setAttribute('aria-label', 'Shareable view link'); this.link.style.width = '100%';
     this.link.style.marginTop = '6px';
     const help = document.createElement('p'); help.className = 'saved-view-state';
-    help.textContent = 'Saves the camera, robot appearance, lighting and flight settings. Press C to follow the robot again. Links need the same map and robot assets on the receiving server.';
+    help.textContent = 'Saves the camera, robot appearance, lighting and flight settings. In LIVE, C resumes robot follow outside Flight. Links need the same map and robot assets on the receiving server.';
     const shareRow = document.createElement('div'); shareRow.className = 'row';
     const shareButton = button('Share current view', () => {
       const unavailable = this.viewUnavailable();
@@ -193,7 +193,6 @@ export class ExplorePanel {
     this.setDisplay(display);
     this.shotChanged = changed;
     this.renderScope.textContent = 'SHOT';
-    this.viewScope.textContent = 'LIVE · Close timeline to restore a saved view.';
     this.syncViewControls();
   }
 
@@ -204,7 +203,6 @@ export class ExplorePanel {
     if (live) this.setDisplay(live);
     this.liveDisplay = null;
     this.renderScope.textContent = 'LIVE';
-    this.viewScope.textContent = 'LIVE';
     this.syncViewControls();
   }
 
@@ -215,12 +213,13 @@ export class ExplorePanel {
   }
 
   private viewUnavailable(): string | null {
-    return this.readOnly ? 'Saved views are locked during export.'
-      : this.liveDisplay ? 'LIVE · Close timeline to save or restore a view.' : null;
+    return this.readOnly ? 'LIVE · Finish export to save/share the current view or restore one.'
+      : this.liveDisplay ? 'LIVE · Close Timeline to save/share the current view or restore one.' : null;
   }
 
   private syncViewControls(): void {
     const reason = this.viewUnavailable();
+    this.viewScope.textContent = reason ?? 'LIVE';
     for (const control of [...this.liveViewControls, ...this.list.querySelectorAll<HTMLButtonElement>('.saved-view-restore')]) {
       control.disabled = !!reason;
       if (reason) control.setAttribute('aria-description', reason);
@@ -265,7 +264,7 @@ export class ExplorePanel {
     this.results.textContent=tokens.length?`${matches.length} of ${this.bookmarks.length} saved views`:`${this.bookmarks.length} saved ${this.bookmarks.length===1?'view':'views'}`;
     this.results.hidden=!this.bookmarks.length&&!tokens.length;
     if (!this.bookmarks.length) {
-      const empty = document.createElement('p'); empty.className = 'saved-view-state'; empty.textContent = 'No saved views. Enter a name and select Save view.';
+      const empty = document.createElement('p'); empty.className = 'saved-view-state'; empty.textContent = 'No saved views. Select Save view to save this camera and settings.';
       this.list.append(empty); return;
     }
     if(!matches.length){const empty=document.createElement('p');empty.className='saved-view-state';empty.textContent='No matching views. Try another name, map file or robot.';this.list.append(empty);return}
