@@ -74,6 +74,25 @@ export class ShotLibrary {
     } finally { db.close(); }
   }
 
+  /** Name-only edit in the small metadata store. Autosave updates keep whichever name is committed. */
+  async rename(id: string, name: string): Promise<SavedShotInfo> {
+    if (typeof id !== 'string' || !id) throw invalid();
+    const label = typeof name === 'string' ? name.trim() : '';
+    if (!label) throw new Error('Name is empty. Enter a name.');
+    const db = await connect();
+    try {
+      return await transact<SavedShotInfo>(db, ['shots'], 'readwrite', (tx, request, result) => {
+        const store = tx.objectStore('shots');
+        request(store.get(id), (record: ShotRecord | undefined) => {
+          if (!record) throw new Error('Saved shot no longer exists.');
+          if (!object(record) || record.id !== id || !validInfo(record.info) || record.info.id !== id || !validMeta(record.meta)) throw invalid();
+          record.info.name = label; record.info.updated = new Date().toISOString();
+          store.put(record); result(record.info);
+        });
+      });
+    } finally { db.close(); }
+  }
+
   async list(): Promise<SavedShotInfo[]> {
     const db = await connect();
     try {

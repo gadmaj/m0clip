@@ -13,13 +13,16 @@ export interface ShotLibraryHost {
   recoveries: RecordingRecovery;
   open: (saved: SavedShot, signal: AbortSignal) => void | Promise<void>;
   deleted: (id: string) => void;
+  /** A take rename has committed in storage. Delivered even if this dialog session has since closed or reopened. */
+  takeRenamed: (id: string, name: string) => void;
   blocked: () => string | null;
   modalChanged: (open: boolean) => void;
 }
 
 type Entry = { kind: 'take'; info: SavedShotInfo } | { kind: 'photo'; info: SavedPhotoInfo } | { kind: 'recovery'; info: RecordingRecoveryInfo };
-type Card = { entry: Entry; root: HTMLElement; preview: HTMLElement; loaded: boolean };
-type Operation = { session: number; kind: 'open' | 'backup' | 'delete'; controller:AbortController };
+type Card = { entry: Entry; root: HTMLElement; preview: HTMLElement; name: HTMLElement; actions: HTMLElement; rename: HTMLButtonElement | null; loaded: boolean };
+type Operation = { session: number; kind: 'open' | 'backup' | 'delete' | 'rename'; controller:AbortController };
+type Rename = { card: Card; form: HTMLFormElement; input: HTMLInputElement; error: HTMLElement; cancel: HTMLButtonElement };
 
 function button(text: string, action: () => void, className = 'btn'): HTMLButtonElement {
   const result = document.createElement('button');
@@ -62,9 +65,13 @@ export class ShotLibraryDialog {
   private viewing: SavedPhoto | null = null;
   private photoUrl: string | null = null;
   private photoOpener: HTMLButtonElement | null = null;
+  private renaming: Rename | null = null;
+  /** Restores the confirmation and focus when a deferred refresh replaces the renamed card. */
+  private renamed: { kind: Entry['kind']; id: string } | null = null;
+  private readonly baseId: string;
 
   constructor(parent: HTMLElement, private readonly host: ShotLibraryHost) {
-    const id = `shot-library-${++ShotLibraryDialog.nextId}`;
+    const id = this.baseId = `shot-library-${++ShotLibraryDialog.nextId}`;
     this.dialog.className = 'shot-library-dialog';
     this.dialog.setAttribute('aria-labelledby', `${id}-title`);
     this.title.id = `${id}-title`; this.title.textContent = 'Shots'; this.title.tabIndex = -1;
@@ -114,7 +121,8 @@ export class ShotLibraryDialog {
     this.dialog.addEventListener('keydown', event => this.onKey(event));
     this.dialog.addEventListener('cancel', event => {
       event.preventDefault();
-      if (this.deleting && !this.operation) this.cancelConfirmation(); else this.close();
+      if (this.renaming && !this.operation) this.cancelRename();
+      else if (this.deleting && !this.operation) this.cancelConfirmation(); else this.close();
     });
     this.dialog.addEventListener('close', () => {
       if (!this.dialog.open) this.finishClose();
@@ -157,6 +165,7 @@ export class ShotLibraryDialog {
     this.active = false; ++this.session; ++this.listRequest;
     this.operation?.controller.abort();
     this.loading = false; this.pendingRefresh = false; this.deleting = null; this.deleteOpener = null;
+    this.renaming = null; this.renamed = null;
     this.confirmation.hidden = true; this.grid.hidden = false;
     this.clearPhoto(); this.search.hidden = false; this.refreshButton.hidden = false;
     this.photoOpener = null;
@@ -170,7 +179,7 @@ export class ShotLibraryDialog {
 
   refresh(): void {
     if (!this.isOpen) return;
-    if (this.operation || this.deleting || this.viewing) {
+    if (this.operation || this.deleting || this.viewing || this.renaming) {
       this.pendingRefresh = true; this.syncControls();
       return;
     }
@@ -207,6 +216,13 @@ export class ShotLibraryDialog {
     } finally {
       if (this.current(session) && request === this.listRequest) {
         this.loading = false; this.syncControls(); this.filter();
+        const renamed = this.renamed; this.renamed = null;
+        if (renamed && this.status.dataset.error !== 'true') {
+          const card = this.cards.find(item => item.entry.kind === renamed.kind && item.entry.info.id === renamed.id);
+          this.setStatus('Name saved.');
+          if (card?.rename && !card.root.hidden) card.rename.focus({ preventScroll: true });
+          else this.search.focus({ preventScroll: true });
+        }
       }
     }
   }
@@ -217,7 +233,7 @@ export class ShotLibraryDialog {
     root.dataset.shotKind = entry.kind;
     const preview = document.createElement('div'); preview.className = 'shot-library-preview';
     preview.textContent = entry.kind === 'recovery' ? 'Recording recovery' : info.thumbnail ? 'Preview loading…' : 'Preview unavailable';
-    const name = document.createElement('h3'); name.textContent = info.name || 'Untitled shot';
+    const name = document.createElement('h3');
     const scene = document.createElement('p'); scene.className = 'shot-library-scene';
     scene.textContent = `${info.robot} · ${info.terrain}`;
     const details = document.createElement('p'); details.className = 'shot-library-details';
@@ -235,14 +251,124 @@ export class ShotLibraryDialog {
     }
     details.append(description, date);
     const actions = document.createElement('div'); actions.className = 'shot-library-actions';
-    const open = button('Open', () => { this.photoOpener = open; void this.run('open', entry); }); open.dataset.shotAction = 'open';
-    const backup = button(entry.kind === 'photo' ? 'Save PNG' : 'Save ZIP', () => { void this.run('backup', entry); }); backup.dataset.shotAction = 'backup';
-    const remove = button('Delete', () => this.askDelete(entry, remove), 'btn danger'); remove.dataset.shotAction = 'delete';
-    for (const action of [open, backup, remove]) action.setAttribute('aria-label', `${action.textContent}: ${name.textContent}`);
-    actions.append(open, backup, remove); root.append(preview, name, scene, details, actions);
+    // Actions read card.entry when activated, so an in-place rename reaches every later action.
+    const card: Card = { entry, root, preview, name, actions, rename: null, loaded: false };
+    const open = button('Open', () => { this.photoOpener = open; void this.run('open', card.entry); }); open.dataset.shotAction = 'open';
+    const backup = button(entry.kind === 'photo' ? 'Save PNG' : 'Save ZIP', () => { void this.run('backup', card.entry); }); backup.dataset.shotAction = 'backup';
+    const remove = button('Delete', () => this.askDelete(card.entry, remove), 'btn danger'); remove.dataset.shotAction = 'delete';
+    actions.append(open, backup);
+    if (entry.kind !== 'recovery') {
+      card.rename = button('Rename', () => this.startRename(card)); card.rename.dataset.shotAction = 'rename';
+      actions.append(card.rename);
+    }
+    actions.append(remove); root.append(preview, name, scene, details, actions);
+    this.showName(card);
     this.grid.append(root);
-    const card = { entry, root, preview, loaded: false }; this.cards.push(card);
+    this.cards.push(card);
     this.observer?.observe(root);
+  }
+
+  private showName(card: Card): void {
+    const name = card.entry.info.name || 'Untitled shot';
+    card.name.textContent = name;
+    for (const action of card.actions.querySelectorAll('button')) action.setAttribute('aria-label', `${action.textContent}: ${name}`);
+  }
+
+  private startRename(card: Card): void {
+    if (card.entry.kind === 'recovery' || !card.rename || this.renaming || this.deleting || !this.canAct()) return;
+    const form = document.createElement('form'); form.className = 'shot-library-rename'; form.noValidate = true;
+    const label = document.createElement('label'); label.textContent = 'Name';
+    const input = document.createElement('input'); input.type = 'text'; input.className = 'shot-library-rename-input';
+    input.id = label.htmlFor = `${this.baseId}-rename-input`;
+    input.value = card.entry.info.name; input.autocomplete = 'off'; input.spellcheck = false; input.enterKeyHint = 'done';
+    const error = document.createElement('p'); error.className = 'shot-library-rename-error';
+    error.id = `${this.baseId}-rename-error`; error.hidden = true; error.setAttribute('aria-live', 'polite');
+    input.setAttribute('aria-describedby', error.id);
+    const save = document.createElement('button'); save.type = 'submit'; save.className = 'btn'; save.textContent = 'Save';
+    save.dataset.shotAction = 'rename-save'; save.setAttribute('aria-label', 'Save name');
+    const cancel = button('Cancel', () => this.cancelRename()); cancel.dataset.shotAction = 'rename-cancel';
+    cancel.setAttribute('aria-label', 'Cancel rename');
+    const formActions = document.createElement('div'); formActions.className = 'shot-library-actions';
+    formActions.append(save, cancel); form.append(label, input, error, formActions);
+    const state: Rename = { card, form, input, error, cancel };
+    form.addEventListener('submit', event => { event.preventDefault(); void this.submitRename(state); });
+    input.addEventListener('input', () => this.renameError(state, ''));
+    this.renaming = state;
+    card.name.hidden = true; card.actions.hidden = true; card.name.after(form);
+    this.setStatus(''); this.syncControls();
+    input.focus({ preventScroll: true }); input.select();
+  }
+
+  private renameError(state: Rename, text: string): void {
+    state.error.textContent = text; state.error.hidden = !text;
+    if (text) state.input.setAttribute('aria-invalid', 'true'); else state.input.removeAttribute('aria-invalid');
+  }
+
+  private endRename(state: Rename): void {
+    state.form.remove(); state.card.name.hidden = false; state.card.actions.hidden = false;
+    if (this.renaming === state) this.renaming = null;
+  }
+
+  private cancelRename(): void {
+    const state = this.renaming;
+    if (!state || this.operation) return;
+    this.endRename(state);
+    this.setStatus(''); this.syncControls(); this.filter();
+    if (this.pendingRefresh) { this.refresh(); this.search.focus({ preventScroll: true }); }
+    else this.focusRename(state.card);
+  }
+
+  private focusRename(card: Card): void {
+    if (card.rename?.isConnected && !card.root.hidden) card.rename.focus({ preventScroll: true });
+    else this.search.focus({ preventScroll: true });
+  }
+
+  private async submitRename(state: Rename): Promise<void> {
+    if (this.renaming !== state || this.operation) return;
+    // Name and identity are captured before any await; later edits or refreshes cannot retarget this write.
+    const name = state.input.value.trim(), entry = state.card.entry;
+    if (entry.kind === 'recovery') return;
+    if (!name) { this.renameError(state, 'Enter a name.'); state.input.focus({ preventScroll: true }); return; }
+    if (name === entry.info.name) { this.cancelRename(); return; }
+    if (!this.canAct()) return;
+    const operation: Operation = { session: this.session, kind: 'rename', controller: new AbortController() };
+    this.operation = operation; this.renameError(state, ''); state.input.readOnly = true;
+    this.setStatus('Saving name…'); this.syncControls();
+    let saved = false;
+    try {
+      let next: Entry;
+      try {
+        next = entry.kind === 'photo'
+          ? { kind: 'photo', info: await this.host.photos.rename(entry.info.id, name) }
+          : { kind: 'take', info: await this.host.library.rename(entry.info.id, name) };
+      } catch (error) {
+        if (this.current(operation.session) && this.renaming === state) {
+          // The draft stays in the field; the row may have been deleted elsewhere, so Cancel reloads the actual list.
+          this.setStatus('');
+          this.renameError(state, `Name not saved. ${storageErrorMessage(error)} Try again or cancel.`);
+          this.pendingRefresh = true;
+        }
+        return;
+      }
+      // Committed: the active take owner follows before the session guard, so closing Shots cannot drop it.
+      if (next.kind === 'take') this.host.takeRenamed(next.info.id, next.info.name);
+      // Announce only into the same dialog session and the same still-visible edit.
+      if (!this.current(operation.session) || this.renaming !== state || !this.cards.includes(state.card)
+        || state.card.entry !== entry) { if (this.isOpen) this.pendingRefresh = true; return; }
+      state.card.entry = next; saved = true;
+      this.endRename(state); this.showName(state.card); this.filter();
+      this.setStatus('Name saved.');
+      if (this.pendingRefresh) this.renamed = { kind: next.kind, id: next.info.id };
+    } finally {
+      if (this.operation === operation) this.operation = null;
+      state.input.readOnly = false;
+      if (this.isOpen) {
+        this.syncControls();
+        if (this.renaming === state) state.input.focus({ preventScroll: true });
+        else if (this.pendingRefresh && !this.deleting && !this.viewing && !this.renaming) this.refresh();
+        else if (saved) this.focusRename(state.card);
+      }
+    }
   }
 
   private loadPreview(card: Card, session: number): void {
@@ -414,11 +540,17 @@ export class ShotLibraryDialog {
     this.blockedNote.textContent = reason ?? ''; this.blockedNote.hidden = !reason;
     const busy = this.loading || !!this.operation;
     this.grid.setAttribute('aria-busy', String(busy));
-    for (const action of this.grid.querySelectorAll<HTMLButtonElement>('button')) action.disabled = busy || !!reason;
-    this.search.disabled = !!this.deleting;
+    // An open rename owns the grid: only its Save/Cancel stay usable until it is saved or cancelled.
+    const editing = this.renaming;
+    for (const action of this.grid.querySelectorAll<HTMLButtonElement>('button')) {
+      action.disabled = editing && editing.form.contains(action)
+        ? action === editing.cancel ? !!this.operation : busy || !!reason
+        : busy || !!reason || !!editing;
+    }
+    this.search.disabled = !!this.deleting || !!editing;
     this.backButton.disabled = !!this.operation;
     this.savePngButton.disabled = busy || !!reason;
-    this.refreshButton.disabled = busy || !!this.deleting;
+    this.refreshButton.disabled = busy || !!this.deleting || !!editing;
     this.confirmDelete.disabled = busy || !!reason;
     this.cancelDelete.disabled = !!this.operation;
     this.confirmation.setAttribute('aria-busy', String(this.operation?.kind === 'delete'));
@@ -435,8 +567,10 @@ export class ShotLibraryDialog {
     if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key === 'Escape' && !event.shiftKey) {
       event.preventDefault();
-      if (this.deleting && !this.operation) this.cancelConfirmation(); else this.close();
-    } else if (event.repeat && (event.key === ' ' || event.key === 'Enter') && event.target instanceof HTMLButtonElement) {
+      if (this.renaming && !this.operation) this.cancelRename();
+      else if (this.deleting && !this.operation) this.cancelConfirmation(); else this.close();
+    } else if (event.repeat && (event.key === ' ' || event.key === 'Enter')
+      && (event.target instanceof HTMLButtonElement || event.key === 'Enter' && event.target === this.renaming?.input)) {
       event.preventDefault();
     } else if (event.key === 'Tab') {
       const controls = Array.from(this.dialog.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),[tabindex="0"]'))

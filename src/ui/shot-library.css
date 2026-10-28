@@ -24,6 +24,15 @@
   background: var(--bg); border: 1px solid var(--line-hi); border-radius: var(--r);
 }
 .shot-library-search::placeholder { color: var(--text-2); opacity: 1; }
+.shot-library-rename { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; }
+.shot-library-rename label { font-size: 11px; font-weight: 700; color: var(--text-2); }
+.shot-library-rename-input {
+  box-sizing: border-box; min-width: 0; width: 100%; margin: 0; padding: 6px 8px;
+  background: var(--bg); border: 1px solid var(--line-hi); border-radius: var(--r);
+}
+.shot-library-rename-input[aria-invalid="true"] { border-color: var(--danger); }
+.shot-library-rename-input:read-only { color: var(--text-2); }
+.shot-library-card .shot-library-rename-error { color: var(--danger); font-size: 11px; }
 .shot-library-grid {
   display: grid; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); grid-auto-rows: max-content;

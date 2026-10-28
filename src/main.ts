@@ -433,6 +433,7 @@ class App {
         const state=this.take&&this.storedTakes.get(this.take);
         if(state?.id===id){state.deleted=true;clearTimeout(state.previewTimer);this.updateShotSaveStatus(this.take!,state);}
       },
+      takeRenamed:(id,name)=>this.renameActiveTake(id,name),
       blocked:()=>this.shotLibraryBlocked(),
       modalChanged:open=>{
         if(open){
@@ -1677,6 +1678,18 @@ class App {
     this.storedTakes.set(take,state);
     this.writeStoredTake(take,state);
     this.scheduleShotPreview(take,state,0);
+  }
+
+  /** A committed Shots rename of the active take: update its name owners in place, never reopen or seek. */
+  private renameActiveTake(id:string,name:string) {
+    const take=this.take,state=take&&this.storedTakes.get(take);
+    if(!take||state?.id!==id)return;
+    state.name=name;this.takeTitle=name;
+    this.timeline.setTitle(name);
+    if(this.timeline.isOpen){
+      const title=this.inspectorBody.querySelector<HTMLElement>('.take-sum [data-take-title]');
+      if(title)title.textContent=name;
+    }
   }
 
   private updateShotSaveStatus(take:Take,state:StoredTakeState) {

@@ -228,7 +228,7 @@ export class Timeline {
     this.rangeOut = take.range?.[1] ?? take.duration;
     this.time = this.rangeIn;
     this.hover = null;
-    this.root.setAttribute("aria-label", `Take timeline: ${title}`);
+    this.setTitle(title);
     this.curveSel.replaceChildren();
     for (const [k, label, re] of CURVE_SETS)
       if (!re || take.meta.hinges.some((j) => re.test(j.name))) this.curveSel.add(new Option(label, k));
@@ -244,6 +244,11 @@ export class Timeline {
   close() {
     this.setPlaying(false);
     this.root.hidden = true;
+  }
+
+  /** Rename the open take in place; playhead, range, loop and playback are untouched. */
+  setTitle(title: string) {
+    this.root.setAttribute("aria-label", `Take timeline: ${title}`);
   }
 
   // ---- transport -----------------------------------------------------------
@@ -677,8 +682,8 @@ export class Timeline {
 export function eventList(take: Take, title: string, onSeek: (t: number) => void): HTMLElement {
   const box = h("div", "take-sum");
   const kv = h("dl", "ins-kv");
-  const row = (k: string, v: string) => { kv.append(h("dt", "", k), h("dd", "", v)); };
-  row("take", title);
+  const row = (k: string, v: string) => { const value = h("dd", "", v); kv.append(h("dt", "", k), value); return value; };
+  row("take", title).dataset.takeTitle = "";
   row("length", `${fmtTime(take.duration)} s · ${take.n} frames`);
   row("rate", `${(1 / take.dt).toFixed(0)} Hz`);
   row("terrain", take.meta.terrain);
