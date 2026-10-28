@@ -103,11 +103,12 @@ node scripts/package_map.mjs public/assets/maps/my_map \
 ```
 
 The packager requires Linux with `/proc/self/fd` and rejects symlinked input
-directories or files. It includes the selected visuals, textures and physics,
+directories or files. It includes the selected world and props models, textures and physics,
 checks their contents, and never overwrites an existing ZIP. The resulting
 bundle is portable; the browser does not need Linux. Truncated compressed entries
 and entries with trailing compressed data are rejected.
-Inline physics data and repeated references to the same file are supported.
+Inline physics data, repeated file references and uppercase GLB/glTF/XML extensions
+are supported without changing resource filenames.
 Unsafe paths and excessively complex dependency metadata are rejected before
 the map becomes active.
 
@@ -116,6 +117,7 @@ dedicated worker, not uploaded. Cancel verification before installation to keep
 the current scene; archive bytes are separate from download progress.
 Local maps last for the tab's session. Saved takes and views remember
 the map's identity, not its files: after reloading, reattach the same bundle.
+Finish a map or saved-view load before opening Timeline or another take.
 Raw BSP, GMA and VPK files are not browser import formats yet.
 
 ### Characters

@@ -92,13 +92,13 @@ async function document(root, name, signal, metadata, reserveXml) {
   try {
     const info = await handle.stat();
     let offset = 0, size = info.size;
-    if (extname(name) === '.glb') {
+    if (extname(name).toLowerCase() === '.glb') {
       const header = Buffer.alloc(20);
       if ((await handle.read(header, 0, 20, 0)).bytesRead !== 20 || header.readUInt32LE(0) !== 0x46546c67 || header.readUInt32LE(4) !== 2 || header.readUInt32LE(8) !== info.size || header.readUInt32LE(16) !== 0x4e4f534a) throw Error(`Invalid GLB: ${name}`);
       offset = 20; size = header.readUInt32LE(12);
     }
     if (size > maxMetadata || offset + size > info.size) throw Error(`Oversized/truncated metadata: ${name}`);
-    if (name.endsWith('.xml')) reserveXml?.(size * 3 + 1024);
+    if (/\.xml$/i.test(name)) reserveXml?.(size * 3 + 1024);
     const bytes = Buffer.alloc(size);
     let count = 0;
     while (count < size) {
@@ -110,7 +110,7 @@ async function document(root, name, signal, metadata, reserveXml) {
     signal?.throwIfAborted();
     metadata?.set(name, { offset, bytes: size, sha256: createHash('sha256').update(bytes).digest('hex') });
     const text = bytes.toString('utf8');
-    return name.endsWith('.xml') ? text : object(JSON.parse(text), name);
+    return /\.xml$/i.test(name) ? text : object(JSON.parse(text), name);
   } finally { await handle.close(); }
 }
 /** Same selected native visuals/props, sidecars and glTF URI edges as
@@ -141,7 +141,7 @@ async function closure(root, signal) {
   const compiler = rootElements.find(element => element.name === 'compiler')?.attributes ?? {};
   const native = manifest.native_textures === undefined ? {} : object(manifest.native_textures, 'native_textures');
   add(native.visual ?? manifest.visual ?? 'visual.glb');
-  if (manifest.props !== undefined && object(manifest.props, 'props').visual === 'props.glb') add(native.props ?? manifest.props.visual);
+  if (manifest.props !== undefined && object(manifest.props, 'props').visual) add(native.props ?? manifest.props.visual);
   for (const name of ['lighting.json', 'lightstyles.json']) {
     try { const handle = await openResource(root, name); await handle.close(); resources.add(name); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -156,7 +156,7 @@ async function closure(root, signal) {
     const key = path.toLowerCase();
     if (names.has(key) && names.get(key) !== path) throw Error(`Ambiguous resource names: ${path}, ${names.get(key)}`);
     names.set(key, path);
-    if (/\.(?:glb|gltf)$/.test(path)) {
+    if (/\.(?:glb|gltf)$/i.test(path)) {
       const gltf = await document(root, path, signal, metadata);
       for (const field of ['buffers', 'images']) {
         if (gltf[field] === undefined) continue;
@@ -166,7 +166,7 @@ async function closure(root, signal) {
     } else if (path === 'lightstyles.json') {
       const styles = await document(root, path, signal, metadata);
       for (const page of Object.values(object(styles.pages, 'lightstyle pages'))) add(page, path);
-    } else if (path.endsWith('.xml')) {
+    } else if (/\.xml$/i.test(path)) {
       const elements = path === 'map.xml' ? rootElements : parseMapXml(await document(root, path, signal, metadata, reserveXml), path, xmlOptions);
       for (const edge of mapXmlReferences(elements, path, compiler, {
         signal, maxExpandedCharacters: maxMetadata - xmlCharacters,

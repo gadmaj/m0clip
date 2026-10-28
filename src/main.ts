@@ -1229,6 +1229,8 @@ class App {
 
   // ---- review (timeline) ----------------------------------------------------
   private openReview() {
+    if(this.mapPreparing||this.pendingMap){this.panel.setRecordInfo('Wait for the map to finish loading.');return;}
+    if(this.pendingViewRestore||this.viewRestoreAbort){this.panel.setRecordInfo('Wait for the saved view to finish restoring.');return;}
     const take = this.take, tm = this.takeModel;
     if (!take || !tm || this.exporting) return;
     this.cancelScreenshot();
@@ -1579,10 +1581,10 @@ class App {
   }
 
   private async openTakeFile(file: File) {
-    if (this.exporting || this.recordStarting) return;
+    if (this.exporting || this.recordStarting || this.mapPreparing || this.pendingMap || this.pendingViewRestore || this.viewRestoreAbort) return;
     try {
       const take = await loadTake(await file.arrayBuffer());
-      if (this.exporting || this.recordStarting) return;
+      if (this.exporting || this.recordStarting || this.mapPreparing || this.pendingMap || this.pendingViewRestore || this.viewRestoreAbort) return;
       const meta=take.meta,active=this.model;
       if(!active||active.robot!==meta.robot){
         this.panel.showNotice('Different scene loaded',`Load ${meta.model??meta.robot} before opening ${file.name}. The active scene has not changed.`);

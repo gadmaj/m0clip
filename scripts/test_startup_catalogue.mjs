@@ -89,11 +89,24 @@ try {
   for (const name of ['source-upgrade.json', 'props-report.json']) await put(map + name, { internal: true });
   const characterReceipts = ['analysis.json', 'conversion.json', 'rig-map.json', 'source-evidence.json', 'source-manifest.json'];
   for (const name of characterReceipts) await put('assets/characters/authored/' + name, { internal: 'conversion provenance' });
+  const caseful = 'assets/maps/caseful/';
+  await put(caseful + 'manifest.json', { visual: 'WORLD.GLB', props: { visual: 'unselected-props.glb' },
+    native_textures: { props: 'models/PROPS.GLTF' }, visibility: 'pvs/custom.json' });
+  await put(caseful + 'WORLD.GLB', glb({ asset: { version: '2.0' }, images: [{ uri: 'world.PNG' }] }));
+  await put(caseful + 'world.PNG', Buffer.alloc(13));
+  await put(caseful + 'models/PROPS.GLTF', { asset: { version: '2.0' },
+    buffers: [{ uri: 'mesh.bin', byteLength: 4 }], images: [{ uri: 'prop.png' }] });
+  await put(caseful + 'models/mesh.bin', Buffer.from('MESH'));
+  await put(caseful + 'models/prop.png', Buffer.alloc(17));
+  await put(caseful + 'pvs/custom.json', { visibility: 'AA==' });
   const catalogue = await buildStartupCatalogue(root, graph.runtime, { dependencies: graph.dependencies });
   assert.deepEqual(catalogue.mapVisuals.selected, [
     'lighting.json', 'lightstyles.json', 'manifest.json', 'props-native.glb', 'source-color-0.rgb',
     'styles-0.rgba.gz', 'styles-1.rgba.gz', 'visibility.json', 'visual-native.glb',
   ].map(name => '/' + map + name).sort());
+  assert.deepEqual(catalogue.mapVisuals.caseful, [
+    'manifest.json', 'WORLD.GLB', 'world.PNG', 'models/PROPS.GLTF', 'models/mesh.bin', 'models/prop.png', 'pvs/custom.json',
+  ].map(name => '/' + caseful + name).sort());
   assert.deepEqual(catalogue.modelBundles['/assets/models/robot/scene.xml.manifest.json'], [
     '/assets/models/robot/meshes/chosen.STL.gz', '/assets/models/robot/parts/shared.xml',
     '/assets/models/robot/scene.xml', '/assets/models/robot/scene.xml.manifest.json',

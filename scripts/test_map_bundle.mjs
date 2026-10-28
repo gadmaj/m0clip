@@ -211,6 +211,51 @@ try {
   assert.equal(decoded.id, stored.id, 'The streaming producer output is consumed by the browser decoder');
   await assert.rejects(packageMap(source, output), { code: 'EEXIST' });
   assert.deepEqual(await readFile(output), outputBody, 'Existing user output remains unchanged');
+
+  const visualCases = [
+    { name: 'nested-props', files: { ...bodies,
+      'manifest.json': Buffer.from(JSON.stringify({ ...JSON.parse(bodies['manifest.json']), props: { visual: 'models/props.glb' } })),
+      'models/props.glb': glb({ asset: { version: '2.0' }, images: [{ uri: 'props.png' }] }), 'models/props.png': png },
+      model: 'models/props.glb', dependency: 'models/props.png', bytes: png },
+    { name: 'uppercase-glb', files: { 'map.xml': bodies['map.xml'], 'physics/triangle.obj': bodies['physics/triangle.obj'],
+      'manifest.json': Buffer.from(JSON.stringify({ files: ['map.xml', 'physics/triangle.obj'], visual: 'VISUAL.GLB' })),
+      'VISUAL.GLB': glb({ asset: { version: '2.0' }, images: [{ uri: 'UPPER.png' }] }), 'UPPER.png': png },
+      model: 'VISUAL.GLB', dependency: 'UPPER.png', bytes: png },
+    { name: 'uppercase-gltf', files: { ...bodies,
+      'manifest.json': Buffer.from(JSON.stringify({ files: ['map.xml', 'physics/triangle.obj'], visual: 'VISUAL.GLTF' })),
+      'VISUAL.GLTF': Buffer.from(JSON.stringify({ asset: { version: '2.0' }, buffers: [{ uri: 'mesh.bin', byteLength: 4 }] })), 'mesh.bin': Buffer.from('MESH') },
+      model: 'VISUAL.GLTF', dependency: 'mesh.bin', bytes: Buffer.from('MESH') },
+    { name: 'native-props', files: { ...bodies,
+      'manifest.json': Buffer.from(JSON.stringify({ ...JSON.parse(bodies['manifest.json']), props: { visual: 'unselected-props.glb' },
+        native_textures: { visual: 'visual.glb', props: 'models/PROPS.GLTF' } })),
+      'models/PROPS.GLTF': Buffer.from(JSON.stringify({ asset: { version: '2.0' }, images: [{ uri: 'native.png' }] })), 'models/native.png': png },
+      model: 'models/PROPS.GLTF', dependency: 'models/native.png', bytes: png },
+  ];
+  for (const entry of visualCases) {
+    const directory = resolve(root, entry.name), selected = resolve(root, entry.name + '.zip');
+    const files = { ...entry.files, 'manifest.json': Buffer.from(JSON.stringify({ name: entry.name, game: 'Fixture', ...JSON.parse(entry.files['manifest.json']) })) };
+    await writeFixture(directory, files);
+    await packageMap(directory, selected);
+    const map = await decodeMapBundle(new Blob([await readFile(selected)]));
+    assert.deepEqual(Buffer.from(await map.files.get(entry.model).arrayBuffer()), files[entry.model]);
+    assert.deepEqual(Buffer.from(await map.files.get(entry.dependency).arrayBuffer()), entry.bytes);
+    const incomplete = { ...files }; delete incomplete[entry.dependency];
+    await assert.rejects(decodeMapBundle(archive(incomplete)), /missing dependency/);
+    if (entry.name === 'nested-props') {
+      const noProps = { ...files }; delete noProps[entry.model];
+      await assert.rejects(decodeMapBundle(archive(noProps)), /missing dependency/);
+    }
+  }
+  const upperXml = { ...bodies,
+    'manifest.json': Buffer.from(JSON.stringify({ name: 'Upper XML', game: 'Fixture', files: ['map.xml', 'ASSET.XML'], visual: 'visual.glb' })),
+    'map.xml': Buffer.from('<mujoco><include file="ASSET.XML"/></mujoco>'),
+    'ASSET.XML': Buffer.from('<mujocoinclude><asset><mesh file="unindexed.obj"/></asset></mujocoinclude>') };
+  await assert.rejects(decodeMapBundle(archive(upperXml)), /physics dependency unindexed\.obj/);
+  const upperXmlSource = resolve(root, 'upper-xml'), upperXmlOutput = resolve(root, 'upper-xml.zip');
+  await writeFixture(upperXmlSource, upperXml);
+  await assert.rejects(packageMap(upperXmlSource, upperXmlOutput), /Physics dependency unindexed\.obj/);
+  await assert.rejects(fsPromises.stat(upperXmlOutput), { code: 'ENOENT' });
+
   await rm(resolve(source, 'textures/pixel.png'));
   await symlink(resolve(source, 'private-notes.md'), resolve(source, 'textures/pixel.png'));
   await assert.rejects(packageMap(source, resolve(root, 'symlink.zip')), /symlinks are not followed/);

@@ -257,7 +257,7 @@ async function hash(blob: Blob, signal?: AbortSignal) {
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 async function gltf(blob: Blob, path: string, signal?: AbortSignal) {
-  if (path.endsWith('.gltf')) return json(blob, path, signal);
+  if (/\.gltf$/i.test(path)) return json(blob, path, signal);
   const bytes = await read(blob, 0, 20, signal), data = view(bytes);
   if (data.getUint32(0, true) !== 0x46546c67 || data.getUint32(4, true) !== 2 || data.getUint32(8, true) !== blob.size || data.getUint32(16, true) !== 0x4e4f534a || data.getUint32(12, true) > blob.size - 20) fail(`invalid GLB: ${path}`);
   return json(blob.slice(20, 20 + data.getUint32(12, true)), path, signal);
@@ -301,7 +301,7 @@ async function validateDependencies(files: ReadonlyMap<string, Blob>, signal?: A
   add(native.visual ?? manifest.visual ?? 'visual.glb');
   if (manifest.props !== undefined) {
     const props = record(manifest.props, 'props');
-    if (props.visual === 'props.glb') add(native.props ?? props.visual);
+    if (props.visual) add(native.props ?? props.visual);
   }
   for (const path of ['lighting.json', 'lightstyles.json']) if (files.has(path)) add(path);
   if (manifest.visibility !== undefined) add(manifest.visibility);
@@ -312,7 +312,7 @@ async function validateDependencies(files: ReadonlyMap<string, Blob>, signal?: A
   for (const path of required) {
     aborted(signal);
     const blob = files.get(path)!;
-    if (/\.(?:glb|gltf)$/.test(path)) {
+    if (/\.(?:glb|gltf)$/i.test(path)) {
       const document = await gltf(blob, path, signal);
       for (const field of ['buffers', 'images']) {
         if (document[field] === undefined) continue;
@@ -325,7 +325,7 @@ async function validateDependencies(files: ReadonlyMap<string, Blob>, signal?: A
     } else if (path === 'lightstyles.json') {
       const styles = await json(blob, path, signal);
       for (const page of Object.values(record(styles.pages, 'lightstyle pages'))) add(page, path);
-    } else if (path.endsWith('.xml')) {
+    } else if (/\.xml$/i.test(path)) {
       const text = path === 'map.xml' ? rootXml : await xml(blob);
       aborted(signal);
       const elements = path === 'map.xml' ? rootElements : parseMapXml(text, path, xmlOptions);

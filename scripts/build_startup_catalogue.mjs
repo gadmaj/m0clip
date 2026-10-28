@@ -49,7 +49,7 @@ async function filesBelow(root) {
 }
 
 async function gltfDocument(path) {
-  if (path.endsWith('.gltf')) return JSON.parse(await readFile(path, 'utf8'));
+  if (/\.gltf$/i.test(path)) return JSON.parse(await readFile(path, 'utf8'));
   const handle = await open(path, 'r');
   try {
     const header = Buffer.alloc(20);
@@ -113,7 +113,7 @@ export async function buildStartupCatalogue(directory, runtime, options = {}) {
     return [...result].sort();
   }
   // Read only GLB JSON chunks; embedded VTF/PNG pixels are not HTTP dependencies.
-  for (const file of files.filter(file => !previews.has(file.key) && /\.(?:glb|gltf)$/.test(file.key))) {
+  for (const file of files.filter(file => !previews.has(file.key) && /\.(?:glb|gltf)$/i.test(file.key))) {
     const document = await gltfDocument(file.path);
     const uris = [...(document.buffers ?? []), ...(document.images ?? [])].flatMap(item => typeof item.uri === 'string' ? [item.uri] : []);
     links(file.key, uris.map(uri => requireAsset(uri, file.key)));
@@ -131,7 +131,7 @@ export async function buildStartupCatalogue(directory, runtime, options = {}) {
     const id = file.key.split('/')[3], roots = [file.key];
     const add = value => { if (typeof value === 'string') roots.push(requireAsset(value, file.key)); };
     add(manifest.native_textures?.visual ?? manifest.visual ?? 'visual.glb');
-    if (manifest.props?.visual === 'props.glb') add(manifest.native_textures?.props ?? manifest.props.visual);
+    if (manifest.props?.visual) add(manifest.native_textures?.props ?? manifest.props.visual);
     // These two requests are unconditional in Scene.setTerrainVisual; absence is an
     // optional 404, not an invented successful HTTP entity.
     for (const name of ['lighting.json', 'lightstyles.json']) {
@@ -147,7 +147,7 @@ export async function buildStartupCatalogue(directory, runtime, options = {}) {
         return requireAsset(name, stylesKey);
       }));
     }
-    if (manifest.visibility === 'visibility.json') add(manifest.visibility);
+    if (manifest.visibility) add(manifest.visibility);
     for (const layer of manifest.color_corrections ?? []) add(layer.file);
     mapVisuals[id] = expand(roots);
   }
