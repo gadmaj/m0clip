@@ -8,6 +8,7 @@ PNG masters are never written. Blender importers invoke PYTHON or host python3.
 """
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,32 @@ import struct
 import subprocess
 import tempfile
 import zlib
+
+
+def admit_output(destination, additional=0):
+    """Optional shared admission bounds resolved destinations and retained bytes."""
+    root = os.environ.get('PREVIEW_BUDGET_ROOT')
+    if not root:
+        return
+    root = Path(root).resolve(strict=True)
+    destination = Path(destination).resolve()
+    if root == destination or root not in destination.parents:
+        raise ValueError('Artwork output must be within shared artwork budget root')
+    cap = int(os.environ['PREVIEW_BUDGET_BYTES'])
+    floor = int(os.environ['PREVIEW_MIN_FREE_BYTES'])
+    reserve = int(os.environ['PREVIEW_RESERVE_BYTES'])
+    if cap <= 0 or min(floor, reserve, additional) < 0:
+        raise ValueError('Invalid artwork byte admission')
+    used = 0
+    for directory, directories, files in os.walk(root):
+        for name in directories + files:
+            entry = Path(directory) / name
+            if entry.is_symlink():
+                raise ValueError('Artwork budget roots must not contain borrowed links')
+        used += sum((Path(directory) / name).stat().st_size for name in files)
+    disk = os.statvfs(root)
+    if used + additional + reserve > cap or disk.f_bavail * disk.f_frsize - additional - reserve < floor:
+        raise ValueError(f'Artwork budget/floor reached: retained={used}, next={additional}, reserve={reserve}')
 
 
 def png_chunks(data):
@@ -67,12 +94,16 @@ def encode_preview(png_path, output=None):
         rgba = source.convert('RGBA')
         icc_profile = source.info.get('icc_profile', b'')
     pixels = rgba.tobytes()
+    admit_output(output, len(encoded))
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
+        # The admitted output parent also contains the exclusively created temp;
+        # no caller-controlled path component is added by NamedTemporaryFile.
         with tempfile.NamedTemporaryFile(prefix='.' + output.name + '.', suffix='.tmp',
                                          dir=output.parent, delete=False) as handle:
             temporary = Path(handle.name)
+            admit_output(temporary, len(encoded))
             handle.write(encoded)
         readback = temporary.read_bytes()
         readback_chunks = png_chunks(readback)
@@ -101,6 +132,7 @@ def encode_preview(png_path, output=None):
             'usedOriginalBytes': used_original,
             'savedBytes': len(png_bytes) - len(readback),
         }
+        admit_output(output)
         temporary.replace(output)
         return result
     finally:
@@ -128,6 +160,7 @@ def encode_animation(frames, output_root, fps=12, timestamps=None):
         raise ValueError('Animation requires 2–120 explicit frames at 1–30 fps')
     if output_root.exists():
         raise ValueError('Animation output must be a new private staging directory')
+    admit_output(output_root)
     images, records = [], []
     for frame in frames:
         with Image.open(frame) as source:
@@ -145,11 +178,6 @@ def encode_animation(frames, output_root, fps=12, timestamps=None):
                         'rgbSHA256': hashlib.sha256(image.tobytes()).hexdigest()})
     if len({record['rgbSHA256'] for record in records}) < 2:
         raise ValueError('Animation masters contain no visual change')
-    output_root.mkdir(parents=True)
-    still_master = output_root / 'still.png'
-    images[0].save(still_master)
-    still = encode_preview(still_master)
-    output = output_root / 'turntable.gif'
     # GIF stores centiseconds; distribute rounding instead of speeding up 12 fps.
     durations = [round((index + 1) * 100 / fps) * 10 - round(index * 100 / fps) * 10
                  for index in range(len(frames))]
@@ -162,8 +190,22 @@ def encode_animation(frames, output_root, fps=12, timestamps=None):
         durations = [max(10, round(interval * 100) * 10) for interval in intervals]
         durations.append(durations[-1])
     palettes = [image.quantize(colors=256) for image in images]
-    palettes[0].save(output, save_all=True, append_images=palettes[1:],
+    gif_bytes = io.BytesIO()
+    palettes[0].save(gif_bytes, format='GIF', save_all=True, append_images=palettes[1:],
                      duration=durations, loop=0, disposal=2, optimize=False)
+    still_bytes = io.BytesIO()
+    images[0].save(still_bytes, format='PNG')
+    # Reserve actual GIF bytes and both still files before any output write.
+    # encode_preview never retains a recompression larger than its input.
+    admit_output(output_root, len(gif_bytes.getbuffer()) + 2 * len(still_bytes.getbuffer()))
+    output_root.mkdir(parents=True)
+    still_master = output_root / 'still.png'
+    admit_output(still_master, len(still_bytes.getbuffer()))
+    still_master.write_bytes(still_bytes.getbuffer())
+    still = encode_preview(still_master)
+    output = output_root / 'turntable.gif'
+    admit_output(output, len(gif_bytes.getbuffer()))
+    output.write_bytes(gif_bytes.getbuffer())
     with Image.open(output) as decoded:
         if decoded.format != 'GIF' or decoded.size != images[0].size or decoded.n_frames < 2:
             raise ValueError('GIF readback lost animation or dimensions')
@@ -177,7 +219,10 @@ def encode_animation(frames, output_root, fps=12, timestamps=None):
         'sha256': hashlib.sha256(output.read_bytes()).hexdigest(), 'frames': decoded_frames,
         'durationMs': decoded_ms, 'encoding': 'GIF89a, per-frame 256-color palette (lossy)'},
         'width': images[0].width, 'height': images[0].height, 'sourceFrames': records}
-    (output_root / 'encoding.json').write_text(json.dumps(result, indent=2) + '\n')
+    receipt = json.dumps(result, indent=2) + '\n'
+    receipt_path = output_root / 'encoding.json'
+    admit_output(receipt_path, len(receipt.encode()))
+    receipt_path.write_text(receipt)
     return result
 
 

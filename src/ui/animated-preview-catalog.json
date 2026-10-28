@@ -452,9 +452,19 @@
     }
   },
   "policies": {
+    "r1:dances/601_dance1_subject2_segment1": {
+      "still": "/assets/previews/animated/policies/r1-db0f59550513/still.min.png",
+      "animation": "/assets/previews/animated/policies/r1-db0f59550513/turntable.gif",
+      "caption": "Policy playback · 360° view"
+    },
     "r1:dances/604_niuniuwu": {
       "still": "/assets/previews/animated/policies/r1-430252b51f5a/still.min.png",
       "animation": "/assets/previews/animated/policies/r1-430252b51f5a/turntable.gif",
+      "caption": "Policy playback · 360° view"
+    },
+    "r1_air:dances_air/601_dance1_subject2_segment1": {
+      "still": "/assets/previews/animated/policies/r1_air-e47c7dbd1287/still.min.png",
+      "animation": "/assets/previews/animated/policies/r1_air-e47c7dbd1287/turntable.gif",
       "caption": "Policy playback · 360° view"
     }
   }

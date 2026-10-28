@@ -168,8 +168,14 @@ labels the robot-only picture rather than implying policy playback.
 [`generate-policy-previews.cjs`](scripts/generate-policy-previews.cjs) captures
 controller motion from your running build. Set `BASE_URL` and a private
 `PREVIEW_OUTPUT`; supply an approved pack job with its SHA-256, exact robot and
-policy, frame count/rate and attribution. The helper records actual simulation
-timestamps. Publish only the approved GIF, still and attribution—not its receipts.
+policy, frame count/rate and attribution. The helper retains actual joint states
+and simulation timestamps and checks the robot, checkpoint and joint identity.
+Publish only the approved GIF, still and attribution—not its receipts.
+
+For bounded artwork jobs, set `PREVIEW_BUDGET_ROOT` and byte values for
+`PREVIEW_BUDGET_BYTES`, `PREVIEW_MIN_FREE_BYTES` and `PREVIEW_RESERVE_BYTES`.
+Keep `PREVIEW_OUTPUT` inside that root; the encoder rejects output paths outside
+it. This budget covers retained job files, not browser memory.
 
 ### Robot policies
 

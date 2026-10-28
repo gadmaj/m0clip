@@ -91,7 +91,14 @@ async function launch(robot, terrain) {
       a.view.controls.enabled = false;
       a.view.highlight(null);
       a.view.setSourceTime(0);
-      return { robot: a.model.robot, viewRobot: a.viewModel.robot, terrain: a.model.terrain || a.panel.terrain };
+      const gl = a.view.renderer.getContext();
+      const debug = gl.getExtension('WEBGL_debug_renderer_info');
+      return { robot: a.model.robot, viewRobot: a.viewModel.robot, terrain: a.model.terrain || a.panel.terrain,
+        artwork: { viewport: { width: innerWidth, height: innerHeight }, dpr: devicePixelRatio,
+          drawingBuffer: { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight },
+          vendor: String(gl.getParameter(debug ? debug.UNMASKED_VENDOR_WEBGL : gl.VENDOR)),
+          renderer: String(gl.getParameter(debug ? debug.UNMASKED_RENDERER_WEBGL : gl.RENDERER)),
+          offscreen: { width: 320, height: 240 }, nativeUIPerformanceQualification: false } };
     });
     if (identity.robot !== robot || identity.viewRobot !== robot || identity.terrain !== terrain) throw new Error('Scene identity mismatch: ' + JSON.stringify(identity));
     return { browser, page, errors, provenance, identity };
@@ -198,6 +205,7 @@ async function capture(scene, request) {
   if (scene.errors.length) throw new Error(scene.errors.join('; '));
   const bytes = Buffer.from(result.data.split(',')[1], 'base64'); delete result.data;
   if (request.format !== 'png' && (bytes.toString('ascii', 0, 4) !== 'RIFF' || bytes.toString('ascii', 8, 12) !== 'WEBP')) throw new Error('Encoded file is not WebP');
+  if (scene.beforeWrite) await scene.beforeWrite(bytes.length);
   await fs.writeFile(path.join(out, request.filename), bytes);
   return { ...request, ...result, bytes: bytes.length, sha256: hash(bytes), scene: scene.identity, release: scene.provenance, errors: [] };
 }
