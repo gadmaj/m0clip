@@ -2,6 +2,7 @@
  * Copyright (c) 2018 Jasper St. Pierre, MIT; see LICENSE.noclip. */
 import * as THREE from 'three';
 import { gunzipSync } from 'fflate';
+import type { MapSource } from '../maps/source';
 
 const PATTERNS = [
   'm', 'mmnmmommommnonmmonqnmmo', 'abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba',
@@ -33,12 +34,13 @@ export class SourceLightStyles {
     this.patches = data.patches.map((p) => ({ ...p, samples: Uint8Array.from(atob(p.samples), (c) => c.charCodeAt(0)) }));
   }
 
-  static async load(url: URL): Promise<SourceLightStyles | null> {
-    const r = await fetch(url);
+  static async load(source: MapSource): Promise<SourceLightStyles | null> {
+    if (!source.has('lightstyles.json')) return null;
+    const r = await source.read('lightstyles.json');
     if (!r.ok || !r.headers.get('content-type')?.includes('json')) return null;
     const result = new SourceLightStyles(await r.json() as StyleData);
     const pages=await Promise.allSettled(Object.entries(result.data.pages).map(async ([page, file]) => {
-      const response = await fetch(new URL(file, url));
+      const response = await source.read(file);
       if (!response.ok) throw new Error(`Source lightstyle atlas failed: ${file}`);
       const body = new Uint8Array(await response.arrayBuffer());
       // Vite serves .gz with Content-Encoding; fetch has already decompressed it in that case.

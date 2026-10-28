@@ -93,6 +93,33 @@ Consult [`import_source_bsp.py`](scripts/import_source_bsp.py) for its arguments
 and mount definitions before selecting a source. Do not assume a converted map
 reproduces every prop, material or gameplay entity.
 
+### Local map bundles
+
+Package a converted map directory without adding it to your hosted catalog:
+
+```sh
+node scripts/package_map.mjs public/assets/maps/my_map \
+  --output my_map.map.zip --name "My map" --game "Source"
+```
+
+The packager requires Linux with `/proc/self/fd` and rejects symlinked input
+directories or files. It includes the selected world and props models, textures and physics,
+checks their contents, and never overwrites an existing ZIP. The resulting
+bundle is portable; the browser does not need Linux. Truncated compressed entries
+and entries with trailing compressed data are rejected.
+Inline physics data, repeated file references and uppercase GLB/glTF/XML extensions
+are supported without changing resource filenames.
+Unsafe paths and excessively complex dependency metadata are rejected before
+the map becomes active.
+
+Choose **Open map bundle…** in the map gallery. Files are checked locally in a
+dedicated worker, not uploaded. Cancel verification before installation to keep
+the current scene; archive bytes are separate from download progress.
+Local maps last for the tab's session. Saved takes and views remember
+the map's identity, not its files: after reloading, reattach the same bundle.
+Finish a map or saved-view load before opening Timeline or another take.
+Raw BSP, GMA and VPK files are not browser import formats yet.
+
 ### Characters
 
 Imported characters need geometry, textures, attribution and a compatible rig
@@ -261,6 +288,9 @@ wire bytes without changing this maximum. A full byte meter does not mean physic
 compilation or material preparation has finished; **Enter scene** waits for the
 simulation, visuals and a rendered frame. Expand **Details** for actual transfers
 and readiness. Pong appears only if an unfinished load lasts more than 30 seconds.
+Local-map verification is listed separately from downloads. Local file bytes and
+optional reader code already loaded during file selection do not increase the
+later scene download total.
 
 Open **Camera / output** before recording to set the static camera, lens and output
 format. **Scene** remains available above setup for look, parts, lighting and

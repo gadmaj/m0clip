@@ -10,12 +10,19 @@ import { VisualPicker } from './visual-picker';
 import { previewImage, staticPreviewOptions, characterOptions, characterDescription, sourceModelCatalog } from './preview-catalog';
 import { SceneProgress, downloadTime, type LoadingSnapshot } from '../loading/progress';
 import { observeTransfers, type TransferUpdate } from '../loading/transfers';
-import type { PlannedAsset } from '../loading/asset-plan';
+import type { PlannedAsset, PriorModuleIntake } from '../loading/asset-plan';
 import { registerPreviewAsset } from '../loading/preview-assets';
 import './launch.css';
+import { inspectLocalMap, loadLocalMap, localMapIntakeState } from './local-map';
+import type { MapBundleIndex } from '../maps/bundle';
+import type { MapSource } from '../maps/source';
+import type { BundleVerificationObserver } from '../maps/bundle-verification';
 
 export interface LaunchSelection {
   terrain: TerrainName;
+  localFile?: File;
+  localIndex?: MapBundleIndex;
+  localSource?: MapSource;
   robot: string;
   /** null means preserve linked / remembered paint, not "apply Original". */
   character: CharacterId | null;
@@ -74,6 +81,8 @@ class LaunchController {
   private characterPicker?: VisualPicker;
   private progress = new SceneProgress();
   private loadGeneration = 0;
+  private preloadedLocalMap?: PriorModuleIntake;
+  private localMapVerification = false;
   private progressTimer?: number;
   private stopTransfers?: () => void;
   private transferRoot!: HTMLElement;
@@ -98,7 +107,7 @@ class LaunchController {
     const prefs = stored('ume-prefs'), body = new URLSearchParams(location.search).get('body');
     const query = new URLSearchParams(location.search).get('map');
     const terrain = this.shared?.terrain ?? (query && isTerrain(`map:${query}`) ? `map:${query}` as TerrainName : undefined)
-      ?? (isTerrain(prefs.terrain) ? prefs.terrain : 'map:nt_ghost_ctg');
+      ?? (isTerrain(prefs.terrain) && !prefs.terrain.startsWith('map:local-') ? prefs.terrain : 'map:nt_ghost_ctg');
     const rememberedRobot = typeof prefs.robot === 'string' && robots.includes(prefs.robot) ? prefs.robot : 'r1';
     const robot = this.shared?.robot ?? (isBodyVisual(body) && !compatibleBody(body, rememberedRobot) ? characterPhysics(body)! : rememberedRobot);
     this.selection = { terrain, robot, character: null, preserveView: !!this.shared, robotChanged: false };
@@ -115,6 +124,21 @@ class LaunchController {
 
   get active() { return this.showing; }
   get loadingId() { return this.loadGeneration; }
+  get priorLocalMapIntake() { return this.preloadedLocalMap; }
+  get usesLocalMapVerification() { return this.localMapVerification; }
+  /** Capture the load that owns this worker, never a later scene generation. */
+  beginLocalMapVerification(): BundleVerificationObserver {
+    this.localMapVerification = true;
+    const generation = this.loadGeneration;
+    return {
+      root: url => {
+        if (!this.loading || !this.showing || generation !== this.loadGeneration) return;
+        this.progress.ownWorkerRoot(generation, url, performance.now());
+        this.detailsDirty = true;
+      },
+      transfers: updates => this.receiveTransfers(generation, updates),
+    };
+  }
   onEnter(callback: () => void) { this.callbacks.push(callback); }
   onFailure(callback: () => void) { this.failureCallbacks.push(callback); }
   ownsKey(code: string) { return this.heldKeys.has(code); }
@@ -148,6 +172,7 @@ class LaunchController {
             </div>
           </div>
           <p id="launch-status" role="status" aria-live="polite"></p><p id="launch-map-progress" role="status"></p>
+          <p id="launch-local-progress" role="status"></p>
           <details id="launch-details" class="launch-details" hidden>
             <summary>Details</summary>
             <div class="launch-detail-content">
@@ -163,6 +188,7 @@ class LaunchController {
             <button id="launch-enter" class="btn primary" type="button" disabled>Enter scene</button>
             <button id="launch-original" class="btn" type="button" hidden>Use Original robot</button>
             <button id="launch-reload" class="btn" type="button" hidden>Reload</button>
+            <button id="launch-cancel-map" class="btn" type="button" hidden>Cancel map</button>
           </div>
         </section>
       </div>
@@ -189,7 +215,9 @@ class LaunchController {
     });
     const map = this.root.querySelector<HTMLSelectElement>('#launch-map')!;
     map.onchange = () => { this.selection.terrain = map.value as TerrainName; this.selection.preserveView = false; };
-    this.mapPicker = new VisualPicker(map,{id:'launch-map',label:'Map',preview:value=>previewImage(value.startsWith('map:')?'map':'terrain',value)});
+    this.mapPicker = new VisualPicker(map,{id:'launch-map',label:'Map',
+      intake:{label:'Open map bundle…',select:async(file,signal)=>{const index=await inspectLocalMap(file,signal);signal.throwIfAborted();this.selection.localFile=file;this.selection.localIndex=index;this.selection.terrain='map:local-pending';this.selection.preserveView=false;this.renderMaps();}},
+      preview:(value,label)=>{if(value.startsWith('map:local-')){const note=document.createElement('span');note.textContent=label;return note;}return previewImage(value.startsWith('map:')?'map':'terrain',value);}});
     const robot = this.root.querySelector<HTMLSelectElement>('#launch-robot')!;
     for (const value of robots) robot.add(new Option(value.replace(/_/g,' ').toUpperCase(),value));
     if (!robots.includes(this.selection.robot)) robot.add(new Option(`${this.selection.robot.replace(/_/g, ' ').toUpperCase()} (remembered variant)`, this.selection.robot));
@@ -206,14 +234,32 @@ class LaunchController {
     const step = (name: string) => { for (const id of ['map', 'character', 'loading']) this.root.querySelector<HTMLElement>(`#launch-${id}-step`)!.hidden = id !== name; };
     this.root.querySelector<HTMLButtonElement>('#launch-next')!.onclick = () => { step('character'); this.characterPicker!.button.focus(); };
     this.root.querySelector<HTMLButtonElement>('#launch-back')!.onclick = () => { step('map'); this.mapPicker.button.focus(); };
-    this.root.querySelector<HTMLButtonElement>('#launch-load')!.onclick = () => {
+    this.root.querySelector<HTMLButtonElement>('#launch-load')!.onclick = async () => {
       if (this.loading) return;
       this.loading = true; this.root.dataset.loading = 'true'; step('loading'); this.context.textContent = this.describe();
       this.context.title = this.context.textContent;
       this.startProgress();
-      this.phase('Starting renderer and physics…');
       this.status.tabIndex = -1; this.status.focus({ preventScroll: true });
-      void load().catch(error => this.fail(error));
+      if(this.selection.terrain==='map:local-pending'&&this.selection.localFile){
+        const controller=new AbortController(),cancel=this.root.querySelector<HTMLButtonElement>('#launch-cancel-map')!;
+        cancel.hidden=false;cancel.onclick=()=>controller.abort();
+        this.phase('Verifying local map files…');
+        try{
+          const source=await loadLocalMap(this.selection.localFile,controller.signal,this.beginLocalMapVerification());
+          controller.signal.throwIfAborted();
+          this.selection.localSource=source;this.selection.terrain=`map:${source.id}`;this.selection.localFile=undefined;
+          const bytes=Array.from(source.payload!.files.values()).reduce((sum,file)=>sum+file.size,0);
+          this.localWork(`Local files verified · ${(bytes/1_000_000).toFixed(1)} MB · separate from downloads`);
+        }catch(error){
+          this.loading=false;delete this.root.dataset.loading;this.cancelPong();
+          this.stopTransfers?.();this.stopTransfers=undefined;window.clearInterval(this.progressTimer);this.progressTimer=undefined;
+          step('map');
+          this.root.querySelector('#launch-catalog-status')!.textContent=controller.signal.aborted?'Map loading cancelled.':`Map not loaded: ${error instanceof Error?error.message:error}`;
+          this.mapPicker.button.focus();return;
+        }finally{cancel.hidden=true;cancel.onclick=null;}
+      }
+      this.phase('Starting renderer and physics…');
+      try{await load();}catch(error){this.fail(error);}
     };
     this.enter.onclick = () => {
       if (this.failed || !this.simulation || !this.visuals || !this.frame) return;
@@ -233,7 +279,8 @@ class LaunchController {
 
   private describe() {
     const terrain = this.selection.terrain;
-    const map = terrain.startsWith('map:') ? this.maps.find(entry => `map:${entry.id}` === terrain)?.name ?? terrain.slice(4) : labels[terrain];
+    const map = terrain.startsWith('map:local-') && this.selection.localIndex ? this.selection.localIndex.name
+      : terrain.startsWith('map:') ? this.maps.find(entry => `map:${entry.id}` === terrain)?.name ?? terrain.slice(4) : labels[terrain];
     return `${map} · ${this.selection.robot.toUpperCase()} · ${this.selection.character ? CHARACTER_CHOICES.find(choice=>choice.id===this.selection.character)?.label ?? decodePmodelId(this.selection.character)?.name ?? this.selection.character : this.keptAppearanceLabel}`;
   }
 
@@ -260,6 +307,7 @@ class LaunchController {
     select.replaceChildren();
     const options = [
       ...this.maps.map(map => ({ value: `map:${map.id}`, label: `${map.name} · ${map.game}`, group:map.game })),
+      ...(this.selection.localIndex?[{value:'map:local-pending',label:`${this.selection.localIndex.name} · Local file`,group:'Local maps'}]:[]),
       ...TERRAINS.map(terrain => ({ value: terrain, label: labels[terrain], group:'Built-in terrains' })),
     ];
     if (!options.some(option => option.value === this.selection.terrain)) options.unshift({ value: this.selection.terrain, label: `${this.selection.terrain.slice(4)} (selected map)`, group:'Selected map' });
@@ -305,6 +353,10 @@ class LaunchController {
   }
 
   private startProgress() {
+    const started = performance.now(), intake = localMapIntakeState();
+    // Copy before Load's verification; later imports cannot rewrite this scope.
+    this.preloadedLocalMap = intake && { complete: intake.complete, before: started };
+    this.localMapVerification = false;
     for (const option of this.root.querySelectorAll<HTMLOptionElement>('option[data-preview]')) {
       if (option.dataset.preview) registerPreviewAsset(option.dataset.preview);
     }
@@ -315,11 +367,11 @@ class LaunchController {
     this.detailStatus.textContent = ''; this.detailReadiness.textContent = '';
     this.detailBytes.textContent = ''; this.detailCounts.textContent = '';
     this.detailsDirty = true;
-    this.loadGeneration = this.progress.begin(performance.now());
-    this.loadingStarted = performance.now();
+    this.loadGeneration = this.progress.begin(started);
+    this.loadingStarted = started;
     this.schedulePong();
     const generation = this.loadGeneration;
-    this.stopTransfers = observeTransfers(`page:${generation}`, updates => this.receiveTransfers(generation, updates));
+    this.stopTransfers = observeTransfers(`page:${generation}`, updates => this.receiveTransfers(generation, updates), started);
     this.progressTimer = window.setInterval(() => this.renderProgress(), 250);
   }
 
@@ -446,6 +498,7 @@ class LaunchController {
     this.detailsDirty = true;
     this.renderProgress();
   }
+  localWork(message:string) {if(this.root)this.root.querySelector('#launch-local-progress')!.textContent=message;}
   mapProgress(message: string) {
     if (!this.showing || this.failed || !this.root) return;
     this.root.querySelector('#launch-map-progress')!.textContent = message;

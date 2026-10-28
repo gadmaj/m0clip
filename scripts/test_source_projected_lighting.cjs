@@ -13,7 +13,7 @@ const {fixture,png}=require('./source_material_fixture.cjs');
  const results={};
  for(mode of['flat','world','sideways','frame-positive','frame-negative','bump-flat','bump-tilted','bump-disabled','phong','phong-point-falloff','phong-spot-falloff','phong-interpolated-falloff','phong-specular-falloff','phong-skinned-falloff','phong-masked','phong-base-mask','phong-mask-invert','phong-albedo','phong-exponent','emissive-full','emissive-partial','unlit','reflect-base','reflect-detail','reflect-detail-clear','reflect-secondary','reflect-cutout-detail','reflect-cutout-detail-clear','emissive-detail','phong-detail']){
   results[mode]=await page.evaluate(async mode=>{
-   const v=window.__app.view;await v.setTerrainVisual('/assets/maps/nt_ghost_ctg/visual.glb?probe='+mode);v.setDisplay({...v.display,robot:false});v.setSourceLighting(true);
+   const v=window.__app.view;await v.setTerrainVisual(null);await v.setTerrainVisual(window.__app.sourceForTerrain('map:nt_ghost_ctg'));v.setDisplay({...v.display,robot:false});v.setSourceLighting(true);
    // Read linear pixels directly, excluding the independently tested final color LUT.
    v.sourceColorMap=false;v.sourceAmbient.linearOutput.value=1;v.flashlight.cookie.value.colorSpace='';v.flashlight.cookie.value.needsUpdate=true;
    const camera=v.camera;camera.position.set(0,0,0);camera.quaternion.set(0,0,0,1);camera.aspect=1;camera.fov=60;camera.updateProjectionMatrix();

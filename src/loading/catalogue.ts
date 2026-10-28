@@ -1,4 +1,4 @@
-import type { PlannedAsset, StartupAssetCatalogue } from './asset-plan';
+import type { PlannedAsset, PriorModuleIntake, StartupAssetCatalogue } from './asset-plan';
 
 /** One key per HTTP entity, regardless of relative spelling or URL fragment. */
 export function catalogueAssetKey(value: string): string {
@@ -30,7 +30,9 @@ export function loadStartupCatalogue(): Promise<StartupAssetCatalogue> {
     if (catalogue.version !== 1 || typeof catalogue.release !== 'string'
       || !catalogue.sizes || !catalogue.dependencies || !catalogue.runtime
       || !Array.isArray(catalogue.runtime.page) || !Array.isArray(catalogue.runtime.worker)
-      || !Array.isArray(catalogue.runtime.inference) || !catalogue.mapVisuals || !catalogue.modelBundles) {
+      || !Array.isArray(catalogue.runtime.inference) || !Array.isArray(catalogue.runtime.localMap)
+      || !Array.isArray(catalogue.runtime.localMapVerification)
+      || !catalogue.mapVisuals || !catalogue.modelBundles) {
       throw new Error('The scene asset catalogue is incomplete. Reload to try again.');
     }
     for (const [url, bytes] of Object.entries(catalogue.sizes)) {
@@ -40,8 +42,28 @@ export function loadStartupCatalogue(): Promise<StartupAssetCatalogue> {
   });
 }
 
-/** Unknown selected external bodies must already have been retained by their planner. */
-export function plannedAssets(catalogue: StartupAssetCatalogue, roots: readonly string[], prepared: readonly PlannedAsset[]): PlannedAsset[] {
+/** Prior optional module reads are outside this scene's page-download scope.
+ * A failed/pending entry cannot hide unfinished dependencies or hold Load hostage. */
+export function priorIntakeAssets(catalogue: StartupAssetCatalogue, intake: PriorModuleIntake | undefined,
+  entries: readonly (Pick<PerformanceResourceTiming, 'name' | 'startTime' | 'responseEnd' | 'decodedBodySize'>
+    & { responseStatus?: number })[]): string[] {
+  if (!intake) return [];
+  if (intake.complete) return catalogue.runtime.localMap;
+  const graph = new Set(catalogue.runtime.localMap.map(catalogueAssetKey));
+  const completed = new Set<string>();
+  for (const entry of entries) {
+    if (entry.startTime >= intake.before || entry.responseEnd <= 0 || !/^https?:/i.test(entry.name)
+      || entry.responseStatus === undefined || entry.responseStatus < 200 || entry.responseStatus >= 300) continue;
+    const key = catalogueAssetKey(entry.name);
+    if (graph.has(key) && entry.decodedBodySize === catalogue.sizes[key]) completed.add(key);
+  }
+  return [...completed];
+}
+
+/** Prior bodies are excluded from this scope, never credited as later downloads.
+ * Unknown selected external bodies must already have been retained by their planner. */
+export function plannedAssets(catalogue: StartupAssetCatalogue, roots: readonly string[], prepared: readonly PlannedAsset[],
+  priorAssets: readonly string[] = []): PlannedAsset[] {
   const sizes = new Map<string, number>();
   for (const asset of prepared) {
     const key = catalogueAssetKey(asset.url), expected = catalogue.sizes[key], previous = sizes.get(key);
@@ -49,7 +71,8 @@ export function plannedAssets(catalogue: StartupAssetCatalogue, roots: readonly 
       throw new Error(`Prepared asset payload does not match this release's catalogue: ${key}`);
     sizes.set(key, asset.bytes);
   }
-  return expandAssetUrls(catalogue, roots).map(url => {
+  const prior = new Set(priorAssets.map(catalogueAssetKey));
+  return expandAssetUrls(catalogue, roots).filter(url => !prior.has(url)).map(url => {
     const bytes = sizes.get(url) ?? catalogue.sizes[url];
     if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error(`The selected asset has no exact payload size: ${url}`);
     return { url, bytes };

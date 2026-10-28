@@ -6,6 +6,7 @@ export interface TransferUpdate {
   loaded: number;
   total: number | null;
   state: 'loading' | 'done' | 'failed' | 'cancelled';
+  realm?: 'map-verification';
 }
 
 interface Collector {
@@ -228,7 +229,7 @@ function attachFetch(collector: Collector) {
 }
 
 /** Observe until explicit scene entry; stopping never cancels application work. */
-export function observeTransfers(prefix: string, report: (updates: TransferUpdate[]) => void): () => void {
+export function observeTransfers(prefix: string, report: (updates: TransferUpdate[]) => void, started?: number): (options?: { drain?: boolean }) => void {
   const pending = new Map<string, TransferUpdate>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let notify: typeof report | undefined = report;
@@ -252,7 +253,7 @@ export function observeTransfers(prefix: string, report: (updates: TransferUpdat
   attachFetch(collector);
   // A worker's module graph may load before init arrives. Its whole lifetime is
   // startup, unlike the page's pre-Load UI, so include buffered worker entries.
-  const since = typeof document === 'undefined' ? 0 : performance.now();
+  const since = started ?? (typeof document === 'undefined' ? 0 : performance.now());
   let resources: PerformanceObserver | undefined;
   const accountResources = (entries: PerformanceEntry[]) => {
     for (const candidate of entries) {
@@ -288,8 +289,16 @@ export function observeTransfers(prefix: string, report: (updates: TransferUpdat
     resources = undefined;
     accountResources(performance.getEntriesByType('resource'));
   }
-  return () => {
-    if (!collector.active) return;
+  let stopping = false;
+  return options => {
+    if (!collector.active || stopping) return;
+    // Explicit worker terminals must deliver queued actual timings before teardown.
+    // Guard re-entry because reporting can synchronously stop its owner.
+    stopping = true;
+    if (options?.drain) {
+      accountResources(resources?.takeRecords() ?? []);
+      flush();
+    }
     collector.active = false;
     notify = undefined;
     clearTimeout(timer);

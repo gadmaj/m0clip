@@ -25,13 +25,13 @@ const assert=require('node:assert/strict'),{chromium}=require(process.env.PLAYWR
  await page.evaluate(()=>{
   window.events=[];window.frames=0;window.workerErrors=[];window.terrain=null;
   window.worker=new Worker('/src/worker/sim.worker.ts?worker_file&type=module',{type:'module'});
-  worker.onmessage=({data:m})=>{if(m.t==='test-event')events.push(m.event);if(m.t==='error')workerErrors.push(m.msg);if(m.t==='model')terrain=m.desc.terrain;if(m.t==='frame'){frames++;if(!m.qpos.every(Number.isFinite))workerErrors.push('Non-finite physics frame')}};
+  worker.onmessage=({data:m})=>{if(m.t==='terrainPrepared')worker.postMessage({t:'terrain',terrain:m.scene.terrain,request:m.request,commit:true});if(m.t==='test-event')events.push(m.event);if(m.t==='error'||m.t==='terrainFailed')workerErrors.push(m.msg);if(m.t==='model')terrain=m.desc.terrain;if(m.t==='frame'){frames++;if(!m.qpos.every(Number.isFinite))workerErrors.push('Non-finite physics frame')}};
   worker.postMessage({t:'init',robot:'r1',terrain:'flat'});
  });
  await page.waitForFunction(()=>frames>=5,null,{timeout:120000});
  await page.evaluate(()=>worker.postMessage({t:'test:arm'}));
  await page.waitForFunction(()=>events.includes('infer-start'));
- await page.evaluate(()=>worker.postMessage({t:'terrain',terrain:'rough'}));
+ await page.evaluate(()=>worker.postMessage({t:'terrain',terrain:'rough',request:1}));
  await page.waitForTimeout(500);
  const overlap=await page.evaluate(()=>events.includes('compile-start'));
  await page.evaluate(()=>worker.postMessage({t:'test:release'}));

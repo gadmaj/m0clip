@@ -43,6 +43,8 @@ function pushQuat(out: number[], q: THREE.Quaternion) {
 
 export async function exportGlb(take: Take, view: SceneView, model: RenderModel, job: GlbJob): Promise<Blob> {
   await Promise.all([view.waitForRobotVisuals(),view.waitForTerrainVisuals()]);
+  if(take.meta.localMap&&view.mapSource?.identity?.fingerprint!==take.meta.localMap.fingerprint)
+    throw new Error('Reattach this take’s original map bundle before exporting.');
   const restoreHighlights=view.suspendHighlights();
   try {
   const appearance = view.getAppearance(), sourceHead = view.getSourceHead(), lights = view.getShotLights();
@@ -60,6 +62,7 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
   scene.userData = {
     generator: "m0clip-ts", robot: take.meta.robot, model: take.meta.model,
     terrain: take.meta.terrain, policy: take.meta.policy, recorded: take.meta.created,
+    localMap: take.meta.localMap && {...take.meta.localMap},
     range_s: [job.t0, job.t1], key_fps: job.fps,
     robotAppearance: appearance, recordedAppearance: structuredClone(take.meta.appearance),
     sourceHead, recordedSourceHead: take.meta.sourceHead, look, recordedLook: structuredClone(take.meta.look),

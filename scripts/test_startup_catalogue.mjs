@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, unlink } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { buildStartupCatalogue, buildRuntimeGraph, buildDevelopmentCatalogue, writeStartupCatalogue, moduleReferences } from './build_startup_catalogue.mjs';
+import { buildStartupCatalogue, buildRuntimeGraph, buildDevelopmentCatalogue, writeStartupCatalogue, moduleReferences, captureRuntimeChunks } from './build_startup_catalogue.mjs';
 
 const root = await mkdtemp(resolve(tmpdir(), 'm0clip-startup-catalogue-'));
 async function put(name, body) {
@@ -25,21 +25,38 @@ function chunk(url, role, imports = [], css = [], dynamicImports = [], assets = 
 }
 try {
   await put('wasm/mujoco.js', 'export default function(){}'); await put('wasm/mujoco.wasm', Buffer.from([0, 97, 115, 109]));
-  await put('assets/shell.js', 'import "./common.js"; import("./main.js");');
+  await put('assets/shell.js', 'import "./common.js"; import("./main.js"); import("./bundle.js");');
   await put('assets/common.js', 'export const common = 1;');
-  await put('assets/main.js', 'import "./common.js"; import "./three.js"; import("./GLTFExporter.js");');
+  await put('assets/main.js', 'import "./common.js"; import "./three.js"; import "./browser.js"; import("./GLTFExporter.js");');
   await put('assets/three.js', 'export const renderer = 1;'); await put('assets/main.css', 'body { color: white; }');
   await put('assets/GLTFExporter.js', 'export const exporter = 1;');
+  await put('assets/bundle.js', 'import "./common.js"; import "./browser.js"; export const inspect = () => {};');
+  await put('assets/browser.js', 'export const inflate = value => value;');
+  const intakeChunks = captureRuntimeChunks({
+    intake: { type: 'chunk', fileName: 'assets/bundle.js', facadeModuleId: null,
+      moduleIds: ['/fixture/src/maps/bundle.ts'], imports: ['assets/common.js', 'assets/browser.js'], dynamicImports: [] },
+  });
+  await put('assets/bundle-verification.worker.js', 'import "./bundle.js";');
+  const verificationChunks = captureRuntimeChunks({
+    verification: { type: 'chunk', fileName: 'assets/bundle-verification.worker.js', facadeModuleId: null,
+      moduleIds: ['/fixture/src/maps/bundle-verification.worker.ts'], imports: ['assets/bundle.js'], dynamicImports: [] },
+  }, true);
   await put('assets/sim.worker.js', 'new URL("./ort.wasm", import.meta.url); new URL("./not-emitted.mjs", import.meta.url);');
   await put('assets/ort.wasm', Buffer.alloc(41)); await put('wasm/old-unused-runtime.wasm', Buffer.alloc(999));
   const graph = await buildRuntimeGraph(root, [
     chunk('/assets/shell.js', 'shell', ['/assets/common.js']),
     chunk('/assets/common.js'), chunk('/assets/three.js'),
-    chunk('/assets/main.js', 'page', ['/assets/common.js', '/assets/three.js'], ['/assets/main.css'], ['/assets/GLTFExporter.js']),
-    chunk('/assets/sim.worker.js', 'worker'), chunk('/assets/GLTFExporter.js'),
+    chunk('/assets/main.js', 'page', ['/assets/common.js', '/assets/three.js', '/assets/browser.js'], ['/assets/main.css'], ['/assets/GLTFExporter.js']),
+    chunk('/assets/sim.worker.js', 'worker'), chunk('/assets/GLTFExporter.js'), chunk('/assets/browser.js'), ...intakeChunks, ...verificationChunks,
   ]);
-  assert.deepEqual(graph.runtime.page, ['/assets/main.css', '/assets/main.js', '/assets/three.js']);
-  assert.deepEqual(graph.dependencies['/assets/main.js'], ['/assets/main.css', '/assets/three.js']);
+  assert.deepEqual(graph.runtime.page, ['/assets/browser.js', '/assets/main.css', '/assets/main.js', '/assets/three.js']);
+  assert.deepEqual(graph.dependencies['/assets/main.js'], ['/assets/browser.js', '/assets/main.css', '/assets/three.js']);
+  assert.deepEqual(graph.runtime.localMap, ['/assets/browser.js', '/assets/bundle.js'],
+    'The real optional intake graph includes shared page dependencies, not preloaded shell files');
+  assert.deepEqual(graph.runtime.localMapVerification,
+    ['/assets/browser.js', '/assets/bundle-verification.worker.js', '/assets/bundle.js', '/assets/common.js'],
+    'The independent verifier keeps the complete static graph, including shell/page overlaps');
+  assert(!graph.runtime.page.includes('/assets/bundle.js'), 'Deferred intake itself is never a scene download root');
   assert.deepEqual(graph.runtime.worker, ['/assets/sim.worker.js', '/wasm/mujoco.js', '/wasm/mujoco.wasm']);
   assert.deepEqual(graph.runtime.inference, ['/assets/ort.wasm']);
   assert(!Object.values(graph.runtime).flat().includes('/wasm/old-unused-runtime.wasm'));
@@ -72,11 +89,24 @@ try {
   for (const name of ['source-upgrade.json', 'props-report.json']) await put(map + name, { internal: true });
   const characterReceipts = ['analysis.json', 'conversion.json', 'rig-map.json', 'source-evidence.json', 'source-manifest.json'];
   for (const name of characterReceipts) await put('assets/characters/authored/' + name, { internal: 'conversion provenance' });
+  const caseful = 'assets/maps/caseful/';
+  await put(caseful + 'manifest.json', { visual: 'WORLD.GLB', props: { visual: 'unselected-props.glb' },
+    native_textures: { props: 'models/PROPS.GLTF' }, visibility: 'pvs/custom.json' });
+  await put(caseful + 'WORLD.GLB', glb({ asset: { version: '2.0' }, images: [{ uri: 'world.PNG' }] }));
+  await put(caseful + 'world.PNG', Buffer.alloc(13));
+  await put(caseful + 'models/PROPS.GLTF', { asset: { version: '2.0' },
+    buffers: [{ uri: 'mesh.bin', byteLength: 4 }], images: [{ uri: 'prop.png' }] });
+  await put(caseful + 'models/mesh.bin', Buffer.from('MESH'));
+  await put(caseful + 'models/prop.png', Buffer.alloc(17));
+  await put(caseful + 'pvs/custom.json', { visibility: 'AA==' });
   const catalogue = await buildStartupCatalogue(root, graph.runtime, { dependencies: graph.dependencies });
   assert.deepEqual(catalogue.mapVisuals.selected, [
     'lighting.json', 'lightstyles.json', 'manifest.json', 'props-native.glb', 'source-color-0.rgb',
     'styles-0.rgba.gz', 'styles-1.rgba.gz', 'visibility.json', 'visual-native.glb',
   ].map(name => '/' + map + name).sort());
+  assert.deepEqual(catalogue.mapVisuals.caseful, [
+    'manifest.json', 'WORLD.GLB', 'world.PNG', 'models/PROPS.GLTF', 'models/mesh.bin', 'models/prop.png', 'pvs/custom.json',
+  ].map(name => '/' + caseful + name).sort());
   assert.deepEqual(catalogue.modelBundles['/assets/models/robot/scene.xml.manifest.json'], [
     '/assets/models/robot/meshes/chosen.STL.gz', '/assets/models/robot/parts/shared.xml',
     '/assets/models/robot/scene.xml', '/assets/models/robot/scene.xml.manifest.json',
@@ -107,16 +137,21 @@ try {
   const bodies = new Map([
     ['/src/start.ts', 'import "/src/shell.ts"; import("/src/main.ts");'],
     ['/src/shell.ts', 'export const launch = "Choose map";'],
-    ['/src/main.ts', 'import "/src/shell.ts"; import "/src/render.ts"; import("/src/unused-exporter.ts");'],
+    ['/src/main.ts', 'import "/src/shell.ts"; import "/src/render.ts"; import "/src/browser.ts"; import("/src/unused-exporter.ts");'],
     ['/src/render.ts', 'export const renderer = "transformed ✓";'],
+    ['/src/maps/bundle.ts', 'import "/src/shell.ts"; import "/src/browser.ts"; export const inspect = () => {};'],
+    ['/src/maps/bundle-verification.worker.ts?worker_file&type=module', 'import "/src/maps/bundle.ts";'],
+    ['/src/browser.ts', 'export const inflate = value => value;'],
     ['/src/worker/sim.worker.ts?worker_file&type=module', 'import "/src/policy.ts";'],
     ['/src/policy.ts', 'new URL("/runtime/ort.wasm", import.meta.url);'],
     ['/runtime/ort.wasm', Buffer.alloc(37)],
   ]);
   const loaded = [];
   const dev = await buildDevelopmentCatalogue(root, async key => { loaded.push(key); return bodies.get(key) ?? null; });
-  assert.deepEqual(dev.runtime.page, ['/src/main.ts', '/src/render.ts']);
-  assert.deepEqual(dev.dependencies['/src/main.ts'], ['/src/render.ts']);
+  assert.deepEqual(dev.runtime.page, ['/src/browser.ts', '/src/main.ts', '/src/render.ts']);
+  assert.deepEqual(dev.runtime.localMap, ['/src/browser.ts', '/src/maps/bundle.ts']);
+  assert.deepEqual(dev.runtime.localMapVerification,
+    ['/src/browser.ts', '/src/maps/bundle-verification.worker.ts?worker_file&type=module', '/src/maps/bundle.ts', '/src/shell.ts']);
   assert.equal(dev.sizes['/src/render.ts'], Buffer.byteLength(bodies.get('/src/render.ts')));
   assert.deepEqual(dev.runtime.inference, ['/runtime/ort.wasm']);
   assert.equal(dev.sizes['/runtime/ort.wasm'], 37);

@@ -14,12 +14,19 @@ export interface LoadingSnapshot {
   unexpected: number;
 }
 
+/** Only explicitly independent module realms split an otherwise identical HTTP entity. */
+function progressEntityKey(asset: { url: string; realm?: 'map-verification' }): string {
+  const url = catalogueAssetKey(asset.url);
+  return asset.realm ? `${asset.realm}\u0000${url}` : url;
+}
+
 /** Unique decoded HTTP entities. Planning may be indeterminate; a frozen maximum never changes. */
 export class SceneProgress {
   private generation = 0;
   private requests = new Map<string, TransferUpdate>();
   private activity = new Map<string, number>();
   private resources = new Map<string, TransferUpdate>();
+  private workerRoots = new Set<string>();
   private budget: Map<string, number> | null = null;
   private maximum = 0;
   private loaded = 0;
@@ -33,6 +40,7 @@ export class SceneProgress {
     this.requests.clear();
     this.activity.clear();
     this.resources.clear();
+    this.workerRoots.clear();
     this.budget = null;
     this.maximum = this.loaded = 0;
     this.mismatch = false;
@@ -43,15 +51,40 @@ export class SceneProgress {
 
   get hasCatalogueMismatch() { return this.mismatch; }
 
+  /** Assign an owned worker's root before freeze, without inventing an HTTP read. */
+  ownWorkerRoot(generation: number, value: string, now: number) {
+    if (generation !== this.generation) return;
+    const url = catalogueAssetKey(value);
+    if (this.workerRoots.has(url)) return;
+    this.workerRoots.add(url);
+    const realm = 'map-verification', key = progressEntityKey({ url, realm });
+    const page = this.resources.get(url);
+    if (page) {
+      const resource = this.resources.get(key);
+      const active = (this.activity.get(key) ?? 0) + (this.activity.get(url) ?? 0);
+      this.activity.set(key, active);
+      this.activity.delete(url);
+      this.resources.delete(url);
+      if (resource) {
+        const loaded = Math.max(resource.loaded, page.loaded);
+        const done = resource.state === 'done' || page.state === 'done';
+        this.resources.set(key, { id: key, url, realm, loaded,
+          total: done ? loaded : page.total ?? resource.total,
+          state: done ? 'done' : active > 0 ? 'loading' : page.state });
+      } else this.resources.set(key, { ...page, id: key, realm });
+    }
+    this.recount(now);
+  }
+
   freeze(generation: number, assets: readonly PlannedAsset[], now: number) {
     if (generation !== this.generation) return;
     if (this.budget) throw new Error('The scene asset payload maximum is already fixed.');
     const budget = new Map<string, number>();
     for (const asset of assets) {
       if (!Number.isSafeInteger(asset.bytes) || asset.bytes < 0) throw new Error(`Invalid asset payload size: ${asset.url}`);
-      const url = catalogueAssetKey(asset.url), previous = budget.get(url);
-      if (previous !== undefined && previous !== asset.bytes) throw new Error(`Conflicting asset payload sizes: ${url}`);
-      budget.set(url, asset.bytes);
+      const key = progressEntityKey(asset), previous = budget.get(key);
+      if (previous !== undefined && previous !== asset.bytes) throw new Error(`Conflicting asset payload sizes: ${asset.url}`);
+      budget.set(key, asset.bytes);
     }
     // The launch shell observes actual completed planning/module metadata. Include
     // those unique bodies, not a second read, and never guess an unfinished size.
@@ -69,27 +102,29 @@ export class SceneProgress {
 
   /** Retained planner bodies have already completed their real HTTP read. */
   prepared(generation: number, assets: readonly PlannedAsset[], now: number) {
-    this.update(generation, assets.map(asset => ({ id: `prepared:${catalogueAssetKey(asset.url)}`,
-      url: asset.url, loaded: asset.bytes, total: asset.bytes, state: 'done' })), now);
+    this.update(generation, assets.map(asset => ({ id: `prepared:${progressEntityKey(asset)}`,
+      url: asset.url, realm: asset.realm, loaded: asset.bytes, total: asset.bytes, state: 'done' })), now);
   }
 
   update(generation: number, updates: readonly TransferUpdate[], now: number) {
     if (generation !== this.generation) return;
     for (const update of updates) {
+      const url = catalogueAssetKey(update.url);
+      const realm = update.realm ?? (this.workerRoots.has(url) ? 'map-verification' : undefined);
+      const key = progressEntityKey({ url, realm });
       const previous = this.requests.get(update.id);
       // A late batch must not resurrect a completed, failed or cancelled request.
       if (previous && previous.state !== 'loading') continue;
-      const url = catalogueAssetKey(update.url);
-      const request = { ...update, url, loaded: Math.max(previous?.loaded ?? 0, update.loaded) };
+      const request = { ...update, url, realm, loaded: Math.max(previous?.loaded ?? 0, update.loaded) };
       this.requests.set(update.id, request);
-      const active = (this.activity.get(url) ?? 0)
+      const active = (this.activity.get(key) ?? 0)
         + (!previous && request.state === 'loading' ? 1 : 0)
         - (previous?.state === 'loading' && request.state !== 'loading' ? 1 : 0);
-      this.activity.set(url, active);
-      const resource = this.resources.get(url);
+      this.activity.set(key, active);
+      const resource = this.resources.get(key);
       const loaded = Math.max(resource?.loaded ?? 0, request.loaded);
       const done = resource?.state === 'done' || request.state === 'done';
-      this.resources.set(url, { id: url, url, loaded,
+      this.resources.set(key, { id: key, url, realm, loaded,
         total: done ? loaded : request.total ?? resource?.total ?? null,
         state: done ? 'done' : active > 0 ? 'loading' : request.state });
     }

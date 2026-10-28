@@ -30,7 +30,7 @@ const { build } = require('esbuild');
   const image = '/assets/maps/selected/material.png';
   const style = '/assets/maps/selected/styles.rgba.gz';
   const authored = authoredCharacter('gingerbread-man').url;
-  const catalogue = { version: 1, release: 'test', runtime: { page: [], worker: [], inference: [] },
+  const catalogue = { version: 1, release: 'test', runtime: { page: [], worker: [], inference: [], localMap: [], localMapVerification: [] },
     sizes: Object.fromEntries([cookie, dog, head, world, props, manifest, image, style, authored, '/assets/dog.bin'].map(url => [url, 17])),
     dependencies: { [world]: [image], [props]: [image], [dog]: ['/assets/dog.bin'], [authored]: [image] },
     mapVisuals: { selected: [manifest, world, props, style], unused: ['/unused.glb'] }, modelBundles: {} };
@@ -46,6 +46,9 @@ const { build } = require('esbuild');
     let plan = await planVisualAssets(selection, catalogue);
     sameSet(plan.urls, [cookie, manifest, world, props, image, style]);
     assert.equal(new Set(plan.urls).size, plan.urls.length, 'Shared texture entity is budgeted once');
+    const local = await planVisualAssets({ ...selection, terrain: 'map:local-' + 'a'.repeat(64) }, catalogue);
+    sameSet(local.urls, [cookie]);
+    assert.equal(plannedAssets(catalogue, local.urls, local.prepared).reduce((bytes,asset)=>bytes+asset.bytes,0),17,'A local map changes no HTTP download maximum');
     const progress = new SceneProgress();
     for (let index = 0; index < 2; index++) {
       const selected = await planVisualAssets({ ...selection, terrain: 'flat' }, catalogue);

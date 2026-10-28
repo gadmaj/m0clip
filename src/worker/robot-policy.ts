@@ -1,6 +1,7 @@
 /** Metadata-only robot/policy resolution, shared by launch and live robot selection. */
 import type { PolicyEntry, RobotSpec } from '../core/types';
 import { getSpec, SPECS } from '../robots';
+export interface RobotPolicySelection {robot:string;policies:PolicyEntry[];index:number}
 
 export const robotFamily = (robot: string) =>
   robot.startsWith('r1') ? 'r1' : robot.startsWith('g1') ? 'g1' : robot;
@@ -32,7 +33,7 @@ export function specFor(entry: PolicyEntry, robot: string, keep = false): string
 /** Preflight without changing any active worker context or loading assets.
  * Keep the complete family catalog: an intentional later policy choice may change hardware.
  * Only an ordinary remembered/default launch may adopt an incompatible pack's model. */
-export function selectRobotPolicy(robot: string, entries: PolicyEntry[], preferred?: string, explicit = false) {
+export function selectRobotPolicy(robot: string, entries: PolicyEntry[], preferred?: string, explicit = false):RobotPolicySelection {
   const spec = getSpec(robot);
   const policies = entries.filter(entry => robotFamily(entry.robot) === robotFamily(robot));
   let first = -1, saved = -1, walking = -1;

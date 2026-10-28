@@ -12,7 +12,7 @@
     "postinstall": "node scripts/copy-ort-wasm.mjs"
   },
   "dependencies": {
-    "fflate": "^0.8.3",
+    "fflate": "0.8.3",
     "js-yaml": "^4.1.0",
     "mediabunny": "^1.61.0",
     "mujoco": "^3.1.16",

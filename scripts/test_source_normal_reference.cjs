@@ -50,7 +50,7 @@ function materialFixture(config){
   const results=[];
   for(config of cases){
    const result=await page.evaluate(async({config,native,projected,projectedSpecular})=>{
-    const v=window.__app.view;await v.setTerrainVisual('/assets/maps/nt_ghost_ctg/visual.glb?normal='+config.name);v.setDisplay({...v.display,robot:false});v.setSourceLighting(true);v.sourceColorMap=false;v.sourceAmbient.linearOutput.value=1;v.flashlight.cookie.value.colorSpace='';v.flashlight.cookie.value.needsUpdate=true;
+    const v=window.__app.view;await v.setTerrainVisual(null);await v.setTerrainVisual(window.__app.sourceForTerrain('map:nt_ghost_ctg'));v.setDisplay({...v.display,robot:false});v.setSourceLighting(true);v.sourceColorMap=false;v.sourceAmbient.linearOutput.value=1;v.flashlight.cookie.value.colorSpace='';v.flashlight.cookie.value.needsUpdate=true;
     const camera=v.camera;camera.position.set(0,0,0);camera.quaternion.set(0,0,0,1);camera.aspect=1;camera.fov=60;camera.updateProjectionMatrix();
     v.beginOffscreen(64,64,{transparent:true,floor:false});
     const read=()=>{const canvas=document.createElement('canvas');canvas.width=canvas.height=64;const ctx=canvas.getContext('2d');ctx.drawImage(v.renderer.domElement,0,0);return Array.from(ctx.getImageData(32,32,1,1).data)};

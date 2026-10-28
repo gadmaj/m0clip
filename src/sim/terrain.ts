@@ -3,8 +3,8 @@
  * randomness is seeded so a preset builds the same field every reload. */
 
 export type BuiltinTerrain = "flat" | "rough" | "slope" | "stairs" | "park";
-/** A built-in preset, or `map:<id>` — a converted game map under public/assets/maps/<id>/
- * (scripts/import_source_bsp.py), listed in public/assets/maps/index.json. */
+/** A built-in preset, or `map:<id>` resolved by the map source boundary.
+ * Hosted maps are catalogued under /assets/maps; local IDs identify verified session files. */
 export type TerrainName = BuiltinTerrain | `map:${string}`;
 export const TERRAINS: BuiltinTerrain[] = ["flat", "rough", "slope", "stairs", "park"];
 export const MAPS_DIR = "/assets/maps";

@@ -9,16 +9,17 @@ import { installDefaultPacks } from '../packs/defaults';
 import { releasePolicySessions } from '../core/policy';
 import { Engine, MissingBundleError, GEOM_MESH, type PreparedEngine } from "../sim/engine";
 import { SimFSM, type FsmState } from "../sim/fsm";
-import { isTerrain, mapId, MAPS_DIR, terrainTransform, type TerrainName } from "../sim/terrain";
+import { isTerrain, mapId, terrainTransform, type TerrainName } from "../sim/terrain";
 import { getSpec, SPECS } from "../robots";
 import { observeTransfers } from "../loading/transfers";
-import { robotFamily as fam, r1Models, modelKey, specFor, selectRobotPolicy } from './robot-policy';
-import type { FromWorker, RenderModel, ToWorker } from "../sim/protocol";
+import { robotFamily as fam, r1Models, modelKey, specFor, selectRobotPolicy, type RobotPolicySelection } from './robot-policy';
+import type { FromWorker, RenderModel, ToWorker, SceneIdentity } from "../sim/protocol";
 import { createFrameGeometryLayout, copyMovingGeometry } from '../sim/geometry-frames';
 import { PreparedAssets, httpAssetKey, usePreparedAssets } from '../core/prepared-assets';
 import { StartupGate } from '../core/startup-gate';
 import { driverAssetUrls, selectedDriverAssets } from '../core/driver-assets';
 import { expandAssetUrls } from '../loading/catalogue';
+import { mapSource, registerLocalMap, type MapSource } from '../maps/source';
 
 /** Kinematic-playback state: a user-supplied reference clip is set into qpos
  * frame-by-frame (no physics), to preview retargeted mocap on the robot. */
@@ -57,6 +58,8 @@ let loadingGeneration: number | undefined;
 let loadingEpoch = 0;
 let stopLoading: (() => void) | undefined;
 let releasePrepared: (() => void) | undefined;
+let terrainEpoch=0;
+let stagedTerrain: {request:number;baseRobot:string;robot:string;terrain:TerrainName;source:MapSource|null;engine:Engine;scene:SceneIdentity;selection?:RobotPolicySelection}|undefined;
 const startupGate = new StartupGate();
 
 function finishLoading(generation: number) {
@@ -77,6 +80,7 @@ class SimWorker {
 
   robot = "r1";
   terrain: TerrainName = "flat";
+  private activeMap: MapSource | null = null;
   packs: PackMetadata[] = [];          // catalog only; selected weights load in cfgFor
   configs = new Map<string, EvalConfig>();
   policies: PolicyEntry[] = [];       // pack entries for the active robot
@@ -269,6 +273,8 @@ class SimWorker {
       this.packs = await listPacks();
     }
     if (isTerrain(m.terrain)) this.terrain = m.terrain;
+    if(m.localMap){if(m.localMap.id!==mapId(this.terrain))throw new Error('The selected map source does not match the requested terrain.');this.activeMap=registerLocalMap(m.localMap);}
+    this.activeMap=mapSource(this.terrain);
     const entries = this.allEntries();
     const robots = [...new Set(entries.map((e) => e.robot))].filter((r) => r in SPECS);
     const robot = m.robot && m.robot in SPECS ? m.robot
@@ -301,9 +307,10 @@ class SimWorker {
         );
       }
       if (epoch !== loadingEpoch || generation !== loadingGeneration) return;
-      const spec = getSpec(this.robot), map = mapId(this.terrain), mount = '/work/map';
+      const spec = getSpec(this.robot), source = this.activeMap;
+      const mount = source?.identity ? `/work/maps/${source.identity.fingerprint}` : '/work/map';
       preparedEngine = await Engine.prepare(spec.model_dir, spec.scene,
-        map ? { dir: `${MAPS_DIR}/${map}`, mount } : undefined, url => assets.prepare(url));
+        source ? { source, mount } : undefined, url => assets.prepare(url));
       if (epoch !== loadingEpoch || generation !== loadingGeneration) return;
       if (preparedConfig?.status === 'rejected') throw preparedConfig.reason;
       const policyUrls = preparedConfig?.status === 'fulfilled'
@@ -359,12 +366,15 @@ class SimWorker {
   }
 
 
-  private async buildEngine(prepared?: PreparedEngine) {
+  private async buildEngine(prepared?: PreparedEngine, current=()=>true, compiled?:Engine, identity?:SceneIdentity) {
     const prev = this.eng as Engine | undefined;
     const spec0 = getSpec(this.robot);
-    const map = mapId(this.terrain), mount = "/work/map";
-    this.eng = await Engine.create(spec0.model_dir, terrainTransform(this.terrain, {}, mount), spec0.scene,
-                                   map ? { dir: `${MAPS_DIR}/${map}`, mount } : undefined, prepared);
+    const source = this.activeMap;
+    const mount = source?.identity ? `/work/maps/${source.identity.fingerprint}` : '/work/map';
+    const next = compiled ?? await Engine.create(spec0.model_dir, terrainTransform(this.terrain, {}, mount), spec0.scene,
+                                   source ? { source, mount } : undefined, prepared);
+    if(!current()){next.dispose();throw new DOMException('Map loading cancelled.','AbortError');}
+    this.eng=next;
     if (prev) {
       // the old driver is bound to the old engine's model/data; every caller
       // reloads one (or runs driverless) — drop it before freeing the wasm side
@@ -384,11 +394,18 @@ class SimWorker {
     if (!(bodyIds instanceof Int32Array)) throw new Error('The compiled model has no geometry body IDs.');
     const geometry = createFrameGeometryLayout(bodyIds, this.eng.geomXpos, this.eng.geomXmat);
     this.movingGeomIds = geometry.movingIds;
-    post({ t: "model", desc: this.renderModel(), geometry: geometry.layout });
+    post({ t: "model", desc: this.renderModel(identity), geometry: geometry.layout });
+  }
+
+  private sceneIdentity(engine:Engine,robot:string,terrain:TerrainName):SceneIdentity {
+    const hinges=engine.hinges();
+    return {robot,terrain,ngeom:engine.model.ngeom,nq:engine.model.nq,
+      baseQadr:engine.jointQposAdr(getSpec(robot).floating_base_joint),
+      hinges:hinges.names.map((name,i)=>({name,qadr:hinges.qadr[i]}))};
   }
 
   /** Copy the geom/mesh tables out of wasm memory for the renderer. */
-  private renderModel(): RenderModel {
+  private renderModel(identity=this.sceneIdentity(this.eng,this.robot,this.terrain)): RenderModel {
     const m = this.eng.model as any;
     const ngeom = this.eng.model.ngeom;
     const geomType: Int32Array = m.geom_type;
@@ -413,8 +430,7 @@ class SimWorker {
       }
     }
     return {
-      robot: this.robot, terrain: this.terrain,
-      ngeom,
+      ...identity,
       type: Int32Array.from(geomType),
       size: Float64Array.from(m.geom_size as Float64Array),
       rgba: Float32Array.from(m.geom_rgba as Float32Array),
@@ -424,11 +440,8 @@ class SimWorker {
       dataid, meshes,
       bodyFrames: { parent: Int32Array.from(m.body_parentid), pos: Float64Array.from(m.body_pos), quat: Float64Array.from(m.body_quat) },
       geomFrames: { pos: Float64Array.from(m.geom_pos), quat: Float64Array.from(m.geom_quat) },
-      nq: this.eng.model.nq,
       bodyNames: Array.from({ length: this.eng.model.nbody }, (_, i) =>
         this.eng.mj.mj_id2name(this.eng.model, this.eng.mj.mjtObj.mjOBJ_BODY.value, i) ?? ''),
-      baseQadr: this.baseAddr,
-      hinges: (() => { const h = this.eng.hinges(); return h.names.map((name, i) => ({ name, qadr: h.qadr[i] })); })(),
     };
   }
 
@@ -540,7 +553,7 @@ class SimWorker {
     this.sendStatus();
   }
 
-  async onMessage(m: ToWorker) {
+  async onMessage(m: ToWorker, current=()=>true) {
     switch (m.t) {
       case "init": return this.init(m);
       case "playback": return this.startPlayback(m.csv, m.fps, m.name);
@@ -629,23 +642,49 @@ class SimWorker {
       case "robot":
         await this.setRobot(m.robot);
         return this.reenter();
-      case "terrain":
+      case "terrain": {
         this.busy = true;
-        const prevTerrain = this.terrain;
-        this.terrain = m.terrain;
-        post({ t: "busy", msg: `rebuilding scene (${m.terrain})…` });
+        const previous={terrain:this.terrain,source:this.activeMap,robot:this.robot,policies:this.policies,polIdx:this.polIdx,playback:this.playback};
+        let compiled:Engine|undefined;
+        let selection:RobotPolicySelection|undefined;
+        post({ t: "busy", msg: "Preparing map physics…" });
         try {
-          await this.buildEngine();
-        } catch (e) {
-          this.terrain = prevTerrain;
-          throw e;
-        } finally {
-          this.busy = false;          // a map that fails to load leaves the previous scene running
-        }
+          let source:MapSource|null,robot:string,scene:SceneIdentity;
+          if(m.commit){
+            const staged=stagedTerrain;
+            if(!staged||staged.request!==m.request||staged.baseRobot!==this.robot||staged.terrain!==m.terrain)
+              throw new Error('The prepared scene is no longer available.');
+            ({source,robot,scene,selection}=staged);compiled=staged.engine;
+            stagedTerrain=undefined;
+          }else{
+            source=m.localMap?registerLocalMap(m.localMap):mapSource(m.terrain);
+            if((source?.id??null)!==mapId(m.terrain))throw new Error('The selected map source does not match the requested terrain.');
+            selection=m.robot?selectRobotPolicy(m.robot,this.allEntries(),undefined,true):undefined;
+            robot=selection?.robot??this.robot;
+            const mount=source?.identity?`/work/maps/${source.identity.fingerprint}`:'/work/map',spec=getSpec(robot);
+            compiled=await Engine.create(spec.model_dir,terrainTransform(m.terrain,{},mount),spec.scene,source?{source,mount}:undefined);
+            if(!current())throw new DOMException('Map loading cancelled.','AbortError');
+            scene=this.sceneIdentity(compiled,robot,m.terrain);
+            stagedTerrain?.engine.dispose();
+            stagedTerrain={request:m.request,baseRobot:this.robot,robot,terrain:m.terrain,source,engine:compiled,scene,selection};
+            post({t:'terrainPrepared',request:m.request,scene});return;
+          }
+          if(!current())throw new DOMException('Map loading cancelled.','AbortError');
+          this.terrain=m.terrain;this.activeMap=source;this.robot=robot;
+          if(selection){this.playback=null;this.policies=selection.policies;this.polIdx=selection.index;}
+          await this.buildEngine(undefined,()=>true,compiled,scene);
+        } catch (error) {
+          if(compiled&&this.eng!==compiled)compiled.dispose();
+          this.terrain=previous.terrain;this.activeMap=previous.source;this.robot=previous.robot;
+          this.policies=previous.policies;this.polIdx=previous.polIdx;this.playback=previous.playback;
+          if(stagedTerrain&&stagedTerrain.request===m.request){stagedTerrain.engine.dispose();stagedTerrain=undefined;}
+          post({t:'terrainFailed',request:m.request,msg:String(error)});return;
+        } finally {this.busy=false;}
         if (this.playback) this.rebindPlayback();
-        else if (this.policies.length) await this.loadDriver(this.polIdx);
-        else post({ t: "ready" });    // nothing else clears the overlay without a policy
-        return this.playback ? (post({ t: "ready" }), this.sendStatus()) : this.reenter();
+        else if (this.policies.length) await this.loadDriver(this.polIdx,!!selection);
+        else {if(selection)await releasePolicySessions();post({t:'ready'});}
+        return this.playback ? (post({t:'ready'}),this.sendStatus()) : this.reenter();
+      }
       case "command":
         this.command = m.cmd;
         return;
@@ -1097,6 +1136,13 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
     const message = ev.data, epoch = ++loadingEpoch;
     startupGate.cancel();
     void serializeWork(() => sim.init(message, epoch));
+    return;
+  }
+  if(ev.data.t==='cancelTerrain'){++terrainEpoch;stagedTerrain?.engine.dispose();stagedTerrain=undefined;return;}
+  if(ev.data.t==='terrain'){
+    const message=ev.data,epoch=++terrainEpoch;
+    if(!message.commit){stagedTerrain?.engine.dispose();stagedTerrain=undefined;}
+    void serializeWork(()=>epoch===terrainEpoch?sim.onMessage(message,()=>epoch===terrainEpoch):undefined);
     return;
   }
   void serializeWork(() => sim.onMessage(ev.data));

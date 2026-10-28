@@ -11,11 +11,12 @@ const bundled = await build({ stdin: { contents: `
   export {loadRows} from './src/core/drivers/g1_vq137';
   export {packAssetUrls,packEntries,resolvePackConfig,revokePack} from './src/packs';
   export {Engine,MissingBundleError} from './src/sim/engine';
+  export {MapSource} from './src/maps/source';
 `, resolveDir: process.cwd() }, bundle: true, platform: 'node', format: 'cjs', write: false });
 const module = { exports: {} };
 new Function('module', 'exports', 'require', bundled.outputFiles[0].text)(module, module.exports, createRequire(import.meta.url));
 const { PreparedAssets, httpAssetKey, fetchAsset, usePreparedAssets, selectedDriverAssets, driverAssetUrls,
-  StartupGate, loadTraj, loadRows, packAssetUrls, packEntries, resolvePackConfig, revokePack, Engine, MissingBundleError } = module.exports;
+  StartupGate, loadTraj, loadRows, packAssetUrls, packEntries, resolvePackConfig, revokePack, Engine, MissingBundleError, MapSource } = module.exports;
 const originalFetch = globalThis.fetch;
 const originalLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
 Object.defineProperty(globalThis, 'location', { configurable: true, value: { href: 'https://scene.test/src/worker/sim.worker.ts', origin: 'https://scene.test' } });
@@ -23,7 +24,7 @@ const requests = [];
 const bodies = new Map();
 const json = value => ({ body: JSON.stringify(value), headers: { 'content-type': 'application/json' } });
 bodies.set('/models/air/scene-air.xml.manifest.json', json({ files: ['scene-air.xml', 'meshes/leg.stl'], gzipFiles: ['meshes/leg.stl'] }));
-bodies.set('/maps/selected/manifest.json', json({ files: ['collision.xml', 'hulls.bin'] }));
+ bodies.set('/assets/maps/selected/manifest.json', json({ files: ['map.xml', 'hulls.bin'] }));
 bodies.set('https://policy.test/selected.csv?revision=7', { body: '1,2\n3,4\n', headers: { 'content-encoding': 'gzip', 'content-length': '3' } });
 bodies.set('/missing/scene.xml.manifest.json', { body: '<html></html>', headers: { 'content-type': 'text/html' } });
 globalThis.fetch = async value => {
@@ -49,10 +50,10 @@ try {
   assert.deepEqual((await loadRows(external)).map(row => Array.from(row)), [[1, 2], [3, 4]]);
   assert.equal(requests.filter(url => url === external).length, 1, 'Real trajectory and first-step CSV loaders reuse preflight bytes');
 
-  const physics = await Engine.prepare('/models/air', 'scene-air.xml', { dir: '/maps/selected', mount: '/work/map' }, url => assets.prepare(url));
+  const physics = await Engine.prepare('/models/air', 'scene-air.xml', { source: new MapSource('selected'), mount: '/work/map' }, url => assets.prepare(url));
   assert.deepEqual(physics.urls, ['/models/air/scene-air.xml.manifest.json', '/models/air/scene-air.xml', '/models/air/meshes/leg.stl.gz',
-    '/maps/selected/manifest.json', '/maps/selected/collision.xml', '/maps/selected/hulls.bin']);
-  assert.deepEqual(requests.slice(1), ['/models/air/scene-air.xml.manifest.json', '/maps/selected/manifest.json'], 'Metadata planning starts neither meshes nor WASM');
+    '/assets/maps/selected/manifest.json', '/assets/maps/selected/map.xml', '/assets/maps/selected/hulls.bin']);
+  assert.deepEqual(requests.slice(1), ['/models/air/scene-air.xml.manifest.json', '/assets/maps/selected/manifest.json'], 'Metadata planning starts neither meshes nor WASM');
   assert.equal(physics.extra.manifest.files.length, 2);
   await assert.rejects(Engine.prepare('/missing'), error => error instanceof MissingBundleError);
   release();
