@@ -4,11 +4,12 @@ import { join, posix, relative, resolve, sep } from 'node:path';
 const mapAssetPrefix = /^\/assets\/maps\/[^/]+\//i;
 const receiptFilename = /\/(?:[^/]+-report|source-upgrade)\.json\/?$/i;
 const characterReceipt = /\/assets\/characters\/[^/]+\/(?:analysis|conversion|rig-map|source-evidence|source-manifest)\.json\/?$/i;
+const sourceRobotReceipt = /\/assets\/source-robots\/[^/]+\/(?:analysis|candidate-robots)\.json\/?$/i;
 
 /** Receipts describe conversion work, not resources consumed by the player. */
 export function isPrivateAssetReceipt(path) {
   const normalized = posix.normalize('/' + path.replaceAll('\\', '/'));
-  return (mapAssetPrefix.test(normalized) && receiptFilename.test(normalized)) || characterReceipt.test(normalized);
+  return (mapAssetPrefix.test(normalized) && receiptFilename.test(normalized)) || characterReceipt.test(normalized) || sourceRobotReceipt.test(normalized);
 }
 
 /** Run only on an owned build output, never on borrowed native-data links. */
@@ -29,7 +30,7 @@ export async function removePrivateAssetReceipts(directory) {
       }
     }
   }
-  for (const family of ['maps', 'characters']) {
+  for (const family of ['maps', 'characters', 'source-robots']) {
     const assets = join(root, 'assets', family);
     let info;
     try { info = await lstat(assets); }
@@ -49,7 +50,7 @@ export function privateAssetReceiptMiddleware(request, response, next) {
     path = posix.normalize(decodeURIComponent(new URL(relative, 'http://localhost').pathname).replaceAll('\\', '/'));
   } catch { return next(); }
   // Public-directory and /@fs aliases can omit the canonical asset prefix.
-  if (!receiptFilename.test(path) && !characterReceipt.test(path)) return next();
+  if (!receiptFilename.test(path) && !characterReceipt.test(path) && !sourceRobotReceipt.test(path)) return next();
   response.statusCode = 404;
   response.setHeader('Cache-Control', 'no-store');
   response.end();

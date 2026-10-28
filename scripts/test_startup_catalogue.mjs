@@ -89,6 +89,9 @@ try {
   for (const name of ['source-upgrade.json', 'props-report.json']) await put(map + name, { internal: true });
   const characterReceipts = ['analysis.json', 'conversion.json', 'rig-map.json', 'source-evidence.json', 'source-manifest.json'];
   for (const name of characterReceipts) await put('assets/characters/authored/' + name, { internal: 'conversion provenance' });
+  const sourceRobotReceipts = ['analysis.json', 'candidate-robots.json'];
+  for (const name of sourceRobotReceipts) await put('assets/source-robots/native/' + name, { internal: 'conversion comparison' });
+  await put('assets/source-robots/native/body.glb', glb({ asset: { version: '2.0' } }));
   const caseful = 'assets/maps/caseful/';
   await put(caseful + 'manifest.json', { visual: 'WORLD.GLB', props: { visual: 'unselected-props.glb' },
     native_textures: { props: 'models/PROPS.GLTF' }, visibility: 'pvs/custom.json' });
@@ -122,6 +125,9 @@ try {
   }
   for (const name of characterReceipts) assert(!('/assets/characters/authored/' + name in catalogue.sizes),
     'Conversion-only character records must not be advertised by the public catalogue');
+  for (const name of sourceRobotReceipts) assert(!('/assets/source-robots/native/' + name in catalogue.sizes),
+    'Source robot conversion and comparison records stay out of the public catalogue');
+  assert('/assets/source-robots/native/body.glb' in catalogue.sizes, 'Native Source robot models remain budgeted');
   const first = await writeStartupCatalogue(root, graph.runtime, { dependencies: graph.dependencies, fileName: 'startup-catalogue-release.json' });
   await put(map + 'source-color-0.rgb', Buffer.alloc(101));
   const final = await writeStartupCatalogue(root, graph.runtime, { dependencies: graph.dependencies, fileName: 'startup-catalogue-release.json' });
