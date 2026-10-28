@@ -8,6 +8,13 @@ export interface LoadingSnapshot {
   active: number;
   unknown: number;
   remaining: number;
+  /** Exact partition of `remaining`: bytes of entities with an open request. */
+  activeBytes: number;
+  /** Planned entities with no request yet. Only nonzero once the maximum is fixed. */
+  queuedBytes: number;
+  /** Entities whose requests ended (failed, cancelled or short) without their full payload. */
+  stoppedBytes: number;
+  /** Transfer time for all remaining bytes; null unless every one is in an open request. */
   etaSeconds: number | null;
   stalled: boolean;
   frozen: boolean;
@@ -159,6 +166,7 @@ export class SceneProgress {
     while (this.samples.length > 1 && this.samples[1].at <= cutoff) this.samples.shift();
 
     let knownTotal = this.maximum, active = 0, unknown = 0, unexpected = 0;
+    let activeBytes = 0, queuedBytes = 0, stoppedBytes = 0;
     for (const [url, resource] of this.resources) {
       const bytes = this.budget?.get(url);
       if (this.budget && (bytes === undefined ? resource.loaded > 0
@@ -167,18 +175,45 @@ export class SceneProgress {
         active++;
         if (resource.total === null && bytes === undefined) unknown++;
       }
-      if (!this.budget) knownTotal += Math.max(resource.total ?? 0, resource.loaded);
+      if (this.budget) continue;
+      const size = Math.max(resource.total ?? 0, resource.loaded);
+      knownTotal += size;
+      if (resource.state === 'loading') activeBytes += size - resource.loaded;
+      else stoppedBytes += size - resource.loaded;
+    }
+    // Fixed budget: every planned entity is either open, never requested, or ended short.
+    // The three parts sum exactly to maximum - loaded, which recount computes with the same min().
+    if (this.budget) for (const [url, bytes] of this.budget) {
+      const resource = this.resources.get(url);
+      const left = bytes - Math.min(bytes, resource?.loaded ?? 0);
+      if (!resource) queuedBytes += left;
+      else if (resource.state === 'loading') activeBytes += left;
+      else stoppedBytes += left;
     }
     const remaining = Math.max(0, knownTotal - this.loaded);
     const stalled = active > 0 && remaining > 0 && now - this.lastByte >= 3_500;
     const first = this.samples[0], elapsed = now - first.at;
     const bytes = this.loaded - first.bytes;
-    const etaSeconds = this.budget && active > 0 && remaining > 0
+    // The sampled rate describes open requests only. Queued or stopped bytes have no open
+    // transfer, so a scene-wide figure would time work that has not started or cannot finish.
+    const etaSeconds = this.budget && remaining > 0 && activeBytes === remaining
       && !stalled && now - this.started >= 1_500 && elapsed >= 1_000 && bytes > 0
       ? remaining / (bytes / (elapsed / 1_000)) : null;
-    return { loaded: this.loaded, knownTotal, active, unknown, remaining, etaSeconds, stalled,
-      frozen: this.budget !== null, unexpected };
+    return { loaded: this.loaded, knownTotal, active, unknown, remaining, activeBytes, queuedBytes, stoppedBytes,
+      etaSeconds, stalled, frozen: this.budget !== null, unexpected };
   }
+}
+
+/** Compact ETA row for an unfinished, unfailed load. Only download time is ever estimated. */
+export function downloadEstimate(snapshot: LoadingSnapshot): string {
+  if (!snapshot.frozen) return 'ETA pending';
+  if (snapshot.remaining === 0) return 'Preparing scene…';
+  if (snapshot.stalled) return 'Waiting for data…';
+  if (snapshot.etaSeconds !== null) return `Download ETA ~${downloadTime(snapshot.etaSeconds)}`;
+  if (snapshot.queuedBytes > 0) return 'Download ETA pending · files queued';
+  // A stopped remainder cannot arrive through the open requests being measured.
+  if (snapshot.stoppedBytes > 0) return snapshot.activeBytes > 0 ? 'Download ETA unavailable' : 'Assets incomplete';
+  return snapshot.activeBytes > 0 ? 'Measuring speed…' : 'Assets incomplete';
 }
 
 export function downloadTime(seconds: number): string {
