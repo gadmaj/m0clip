@@ -113,7 +113,12 @@ export function openLocalMap(
     }
   };
   dialog.showModal();
-  if (file) void inspect(file);
+  if (file) {
+    const selection = new DataTransfer();
+    selection.items.add(file);
+    input.files = selection.files;
+    void inspect(file);
+  }
   else input.focus();
   return promise;
 }

@@ -115,6 +115,8 @@ export class Panel {
   private screenshotBtn!:HTMLButtonElement;
   private screenshotInfo!:HTMLElement;
   private recInfo!: HTMLElement;
+  private recordInfo = "Recording and playback shortcuts: Help.";
+  private navigationNotice: string | null = null;
   private timelineBtn!: HTMLButtonElement;
   private hoistBtn!: HTMLButtonElement;
   private noclipBtn!: HTMLButtonElement;
@@ -254,7 +256,7 @@ export class Panel {
       if (f) cb.onLoadTake(f);
       takeInput.value = "";
     };
-    this.recInfo = el("div.sub", { id: "record-status", role: "status" }, "Recording and playback shortcuts: Help.");
+    this.recInfo = el("div.sub", { id: "record-status", role: "status" }, this.recordInfo);
     const shotsButton = button("Shots", { title: "Open shots stored in this browser", onclick: cb.onOpenShots });
     shotsButton.id = "open-shots";
     shotsButton.setAttribute("aria-haspopup", "dialog");
@@ -263,7 +265,7 @@ export class Panel {
                takeInput, this.recInfo);
     const outputButton = button("Camera / output", { title: "Configure camera, video and data output", onclick: cb.onExportSetup });
     outputButton.id = 'capture-output-settings'; outputButton.setAttribute('aria-haspopup', 'dialog');
-    rec.append(el('div.row', null, outputButton));
+    rec.querySelector(".row")!.append(outputButton);
 
     // remote-controller moves of the active policy (505 / 805 fight modes, 801/802 speed levels); hidden
     // when none. Placed below the fixed controls so those never shift when a policy brings moves.
@@ -272,14 +274,15 @@ export class Panel {
     this.liveSections.push(this.remoteEl);
 
     // kinematic reference clip (mimic)
-    const clip = block(root, "Reference clip", "kinematic, no physics");
+    const clip = el("section.blk", { "aria-label": "Reference clip" });
+    root.append(clip);
     clip.dataset.workspace = 'capture';
     this.liveSections.push(clip);
     const fileInput = el("input", { type: "file", accept: ".csv,.txt", style: "display:none" });
     const fpsInput = el("input", { type: "number", value: "30", min: "1", title: "Clip frame rate",
                                    "aria-label": "Clip frame rate (fps)" });
     const fileBtn = button("Load CSV…", { icon: "file",
-      title: "Rows: base pos (3), quat xyzw (4), joint angles — 24 (R1) or 20 (R1 Air) joints",
+      title: "Kinematic playback, no physics. Rows: base pos (3), quat xyzw (4), joint angles — 24 (R1) or 20 (R1 Air) joints",
       onclick: () => fileInput.click() });
     fileBtn.style.justifyContent = "flex-start";
     fileInput.onchange = () => {
@@ -349,7 +352,7 @@ export class Panel {
     rec.querySelector(".blk-h")!.remove();
     rec.className = "scene-capture";
     rec.removeAttribute("data-workspace");
-    rec.querySelector(".row")!.append(this.screenshotBtn);
+    this.recBtn.after(this.screenshotBtn);
     rec.append(this.screenshotInfo);
     this.recBtn.setAttribute("aria-describedby", "record-status");
     actions.append(choices, rec);
@@ -671,7 +674,16 @@ export class Panel {
   }
 
   /** Line under the record buttons: live length while recording, else the last take. */
-  setRecordInfo(text: string) { this.recInfo.textContent = text; }
+  setRecordInfo(text: string) {
+    this.recordInfo = text;
+    this.recInfo.textContent = this.navigationNotice ?? text;
+  }
+
+  /** Navigation feedback temporarily covers, but never replaces, the latest take status. */
+  setNavigationNotice(text: string | null) {
+    this.navigationNotice = text;
+    this.recInfo.textContent = text ?? this.recordInfo;
+  }
 
   setScreenshotState(pending:boolean,message:string){
     this.screenshotBtn.disabled=pending;this.screenshotBtn.setAttribute('aria-busy',String(pending));
