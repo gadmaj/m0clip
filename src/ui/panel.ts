@@ -6,7 +6,7 @@ import type { FsmState } from "../sim/fsm";
 import { STATES } from "../sim/fsm";
 import type { PackInfo, PolicyInfo } from "../sim/protocol";
 import { TERRAINS, type MapEntry, type TerrainName } from "../sim/terrain";
-import { policyPresentation } from './policy-names';
+import { compactPolicyLabels, policyPresentation } from './policy-names';
 import { TerrainPicker } from './terrain-picker';
 import { VisualPicker } from './visual-picker';
 import { previewImage, staticPreviewOptions, policyPreview } from './preview-catalog';
@@ -544,30 +544,35 @@ export class Panel {
       return;
     }
     // group by obs-scheme label; G1 / R1 packs with variants (R1: declared, else from the pack robot)
-    // are listed Air-only first, then Air + EDU, then EDU-only (label prefix says which)
+    // are listed Air-only first, then Air + EDU, then EDU-only (group label names the variant)
     const fam = robot.toUpperCase() || "G1";
     const variant = (e: PolicyInfo): [number, string] => {
       const m = e.models;
       if (!m?.length) return [3, ""];
       const air = m.includes("air"), edu = m.includes("edu");
-      return air && !edu ? [0, `${fam} Air · `] : air && edu ? [1, `${fam} Air + EDU · `] : [2, `${fam} EDU · `];
+      return air && !edu ? [0, `${fam} Air`] : air && edu ? [1, `${fam} Air + EDU`] : [2, `${fam} EDU`];
     };
     const ordered = [...entries].sort((a, b) =>
       variant(a)[0] - variant(b)[0] || (a.fsmId ?? 1e9) - (b.fsmId ?? 1e9) || a.name.localeCompare(b.name));
+    const compact = compactPolicyLabels(ordered.map(e => ({ name: e.name, variant: variant(e)[1] })));
     const byGroup = new Map<string, PolicyInfo[]>();
     for (const e of ordered) {
-      const g = variant(e)[1] + policyPresentation(e.name).category;
+      const v = variant(e)[1], category = policyPresentation(e.name).category;
+      const g = v ? `${v} · ${category}` : category;
       if (!byGroup.has(g)) byGroup.set(g, []);
       byGroup.get(g)!.push(e);
     }
     for (const [g, list] of byGroup) {
       const grp = document.createElement("optgroup");
       grp.label = g;
-      // prefix the FSM id the policy runs as on the robot, e.g. "[802] cpy_walk_run_29dofs/actor"
+      // Option text keeps the full searchable identity; dataset.label is the short gallery/trigger text and
+      // dataset.detail the declared compatibility shown in focused/selected gallery details.
       for (const e of list) {
         const presentation = policyPresentation(e.name);
         const option = new Option(presentation.label, e.name);
-        option.dataset.label=presentation.title;
+        option.dataset.label=compact.get(e.name) ?? presentation.title;
+        option.dataset.detail=[variant(e)[1], e.fsmId === undefined ? '' : `State ${e.fsmId}`,
+          e.dof > 0 ? `${e.dof} DOF` : '', e.previewRobot ? `Robot ${e.previewRobot}` : ''].filter(Boolean).join(' · ');
         option.dataset.previewRobot=e.previewRobot;
         option.title = e.fsmId===undefined?presentation.description:presentation.description?`${presentation.description} · State ${e.fsmId}`:`State ${e.fsmId}`;
         grp.appendChild(option);

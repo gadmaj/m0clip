@@ -60,6 +60,13 @@
 .visual-picker-actions .btn { padding: 6px 12px; }
 .visual-picker-actions [aria-pressed="true"] { border-color: var(--accent); background: var(--accent-dim); }
 .visual-picker-dialog > p { flex: 0 0 auto; margin: 8px 0; overflow-wrap: anywhere; }
+/* Focused/selected identity: reserved height keeps the grid steady while focus moves between cards;
+ * a bounded block scrolls very long imported IDs instead of shrinking the grid. */
+.visual-picker-dialog > p[data-visual-picker-detail] {
+  min-width: 0; min-height: calc(2 * 1.4em); max-height: calc(4 * 1.4em); overflow-y: auto; overscroll-behavior: contain;
+  margin: 8px 0 0; padding-top: 6px;
+  border-top: 1px solid var(--line-hi); font-size: 12px; line-height: 1.4; color: var(--text-2);
+}
 .visual-picker-dialog[data-local-map] { width: min(460px, calc(100vw - 24px)); overflow-y: auto; }
 .visual-picker-dialog[data-local-map] input[type="file"] { min-width: 0; max-width: 100%; }
 .visual-picker-card > span { min-width: 0; overflow-wrap: anywhere; }
@@ -67,4 +74,5 @@
   .visual-picker-dialog { padding: 12px; }
   .visual-picker-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .visual-picker-card { padding: 6px; overflow-wrap: anywhere; }
+  .visual-picker-dialog > p[data-visual-picker-detail] { min-height: calc(3 * 1.4em); }
 }
