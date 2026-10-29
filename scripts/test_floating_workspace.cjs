@@ -483,8 +483,16 @@ async function source(page, directory, proxy, result) {
     const viewport = name === 'landscape' ? { width: 844, height: 390 }
       : mobile ? { width: name === 'mobile320' ? 320 : 390, height: small ? 520 : 844 } : { width: 1280, height: 800 };
     const directory = path.join(output, name); fs.mkdirSync(directory, { recursive: true });
-    const browser = await chromium.launch({ headless: false, executablePath: process.env.CHROME_EXECUTABLE || '/usr/bin/google-chrome', args: ['--no-sandbox', '--ozone-platform=x11', '--disable-dev-shm-usage', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding'] });
-    const context = await browser.newContext({ viewport, deviceScaleFactor: mobile ? 1 : .5, isMobile: mobile, hasTouch: mobile, recordVideo: { dir: path.join(directory, 'video'), size: mobile ? viewport : { width: 960, height: 600 } } });
+    const profileRoot = process.env.QA_PROFILE_DIR || directory;
+    fs.mkdirSync(profileRoot, { recursive: true });
+    const profile = fs.mkdtempSync(path.join(profileRoot, `${name}-profile-`));
+    const context = await chromium.launchPersistentContext(profile, {
+      headless: false, executablePath: process.env.CHROME_EXECUTABLE || '/usr/bin/google-chrome',
+      args: ['--no-sandbox', '--ozone-platform=x11', '--disable-dev-shm-usage', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding'],
+      viewport, deviceScaleFactor: mobile ? 1 : .5, isMobile: mobile, hasTouch: mobile,
+      recordVideo: { dir: path.join(directory, 'video'), size: mobile ? viewport : { width: 960, height: 600 } },
+    });
+    const browser = context.browser();
     if (name === 'legacy') await context.addInitScript(() => {
       localStorage.setItem('ume-panel-visibility', JSON.stringify({ inspector: true, menu: false, restore: { inspector: true, menu: false } }));
       localStorage.setItem('playpen-workspace-v1', JSON.stringify({ 'play-window': { x: 84, y: 114, collapsed: true }, inspector: { x: 470, y: 120, collapsed: false } }));
@@ -493,12 +501,12 @@ async function source(page, directory, proxy, result) {
       localStorage.setItem('playpen-workspace-v1', JSON.stringify({ deck: { x: 12, y: 800, collapsed: false } }));
       localStorage.setItem('ume-deck-h', '120');
     });
-    const page = await context.newPage(), errors = [], networkErrors = [], httpErrors = [], consoleErrors = [], warnings = [];
+    const page = context.pages()[0] || await context.newPage(), errors = [], networkErrors = [], httpErrors = [], consoleErrors = [], warnings = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('requestfailed', request => networkErrors.push({ url: request.url(), error: request.failure()?.errorText }));
     page.on('response', response => { if (response.status() >= 400) httpErrors.push({ url: response.url(), path: new URL(response.url()).pathname, status: response.status() }); });
     page.on('console', message => { if (['error', 'warning'].includes(message.type())) (message.type() === 'error' ? consoleErrors : warnings).push({ text: message.text(), location: message.location() }); });
-    const result = { name, viewport, chrome: browser.version(), errors, networkErrors, httpErrors, consoleErrors, warnings, deliberateFailures: [] }; results.push(result);
+    const result = { name, viewport, profile, chrome: browser.version(), errors, networkErrors, httpErrors, consoleErrors, warnings, deliberateFailures: [] }; results.push(result);
     let proxy;
     try {
       if (name === 'desktop') result.proof = await desktop(page, process.env.BASE_URL, directory);
@@ -523,7 +531,7 @@ async function source(page, directory, proxy, result) {
       if (proxy) for (const run of proxy.runs) { run.releaseRebuild = true; run.releaseLate = true; }
       await page.screenshot({ path: path.join(directory, 'FAILED.png'), timeout: 10000 }).catch(error => { result.failureScreenshot = error.message; });
     } finally {
-      await page.close(); result.video = await page.video().path(); await context.close(); await browser.close(); if (proxy) await proxy.close();
+      await page.close(); result.video = await page.video().path(); await context.close(); if (proxy) await proxy.close();
       fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ stage: process.env.WORKSPACE_STAGE, base: process.env.BASE_URL, results }, null, 2));
     }
     console.log(JSON.stringify({ name, passed: !!result.passed, failure: result.failure }));
