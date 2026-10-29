@@ -520,7 +520,7 @@ async function source(page, directory, proxy, result) {
       args: ['--no-sandbox', '--ozone-platform=x11', '--disable-dev-shm-usage', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding'],
       viewport, deviceScaleFactor: mobile ? 1 : .5, isMobile: mobile, hasTouch: mobile,
       // Scale evidence only, not the actual viewport or rendering.
-      recordVideo: { dir: path.join(directory, 'video'), size: mobile ? viewport : { width: 640, height: 400 } },
+      recordVideo: { dir: path.join(directory, 'video'), size: mobile ? viewport : { width: 480, height: 300 } },
     });
     const browser = context.browser();
     if (name === 'legacy') await context.addInitScript(() => {
