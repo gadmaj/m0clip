@@ -101,18 +101,27 @@ export class FloatingWorkspace {
       }
       this.persist();
     });
-    window.addEventListener('resize', () => {
-      for (const panel of this.panels.values()) this.apply(panel);
-    });
-    // A newly opened window must be on top and within reach after a screen resize.
+    // Track visibility from body navigation and responsive breakpoints.
+    const visible = new Set<FloatingPanel>();
+    const syncVisibility = () => {
+      for (const panel of this.panels.values()) {
+        const shown = panel.root.getClientRects().length > 0;
+        if (shown && !visible.has(panel)) { this.apply(panel); this.raise(panel); }
+        if (shown) visible.add(panel);
+        else visible.delete(panel);
+      }
+    };
+    const visibility = new MutationObserver(syncVisibility);
+    visibility.observe(document.body, { attributes: true, attributeFilter: ['class'] });
     for (const panel of this.panels.values()) {
-      new MutationObserver(records => {
-        if (!records.some(record => record.attributeName === 'hidden' ||
-            (record.oldValue?.split(/\s+/).includes('hidden') ?? false) !== panel.root.classList.contains('hidden'))) return;
-        if (panel.root.getClientRects().length) { this.apply(panel); this.raise(panel); }
-      }).observe(panel.root, { attributes: true, attributeOldValue: true, attributeFilter: ['hidden', 'class'] });
+      if (panel.root.getClientRects().length) visible.add(panel);
+      visibility.observe(panel.root, { attributes: true, attributeFilter: ['hidden', 'class'] });
       new ResizeObserver(() => this.apply(panel)).observe(panel.root);
     }
+    window.addEventListener('resize', () => {
+      for (const panel of this.panels.values()) this.apply(panel);
+      syncVisibility();
+    });
   }
 
   private window(id: string, title: string, parent: HTMLElement) {

@@ -434,7 +434,36 @@ async function resizeWorkspace(page, base, directory) {
   })));
   assert.deepEqual(restored, desktopPositions, 'Returning to desktop restores every prior panel position and collapsed state');
   await hit(page.locator('#play-window .floating-grip'));
-  return { launch, sizes, clamped, moved, desktopPositions, restored };
+  const playCollapse = page.locator('#play-window .floating-collapse');
+  if (await playCollapse.getAttribute('aria-expanded') !== 'true') await playCollapse.click();
+  for (const [id, x, y] of [['scene-window', 600, 96], ['capture-window', 600, 146]]) {
+    const root = page.locator(`#${id}`), collapse = root.locator('.floating-collapse');
+    if (await collapse.getAttribute('aria-expanded') === 'true') await collapse.click();
+    const origin = await root.boundingBox(), handle = await root.locator('.floating-grip').boundingBox();
+    await hit(root.locator('.floating-grip'));
+    const grabX = handle.x + handle.width / 2, grabY = handle.y + handle.height / 2;
+    await page.mouse.move(grabX, grabY); await page.mouse.down();
+    await page.mouse.move(grabX + x - origin.x, grabY + y - origin.y, { steps: 8 }); await page.mouse.up();
+    const placed = await root.boundingBox();
+    assert.ok(Math.abs(placed.x - x) < 1 && Math.abs(placed.y - y) < 1, 'Real drag places the collapsed panels for an overlapping-body regression');
+  }
+  await page.setViewportSize({ width: 390, height: 844 }); await raf(page, 4);
+  await activateAdvancedPanel(page, 'scene-window');
+  await activateAdvancedPanel(page, 'play-window');
+  await page.setViewportSize({ width: 1280, height: 800 }); await raf(page, 4);
+  const sceneExpand = page.locator('#scene-window .floating-collapse');
+  assert.equal(await sceneExpand.getAttribute('aria-expanded'), 'false');
+  await sceneExpand.click();
+  const breakpointTarget = page.locator('#scene-window details').filter({ has: page.locator('#reset-workspace') }).locator(':scope > summary');
+  const breakpointStacking = {
+    target: await hit(breakpointTarget),
+    scene: await page.locator('#scene-window').boundingBox(),
+    reference: await page.locator('#capture-window').boundingBox(),
+  };
+  const { target, reference } = breakpointStacking;
+  assert.ok(target.x + target.width / 2 > reference.x && target.x + target.width / 2 < reference.x + reference.width &&
+    target.y + target.height / 2 > reference.y && target.y + target.height / 2 < reference.y + reference.height, 'The competing Reference header overlaps the real Scene target');
+  return { launch, sizes, clamped, moved, desktopPositions, restored, breakpointStacking };
 }
 
 async function legacy(page, base, directory) {
@@ -523,7 +552,8 @@ async function source(page, directory, proxy, result) {
         result.proof = { launch, help, media: await timeline(page, directory, { smoke: true }) };
       }
       else result.proof = await narrow(page, process.env.BASE_URL, directory, small);
-      assert.deepEqual(errors, [], 'Actual workspace has no unhandled page errors'); assert.deepEqual(networkErrors, [], 'No transport failures may be hidden');
+      // Hidden previews cancel their sources; retain request diagnostics, not an incidental transport assertion.
+      assert.deepEqual(errors, [], 'Actual workspace has no unhandled page errors');
       assert.ok(httpErrors.every(error => error.status === 503 && result.deliberateFailures.includes(error.path)), 'Only actual deliberately failed real map requests may fail HTTP');
       assert.ok(consoleErrors.every(error => error.location.url && result.deliberateFailures.includes(new URL(error.location.url).pathname) && httpErrors.some(response => response.url === error.location.url && response.status === 503)), 'No console error may be hidden or accepted by message wording');
       result.passed = true;
