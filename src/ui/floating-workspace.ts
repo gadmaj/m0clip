@@ -12,6 +12,8 @@ export class FloatingWorkspace {
   private saved: Record<string, Placement> = {};
   private dockHeight = 0;
   private workspaceTop = 84;
+  private compactPanelId = 'play-window';
+  private compactCollapsed = false;
 
   constructor() {
     try { this.saved = JSON.parse(localStorage.getItem(STORAGE) || '{}') || {}; } catch { /* Use the default layout. */ }
@@ -55,9 +57,19 @@ export class FloatingWorkspace {
       panel.activator = button;
       button.onclick = () => {
         if (document.body.classList.contains('menu-hidden')) element('toggle-menu').click();
-        panel.placement.collapsed = false;
-        this.apply(panel); this.raise(panel); this.persist();
-        panel.grip.focus({ preventScroll: true });
+        if (this.isCompactPanel(panel)) {
+          this.compactPanelId = id;
+          this.compactCollapsed = false;
+          for (const other of this.panels.values()) {
+            if (other.root.parentElement === menu) this.apply(other);
+          }
+          this.raise(panel);
+          button.focus({ preventScroll: true });
+        } else {
+          panel.placement.collapsed = false;
+          this.apply(panel); this.raise(panel); this.persist();
+          panel.grip.focus({ preventScroll: true });
+        }
       };
       switcher.append(button);
     }
@@ -76,9 +88,16 @@ export class FloatingWorkspace {
     resize.observe(dock); resize.observe(toolbar);
 
     element('reset-workspace').addEventListener('click', () => {
+      this.compactPanelId = 'play-window';
+      this.compactCollapsed = false;
       for (const panel of this.panels.values()) {
-        panel.placement = panel.home();
+        if (!this.isCompactPanel(panel)) panel.placement = panel.home();
         this.apply(panel);
+      }
+      const selected = this.panels.get(this.compactPanelId)!;
+      if (this.isCompactPanel(selected)) {
+        this.raise(selected);
+        selected.activator?.focus({ preventScroll: true });
       }
       this.persist();
     });
@@ -135,15 +154,20 @@ export class FloatingWorkspace {
     this.panels.set(root.id, panel);
     root.style.zIndex = String(20 + panel.rank);
     collapse.onclick = () => {
-      panel.placement.collapsed = !panel.placement.collapsed;
-      if (!panel.placement.collapsed) panel.placement.y = Math.min(panel.placement.y, Math.max(this.workspaceTop, innerHeight - this.dockHeight - 480));
-      this.apply(panel); this.persist();
+      if (this.isCompactPanel(panel)) {
+        this.compactCollapsed = !this.compactCollapsed;
+        this.apply(panel);
+      } else {
+        panel.placement.collapsed = !panel.placement.collapsed;
+        if (!panel.placement.collapsed) panel.placement.y = Math.min(panel.placement.y, Math.max(this.workspaceTop, innerHeight - this.dockHeight - 480));
+        this.apply(panel); this.persist();
+      }
     };
     root.addEventListener('pointerdown', () => this.raise(panel));
     root.addEventListener('focusin', () => this.raise(panel));
     let drag: { id: number; x: number; y: number; startX: number; startY: number } | null = null;
     grip.addEventListener('pointerdown', event => {
-      if (event.button !== 0) return;
+      if (event.button !== 0 || this.isCompactPanel(panel)) return;
       this.raise(panel);
       const rect = root.getBoundingClientRect();
       drag = { id: event.pointerId, x: event.clientX, y: event.clientY, startX: rect.x, startY: rect.y };
@@ -165,10 +189,13 @@ export class FloatingWorkspace {
     grip.addEventListener('pointercancel', finish);
     grip.addEventListener('lostpointercapture', finish);
     grip.addEventListener('keydown', event => {
+      if (this.isCompactPanel(panel)) return;
       const step = event.shiftKey ? 40 : 10;
       const directions: Record<string, [number, number]> = { ArrowLeft: [-step,0], ArrowRight: [step,0], ArrowUp: [0,-step], ArrowDown: [0,step] };
       if (directions[event.key]) {
-        const [x,y] = directions[event.key]; panel.placement.x += x; panel.placement.y += y;
+        const [x,y] = directions[event.key], rect = root.getBoundingClientRect();
+        if (x) panel.placement.x = rect.x + x;
+        if (y) panel.placement.y = rect.y + y;
       } else if (event.key === 'Home') panel.placement = home();
       else return;
       event.preventDefault(); event.stopPropagation(); this.apply(panel); this.persist();
@@ -177,36 +204,44 @@ export class FloatingWorkspace {
     this.apply(panel);
   }
 
+  private isCompactPanel(panel: FloatingPanel) {
+    return innerWidth <= 760 && panel.root.parentElement?.id === 'panel';
+  }
+
   private apply(panel: FloatingPanel) {
     const { root, placement, body } = panel;
-    root.classList.toggle('is-collapsed', placement.collapsed);
-    if (body) body.hidden = placement.collapsed;
+    const compact = this.isCompactPanel(panel);
+    const active = root.id === this.compactPanelId;
+    const collapsed = compact ? !active || this.compactCollapsed : placement.collapsed;
+    if (root.parentElement?.id === 'panel') root.toggleAttribute('data-compact-active', active);
+    root.classList.toggle('is-collapsed', collapsed);
+    if (body) body.hidden = collapsed;
+    panel.grip.disabled = compact;
     const collapse = root.querySelector<HTMLButtonElement>('.floating-collapse')!;
-    collapse.textContent = placement.collapsed ? '+' : '−';
-    collapse.setAttribute('aria-expanded', String(!placement.collapsed));
+    collapse.textContent = collapsed ? '+' : '−';
+    collapse.setAttribute('aria-expanded', String(!collapsed));
     const title = panel.grip.lastElementChild!.textContent;
-    collapse.setAttribute('aria-label', `${placement.collapsed ? 'Expand' : 'Collapse'} ${title} panel`);
-    panel.activator?.setAttribute('aria-expanded', String(!placement.collapsed));
+    collapse.setAttribute('aria-label', `${collapsed ? 'Expand' : 'Collapse'} ${title} panel`);
+    panel.activator?.setAttribute('aria-expanded', String(!collapsed));
     // Keep the full panel above the real dock; scroll its body rather than its title offscreen.
     const width = root.getBoundingClientRect().width || Math.min(304, innerWidth - 24);
     const bottom = innerHeight - this.dockHeight - 24;
     const barHeight = (root.querySelector<HTMLElement>('.floating-titlebar')!.offsetHeight || 44) + 2;
     const top = Math.min(this.workspaceTop, Math.max(12, bottom - barHeight));
-    placement.x = Math.max(12, Math.min(placement.x, innerWidth - width - 12));
-    // A bottom-edge placement must still leave the expanded timeline its requested height.
-    // Old small heights remain valid: its body scrolls when the wrapped toolbar cannot fit.
-    const height = root.id === 'deck' && !placement.collapsed
+    const x = compact ? 12 : Math.max(12, Math.min(placement.x, innerWidth - width - 12));
+    // Clamp the displayed position, not remembered desktop coordinates.
+    const height = root.id === 'deck' && !collapsed
       ? Math.min(Number.parseFloat(root.style.height) || (innerWidth <= 760 ? 340 : 270), bottom - top)
       : barHeight;
-    placement.y = Math.max(top, Math.min(placement.y, bottom - height));
-    root.style.left = `${placement.x}px`; root.style.top = `${placement.y}px`;
-    let space = Math.max(barHeight, bottom - placement.y);
-    if (root.id === 'scene-window') {
+    const y = compact ? top : Math.max(top, Math.min(placement.y, bottom - height));
+    root.style.left = `${x}px`; root.style.top = `${y}px`;
+    let space = Math.max(barHeight, bottom - y);
+    if (root.id === 'scene-window' && !compact) {
       const capture = this.panels.get('capture-window');
-      if (capture && !capture.root.hidden && !capture.root.classList.contains('hidden')) {
-        const below = capture.placement, gap = below.y - placement.y - 12;
+      if (capture?.root.getClientRects().length) {
+        const below = capture.root.getBoundingClientRect(), gap = below.y - y - 12;
         // Stacked controls scroll within Scene instead of covering Reference clip.
-        if (gap >= 80 && below.x < placement.x + width && below.x + width > placement.x) space = Math.min(space, gap);
+        if (gap >= 80 && below.x < x + width && below.right > x) space = Math.min(space, gap);
       }
     }
     root.style.setProperty('--window-space', `${space}px`);

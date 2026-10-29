@@ -2,7 +2,7 @@
  * WORKSPACE_HANDOFF=1 WORKSPACE_STAGE=<immutable release> BASE_URL=<owner preview>
  * PLAYWRIGHT_MODULE=<installed playwright> QA_ARTIFACT_DIR=<proof directory>
  *   xvfb-run -a node scripts/test_floating_workspace.cjs
- * Optional WORKSPACE_SCENARIOS=desktop,legacy,mobile320,mobile390,legacy-small,landscape,source
+ * Optional WORKSPACE_SCENARIOS=desktop,legacy,mobile320,mobile390,legacy-small,landscape,source,resize
  * All runtime methods remain real. One Chrome process/context at a time, live video,
  * actual pointer/touch/keyboard input, advancing frames, decoded PNGs and strict errors.
  */
@@ -120,14 +120,20 @@ async function pngCapture(page, directory, name, action) {
 async function activateAdvancedPanel(page, id, touch = false, key = null) {
   const button = page.locator(`#workspace-panels button[aria-controls="${id}"]`);
   if (!await button.isVisible()) return null;
-  const others = async () => page.locator('#panel .floating-window').evaluateAll((roots, chosen) => roots.filter(root => root.id !== chosen).map(root => ({ id: root.id, x: root.getBoundingClientRect().x, y: root.getBoundingClientRect().y, expanded: root.querySelector('.floating-collapse').getAttribute('aria-expanded'), hidden: root.hidden })), id);
+  const compact = await page.evaluate(() => innerWidth <= 760);
+  const others = async () => page.locator('#panel .floating-window').evaluateAll((roots, chosen) => roots.filter(root => root.id !== chosen).map(root => ({ id: root.id, x: root.getBoundingClientRect().x, y: root.getBoundingClientRect().y, expanded: root.querySelector('.floating-collapse').getAttribute('aria-expanded'), hidden: root.getClientRects().length === 0 })), id);
   const before = await others(); await hit(button);
   if (key) { await button.focus(); await page.keyboard.press(key); } else await activate(button, touch);
   const root = page.locator(`#${id}`);
   assert.equal(await root.locator('.floating-collapse').getAttribute('aria-expanded'), 'true');
-  assert.equal(await root.evaluate(element => element.contains(document.activeElement)), true, 'Native activator must focus the existing panel');
-  assert.deepEqual(await others(), before, 'Choosing one panel must not reset/collapse/hide the other windows');
-  return { id, input: key || (touch ? 'tap' : 'click'), focused: true, grip: await hit(root.locator('.floating-grip')), others: before };
+  if (compact) {
+    assert.equal(await button.evaluate(element => element === document.activeElement), true, 'Compact navigation retains keyboard focus on the selected control');
+    assert.ok((await others()).every(other => other.hidden), 'Only the chosen compact panel is visible; no other panel can cover its controls');
+  } else {
+    assert.equal(await root.evaluate(element => element.contains(document.activeElement)), true, 'Desktop activator focuses the existing panel');
+    assert.deepEqual(await others(), before, 'Choosing a desktop panel preserves the other windows');
+  }
+  return { id, input: key || (touch ? 'tap' : 'click'), focused: true, grip: compact ? null : await hit(root.locator('.floating-grip')), others: await others() };
 }
 async function openTools(page, touch = false) {
   if (await page.locator('#toggle-menu').getAttribute('aria-expanded') !== 'true') await activate(page.locator('#toggle-menu'), touch);
@@ -312,7 +318,7 @@ async function desktop(page, base, directory) {
   assert.equal(await page.locator('#panel').isVisible(), true, 'Map-focused Tab restores the remembered advanced visibility');
   await page.locator('#toggle-menu').click();
   const media = await timeline(page, directory);
-  return { launch, quiet, policy, packCards, initial, dragged, keyed, restored, fullscreenExercised, media };
+  return { launch, quiet, packCards, initial, dragged, keyed, restored, fullscreenExercised, media };
 }
 async function narrow(page, base, directory, small) {
   const launch = await enter(page, base, 'go2', directory), dock = await dockProof(page);
@@ -354,6 +360,83 @@ async function narrow(page, base, directory, small) {
   await page.screenshot({ path: path.join(directory, 'narrow-return.png') });
   return { launch, dock, galleries, media, hudProof, activators };
 }
+async function resizeWorkspace(page, base, directory) {
+  const launch = await enter(page, base, 'r1', directory);
+  await page.locator('#toggle-menu').click();
+  const grip = page.locator('#play-window .floating-grip');
+  await grip.focus();
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Shift+ArrowDown');
+  const remember = () => page.evaluate(() => {
+    const all = JSON.parse(localStorage.getItem('playpen-workspace-v1'));
+    return Object.fromEntries(['play-window', 'scene-window', 'capture-window'].map(id => [id, all[id]]));
+  });
+  const beforeClamp = await remember();
+  await page.setViewportSize({ width: 900, height: 800 });
+  await raf(page, 4);
+  assert.deepEqual(await remember(), beforeClamp, 'A desktop-only responsive clamp does not rewrite saved positions');
+  const sceneGrip = page.locator('#scene-window .floating-grip');
+  const clamped = await page.locator('#scene-window').boundingBox();
+  await sceneGrip.focus();
+  await page.keyboard.press('ArrowLeft');
+  const moved = await page.locator('#scene-window').boundingBox();
+  assert.ok(Math.abs(moved.x - (clamped.x - 10)) < 1, 'One positioning key immediately moves the displayed, clamped panel');
+  assert.ok(Math.abs((await remember())['scene-window'].x - moved.x) < 1, 'The explicit keyboard move, not the prior offscreen position, is persisted');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await raf(page, 4);
+  const remembered = await remember();
+  const desktopPositions = await page.locator('#panel > .floating-window').evaluateAll(roots => roots.map(root => ({
+    id: root.id, x: root.getBoundingClientRect().x, y: root.getBoundingClientRect().y,
+    expanded: root.querySelector('.floating-collapse').getAttribute('aria-expanded'),
+  })));
+  const sizes = [];
+  for (const width of [390, 320, 760]) {
+    await page.setViewportSize({ width, height: 844 });
+    await raf(page, 4);
+    const controls = [];
+    for (const id of ['play-window', 'scene-window', 'capture-window']) {
+      controls.push(await activateAdvancedPanel(page, id));
+      const root = page.locator(`#${id}`), rect = await root.boundingBox();
+      const dock = await page.locator('#scene-actions').boundingBox();
+      assert.ok(rect.x >= 0 && rect.x + rect.width <= width + 1 && rect.y + rect.height <= dock.y + 1, 'The selected compact panel fits above the real capture dock');
+      assert.equal(await root.locator('.floating-body').isVisible(), true);
+    }
+    await openTools(page);
+    await page.locator('#toggle-inspector').click();
+    const inspector = page.locator('#inspector');
+    await inspector.waitFor({ state: 'visible' });
+    if (await inspector.locator('.floating-collapse').getAttribute('aria-expanded') !== 'true') {
+      await inspector.locator('.floating-collapse').click();
+    }
+    await activateAdvancedPanel(page, 'scene-window');
+    const workspaceTools = page.locator('#scene-window details').filter({ has: page.locator('#reset-workspace') });
+    await hit(workspaceTools.locator(':scope > summary'));
+    await page.locator('#toggle-inspector').click();
+    await inspector.waitFor({ state: 'hidden' });
+    await page.locator('#reset-workspace').click();
+    assert.deepEqual(await page.locator('#panel > .floating-window:visible').evaluateAll(roots => roots.map(root => root.id)), ['play-window'], 'Compact reset returns to one reachable Play panel');
+    assert.equal(await page.locator('#workspace-panels button[aria-controls="play-window"]').evaluate(element => element === document.activeElement), true, 'Reset leaves focus on visible compact navigation, not the now-hidden reset action');
+    await activateAdvancedPanel(page, 'capture-window');
+    const collapse = page.locator('#capture-window .floating-collapse');
+    await collapse.click();
+    assert.equal(await page.locator('#capture-window .floating-body').isVisible(), false);
+    await page.locator('#workspace-panels button[aria-controls="capture-window"]').click();
+    assert.equal(await page.locator('#capture-window .floating-body').isVisible(), true, 'Selecting the collapsed compact panel reopens its existing controls');
+    assert.deepEqual(await remember(), remembered, 'Compact selection/collapse/reset and responsive clamps do not overwrite remembered desktop controls');
+    sizes.push({ width, controls, dock: await dockProof(page) });
+    if (width !== 760) await page.screenshot({ path: path.join(directory, `resized-${width}.png`) });
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await raf(page, 4);
+  const restored = await page.locator('#panel > .floating-window').evaluateAll(roots => roots.map(root => ({
+    id: root.id, x: root.getBoundingClientRect().x, y: root.getBoundingClientRect().y,
+    expanded: root.querySelector('.floating-collapse').getAttribute('aria-expanded'),
+  })));
+  assert.deepEqual(restored, desktopPositions, 'Returning to desktop restores every prior panel position and collapsed state');
+  await hit(page.locator('#play-window .floating-grip'));
+  return { launch, sizes, clamped, moved, desktopPositions, restored };
+}
+
 async function legacy(page, base, directory) {
   const launch = await enter(page, base, 'go2', directory);
   assert.equal(await page.locator('#inspector').isVisible(), true, 'Explicit old inspector intent must survive the new quiet default');
@@ -393,9 +476,9 @@ async function source(page, directory, proxy, result) {
   assert.equal(process.env.WORKSPACE_HANDOFF, '1', 'Actual candidate suite requires explicit owner handoff');
   assert.ok(process.env.BASE_URL && process.env.WORKSPACE_STAGE && process.env.QA_ARTIFACT_DIR, 'Explicit immutable stage, URL and artifact directory required');
   const output = process.env.QA_ARTIFACT_DIR; fs.mkdirSync(output, { recursive: true });
-  const names = (process.env.WORKSPACE_SCENARIOS || 'desktop,legacy,mobile320,mobile390,legacy-small,landscape,source').split(','), results = [];
+  const names = (process.env.WORKSPACE_SCENARIOS || 'desktop,legacy,mobile320,mobile390,legacy-small,landscape,source,resize').split(','), results = [];
   for (const name of names) {
-    assert.ok(['desktop', 'legacy', 'mobile320', 'mobile390', 'legacy-small', 'landscape', 'source', 'smoke'].includes(name));
+    assert.ok(['desktop', 'legacy', 'mobile320', 'mobile390', 'legacy-small', 'landscape', 'source', 'smoke', 'resize'].includes(name));
     const mobile = name.startsWith('mobile') || name === 'legacy-small' || name === 'landscape', small = name === 'legacy-small';
     const viewport = name === 'landscape' ? { width: 844, height: 390 }
       : mobile ? { width: name === 'mobile320' ? 320 : 390, height: small ? 520 : 844 } : { width: 1280, height: 800 };
@@ -421,6 +504,7 @@ async function source(page, directory, proxy, result) {
       if (name === 'desktop') result.proof = await desktop(page, process.env.BASE_URL, directory);
       else if (name === 'legacy') result.proof = await legacy(page, process.env.BASE_URL, directory);
       else if (name === 'source') { proxy = await createProxy(process.env.BASE_URL); result.proof = await source(page, directory, proxy, result); }
+      else if (name === 'resize') result.proof = await resizeWorkspace(page, process.env.BASE_URL, directory);
       else if (name === 'smoke') {
         const launch = await enter(page, process.env.BASE_URL, 'go2', directory);
         await page.locator('.help-trigger').click(); await page.locator('.help-dialog').waitFor({ state: 'visible' });
