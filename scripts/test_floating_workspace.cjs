@@ -2,7 +2,7 @@
  * WORKSPACE_HANDOFF=1 WORKSPACE_STAGE=<immutable release> BASE_URL=<owner preview>
  * PLAYWRIGHT_MODULE=<installed playwright> QA_ARTIFACT_DIR=<proof directory>
  *   xvfb-run -a node scripts/test_floating_workspace.cjs
- * Optional WORKSPACE_SCENARIOS=desktop,legacy,mobile320,mobile390,legacy-small,landscape,source,resize
+ * Optional WORKSPACE_SCENARIOS=desktop,legacy,mobile320,mobile390,legacy-small,landscape,source,resize,stacking
  * All runtime methods remain real. One Chrome process/context at a time, live video,
  * actual pointer/touch/keyboard input, advancing frames, decoded PNGs and strict errors.
  */
@@ -434,6 +434,12 @@ async function resizeWorkspace(page, base, directory) {
   })));
   assert.deepEqual(restored, desktopPositions, 'Returning to desktop restores every prior panel position and collapsed state');
   await hit(page.locator('#play-window .floating-grip'));
+  return { launch, sizes, clamped, moved, desktopPositions, restored };
+}
+
+async function stackingWorkspace(page, base, directory) {
+  const launch = await enter(page, base, 'r1', directory);
+  await page.locator('#toggle-menu').click();
   const playCollapse = page.locator('#play-window .floating-collapse');
   if (await playCollapse.getAttribute('aria-expanded') !== 'true') await playCollapse.click();
   for (const [id, x, y] of [['scene-window', 600, 96], ['capture-window', 600, 146]]) {
@@ -463,7 +469,9 @@ async function resizeWorkspace(page, base, directory) {
   const { target, reference } = breakpointStacking;
   assert.ok(target.x + target.width / 2 > reference.x && target.x + target.width / 2 < reference.x + reference.width &&
     target.y + target.height / 2 > reference.y && target.y + target.height / 2 < reference.y + reference.height, 'The competing Reference header overlaps the real Scene target');
-  return { launch, sizes, clamped, moved, desktopPositions, restored, breakpointStacking };
+
+  await page.screenshot({ path: path.join(directory, 'desktop-overlap.png') });
+  return { launch, breakpointStacking };
 }
 
 async function legacy(page, base, directory) {
@@ -505,9 +513,9 @@ async function source(page, directory, proxy, result) {
   assert.equal(process.env.WORKSPACE_HANDOFF, '1', 'Actual candidate suite requires explicit owner handoff');
   assert.ok(process.env.BASE_URL && process.env.WORKSPACE_STAGE && process.env.QA_ARTIFACT_DIR, 'Explicit immutable stage, URL and artifact directory required');
   const output = process.env.QA_ARTIFACT_DIR; fs.mkdirSync(output, { recursive: true });
-  const names = (process.env.WORKSPACE_SCENARIOS || 'desktop,legacy,mobile320,mobile390,legacy-small,landscape,source,resize').split(','), results = [];
+  const names = (process.env.WORKSPACE_SCENARIOS || 'desktop,legacy,mobile320,mobile390,legacy-small,landscape,source,resize,stacking').split(','), results = [];
   for (const name of names) {
-    assert.ok(['desktop', 'legacy', 'mobile320', 'mobile390', 'legacy-small', 'landscape', 'source', 'smoke', 'resize'].includes(name));
+    assert.ok(['desktop', 'legacy', 'mobile320', 'mobile390', 'legacy-small', 'landscape', 'source', 'smoke', 'resize', 'stacking'].includes(name));
     const mobile = name.startsWith('mobile') || name === 'legacy-small' || name === 'landscape', small = name === 'legacy-small';
     const viewport = name === 'landscape' ? { width: 844, height: 390 }
       : mobile ? { width: name === 'mobile320' ? 320 : 390, height: small ? 520 : 844 } : { width: 1280, height: 800 };
@@ -543,6 +551,7 @@ async function source(page, directory, proxy, result) {
       else if (name === 'legacy') result.proof = await legacy(page, process.env.BASE_URL, directory);
       else if (name === 'source') { proxy = await createProxy(process.env.BASE_URL); result.proof = await source(page, directory, proxy, result); }
       else if (name === 'resize') result.proof = await resizeWorkspace(page, process.env.BASE_URL, directory);
+      else if (name === 'stacking') result.proof = await stackingWorkspace(page, process.env.BASE_URL, directory);
       else if (name === 'smoke') {
         const launch = await enter(page, process.env.BASE_URL, 'go2', directory);
         await page.locator('.help-trigger').click(); await page.locator('.help-dialog').waitFor({ state: 'visible' });
