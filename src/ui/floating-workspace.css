@@ -128,6 +128,11 @@ body.inspector-hidden #inspector, body.menu-hidden #panel, body.menu-hidden #pol
   .playpen-brand { min-width: 0; flex: 1; }
   .playpen-brand h1 { font-size: 15px; }
   #viewport-tools .btn { padding: 7px 9px; min-height: 44px; font-size: 11px; }
+  #panel > .floating-window { width: calc(100vw - 24px); }
+  #panel > .floating-window:not([data-compact-active]) { display: none; }
+  #panel .floating-grip { cursor: default; touch-action: auto; }
+  #panel .floating-grip .grip-dots { display: none; }
+  #workspace-panels .btn[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
   .floating-window .btn, .floating-window button, .floating-window input, .floating-window select { min-height: 44px; }
   #deck.floating-window { height: 340px; }
   #scene-actions { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 8px; }

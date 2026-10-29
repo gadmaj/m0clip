@@ -317,6 +317,10 @@ Choose a map and character, then **Load scene**. The scene controls and **? Help
 list movement, camera and capture actions. Record takes, review them in Timeline
 and download saved files for backup.
 
+On narrow screens, **Play**, **Scene** and **Reference clip** share the Controls
+area. Use the buttons above it to switch panels. Your desktop layout returns
+when the window widens.
+
 Loading plans the selected scene, model, appearance and policy. External player
 models may download during planning; their prepared data is reused. Before the
 remaining transfers, the loader fixes its **scene asset payload** maximum:

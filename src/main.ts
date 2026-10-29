@@ -464,15 +464,15 @@ class App {
     window.addEventListener('keyup', event => this.modalKeys.delete(event.code), true);
     window.addEventListener("keydown", (e) => this.onKey(e));
     window.addEventListener("keyup", (e) => this.onKeyUp(e));
-    // Hand the keyboard back to the sim after using the panel: a dropdown keeps focus after a choice (so W/S would
-    // scroll the policy list instead of driving) and a clicked button would turn Space into another click.
+    // Return keyboard control to the simulation after a dropdown or ordinary action.
+    // Dropdowns consume W/S and buttons consume Space; navigation owns its focus.
     document.addEventListener("change", (e) => {
       if (this.inputBlocked) return;
       if (e.target instanceof HTMLSelectElement) e.target.blur();
     });
     document.addEventListener("click", (e) => {
       if (this.inputBlocked) return;
-      if ((e.target as Element | null)?.closest?.('.help-dialog,.help-trigger,[data-visual-picker]')) return;
+      if ((e.target as Element | null)?.closest?.('.help-dialog,.help-trigger,[data-visual-picker],#workspace-panels')) return;
       const b = (e.target as Element | null)?.closest?.("button");
       if (b instanceof HTMLButtonElement) b.blur();
     });
