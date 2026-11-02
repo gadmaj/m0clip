@@ -175,8 +175,21 @@ robot, checkpoint and joint identity and retains joint states and simulation tim
 
 Install Playwright separately so Node can resolve it, or set `PLAYWRIGHT_MODULE`
 to its installed module path; `npm ci` does not install it. Set `CHROMIUM_PATH`
-if Chrome is not at the helper's default `/usr/bin/google-chrome`. Use the Pillow
-virtual environment and pass the job filename as a positional argument:
+if Chrome is not at the helper's default `/usr/bin/google-chrome`.
+
+For the scene and policy helpers, export these before running:
+
+- `PREVIEW_CHROME_PROFILE`: the absolute path to a dedicated, owner-only Chrome
+  profile—not your normal browser profile.
+- `PREVIEW_CHROME_VERSION`: the four-part version shown by
+  `"$CHROMIUM_PATH" --version` (or `google-chrome --version` when using the default).
+
+Open that profile interactively, review any browser prompts yourself, then close
+Chrome completely before generation. After a browser update, reopen the profile
+interactively and update the version. The helpers refuse a busy profile or a
+different browser version; they do not remove profile locks.
+
+Use the Pillow virtual environment and pass the job filename as a positional argument:
 
 ```sh
 PYTHON="$PWD/.venv/bin/python" BASE_URL=http://localhost:4173 \

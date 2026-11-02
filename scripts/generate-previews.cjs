@@ -1,13 +1,17 @@
 'use strict';
 
 /** Generate real scene images into explicit private staging.
+ * Requires PREVIEW_CHROME_PROFILE (closed, private) and PREVIEW_CHROME_VERSION (approved four-part browser version).
  * BASE_URL=https://your-gallery-release.example PREVIEW_OUTPUT=/private/new-directory PLAYWRIGHT_MODULE=/path/to/playwright node scripts/generate-previews.cjs
- * PREVIEW_ONLY is an explicit filename regex for repairing failed items; existing successes
- * remain in the private manifest. Each scene owns one isolated Chrome process/storage profile.
+ * PREVIEW_ONLY repairs selected filenames while retaining successful images in the private manifest.
+ * Each scene reuses one closed, dedicated profile whose browser prompts were approved interactively.
  */
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const run = promisify(execFile);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const { chooseVisual } = require('./choose-visual.cjs');
 const attachReadyApp = require('./attach-ready-app.cjs');
@@ -24,17 +28,77 @@ const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const selected = filename => !process.env.PREVIEW_ONLY || new RegExp(process.env.PREVIEW_ONLY).test(filename);
 
 
+async function previewBrowser() {
+  const profile = process.env.PREVIEW_CHROME_PROFILE;
+  const expectedVersion = process.env.PREVIEW_CHROME_VERSION;
+  if (!profile || !path.isAbsolute(profile)) {
+    throw new Error('Set PREVIEW_CHROME_PROFILE to a closed, dedicated Chrome profile. Open it interactively and finish any browser prompts first; do not use your normal profile.');
+  }
+  if (!expectedVersion || !/^\d+\.\d+\.\d+\.\d+$/.test(expectedVersion)) {
+    throw new Error('Set PREVIEW_CHROME_VERSION to the four-part version of the browser you approved. Reopen the dedicated profile interactively after a browser update.');
+  }
+  const identity = await fs.lstat(profile);
+  if (!identity.isDirectory() || typeof process.getuid === 'function' && identity.uid !== process.getuid()
+    || process.platform !== 'win32' && (identity.mode & 0o077) !== 0) {
+    throw new Error('The preview profile must be a private directory owned by this user, not a symlink. Choose a dedicated profile with owner-only permissions.');
+  }
+  for (const name of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+    let entry;
+    try { entry = await fs.lstat(path.join(profile, name)); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (entry) throw new Error(`The preview profile still has ${name}. Close its Chrome instance and verify its owner before retrying; no lock was removed.`);
+  }
+  if (process.platform === 'linux') {
+    const escaped = profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const flag = new RegExp(`(?:^|[\\s\\0])--user-data-dir(?:=|[\\s\\0]+)${escaped}(?=$|[\\s\\0])`);
+    const active = [];
+    for (const name of await fs.readdir('/proc')) {
+      if (!/^\d+$/.test(name)) continue;
+      try {
+        if ((await fs.stat(`/proc/${name}`)).uid !== process.getuid()) continue;
+        if (flag.test(await fs.readFile(`/proc/${name}/cmdline`, 'utf8'))) active.push(Number(name));
+      } catch (error) { if (!['ENOENT', 'ESRCH'].includes(error.code)) throw error; }
+    }
+    if (active.length) throw new Error(`Chrome still uses the preview profile (PIDs ${active.join(', ')}). Close that instance before authoring; no process was signalled.`);
+  }
+  const executablePath = process.env.CHROMIUM_PATH || '/usr/bin/google-chrome';
+  const { stdout } = await run(executablePath, ['--version'], { timeout: 10000, maxBuffer: 8192 });
+  const installedVersion = stdout.trim().match(/\b\d+\.\d+\.\d+\.\d+\b/)?.[0];
+  if (installedVersion !== expectedVersion) {
+    throw new Error(`Chrome changed from ${expectedVersion} to ${installedVersion || 'an unknown version'}. Open the dedicated profile interactively and review its prompts before recording the new version.`);
+  }
+  return { profile, identity, executablePath, expectedVersion };
+}
+
 async function launch(robot, terrain) {
+  const approved = await previewBrowser();
   const args = process.env.PREVIEW_CHROME_ARGS ? JSON.parse(process.env.PREVIEW_CHROME_ARGS)
     : ['--no-sandbox', '--use-gl=angle', '--use-angle=gl', '--ignore-gpu-blocklist'];
   if (!Array.isArray(args) || !args.every(value => typeof value === 'string')) throw new Error('PREVIEW_CHROME_ARGS must be a JSON string array');
-  const browser = await chromium.launch({
-    headless: process.env.PREVIEW_HEADLESS !== '0', executablePath: process.env.CHROMIUM_PATH || '/usr/bin/google-chrome',
-    args,
+  if (args.some(value => /^--(?:no-first-run|no-default-browser-check|user-data-dir|profile-directory|incognito|guest)(?:=|$)/.test(value))) {
+    throw new Error('Preview Chrome arguments must not override its profile or suppress browser prompts. Remove the conflicting argument.');
+  }
+  const current = await fs.lstat(approved.profile);
+  if (!current.isDirectory() || current.dev !== approved.identity.dev || current.ino !== approved.identity.ino
+    || current.uid !== approved.identity.uid || current.mode !== approved.identity.mode) {
+    throw new Error('The preview profile changed before launch. Inspect the dedicated profile before retrying.');
+  }
+  const context = await chromium.launchPersistentContext(approved.profile, {
+    headless: process.env.PREVIEW_HEADLESS !== '0', executablePath: approved.executablePath, args,
+    ignoreDefaultArgs: ['--no-first-run', '--no-default-browser-check'],
+    viewport: { width: 1280, height: 960 }, deviceScaleFactor: .25,
   });
   try {
-    const context = await browser.newContext({ viewport: { width: 1280, height: 960 }, deviceScaleFactor: .25 });
-    const page = await context.newPage(), errors = [], provenance = {};
+    const browser = context.browser();
+    if (!browser || browser.version() !== approved.expectedVersion) throw new Error('The launched browser does not match the approved version. Inspect the dedicated profile interactively.');
+    const pages = context.pages();
+    if (pages.some(page => page.url() !== 'about:blank') || pages.length > 1) {
+      throw new Error('Chrome opened an unexpected page before authoring. Inspect browser prompts and close the dedicated profile before retrying.');
+    }
+    const page = pages[0] || await context.newPage(), errors = [], provenance = {
+      browser: { expectedVersion: approved.expectedVersion, actualVersion: browser.version(), existingProfile: true,
+        profileIdentity: { dev: current.dev, ino: current.ino, uid: current.uid }, firstRunSuppression: false },
+    };
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => {
       if (message.type() === 'error' && /shader|WebGLProgram|context.*lost/i.test(message.text())) errors.push(message.text());
@@ -48,8 +112,8 @@ async function launch(robot, terrain) {
       provenanceJobs.push(pending);
       void pending.catch(error => errors.push('Source provenance: ' + error.message));
     });
-    // Seed exact remembered identity and policy opt-out before application startup.
-    // A fresh nonpersistent browser context means no visitor preferences are read or changed.
+    // This dedicated authoring profile keeps its cache and launch preferences between scenes.
+    // Seed only authoring defaults; never clear saved takes or original PNGs.
     await page.route('**/__preview_storage__', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Isolated preview storage</title>' }));
     await page.goto(base + '/__preview_storage__');
     await page.evaluate(async ({ robot, terrain }) => {
@@ -102,7 +166,7 @@ async function launch(robot, terrain) {
     });
     if (identity.robot !== robot || identity.viewRobot !== robot || identity.terrain !== terrain) throw new Error('Scene identity mismatch: ' + JSON.stringify(identity));
     return { browser, page, errors, provenance, identity };
-  } catch (error) { await browser.close(); throw error; }
+  } catch (error) { await context.close(); throw error; }
 }
 
 async function capture(scene, request) {
@@ -234,7 +298,7 @@ if (require.main === module) (async () => {
     const successful = images.filter(image => !image.error).length;
     await fs.writeFile(manifestPath, JSON.stringify({ generator: 'scripts/generate-previews.cjs', generatedAt: new Date().toISOString(), baseURL: base,
       encoding: 'image/webp', width, height, expected: expected.length, successful, complete: successful === expected.length,
-      provenance: 'Actual app SceneView geometry, native Source materials/full props, isolated nonpersistent Chrome storage; only App exposure response instrumentation. Exact physics robot identities checked. Authored player-spawn map view, deterministic source time 0. The current generator uses visible launch and Character galleries; retained frozen-release images identify their original capture source by per-image release hashes. No model downloads outside existing hosted assets.',
+      provenance: 'Actual app SceneView geometry, native Source materials/full props, dedicated existing Chrome profile; browser consent is an interactive prerequisite, not granted by the generator. Exact physics robot identities checked. Authored player-spawn map view, deterministic source time 0. Visible launch and Character galleries; retained images identify their original capture source. Artwork dimensions do not qualify native UI performance. No model downloads outside existing hosted assets.',
       images }, null, 2) + '\n');
   };
   for (const group of groups) {
