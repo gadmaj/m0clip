@@ -314,8 +314,9 @@ immutable caching for files whose URLs change with their contents.
 ## Use and limitations
 
 Choose a map and character, then **Load scene**. The scene controls and **? Help**
-list movement, camera and capture actions. Record takes, review them in Timeline
-and download saved files for backup.
+list movement, camera and capture actions. **Screenshot** downloads a PNG and
+saves a copy in **Shots**. Record takes, review them in Timeline and download
+saved files for backup.
 
 On narrow screens, **Play**, **Scene** and **Reference clip** share the Controls
 area. Use the buttons above it to switch panels. Your desktop layout returns
