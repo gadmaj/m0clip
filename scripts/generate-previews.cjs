@@ -148,6 +148,18 @@ async function launch(robot, terrain) {
     provenance.app = await attachReadyApp(context, page);
     await Promise.all(provenanceJobs);
     await page.locator('#launch-enter').click();
+    // Decline the optional notice through its real UI; never request storage permission.
+    await page.waitForFunction(() => {
+      const notice = document.querySelector('.storage-consent');
+      return !notice || notice.dataset.state !== 'checking' && notice.dataset.state !== 'requesting';
+    }, null, { timeout: 30000 });
+    const storageNotice = page.locator('.storage-consent');
+    provenance.storageNoticeDismissed = false;
+    if (await storageNotice.isVisible()) {
+      await storageNotice.getByRole('button', { name: /^(Not now|Close)$/ }).click();
+      await storageNotice.waitFor({ state: 'hidden' });
+      provenance.storageNoticeDismissed = true;
+    }
     const identity = await page.evaluate(async () => {
       const a = window.__app;
       await Promise.all([a.view.waitForRobotVisuals(), a.view.waitForTerrainVisuals()]);
