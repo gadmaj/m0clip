@@ -188,6 +188,8 @@ Open that profile interactively, review any browser prompts yourself, then close
 Chrome completely before generation. After a browser update, reopen the profile
 interactively and update the version. The helpers refuse a busy profile or a
 different browser version; they do not remove profile locks.
+During artwork generation, the helpers decline m0clip’s optional storage notice
+through **Not now**; they do not request persistent storage.
 
 Use the Pillow virtual environment and pass the job filename as a positional argument:
 
