@@ -18,6 +18,7 @@
   border: 1px solid var(--line-hi); border-radius: var(--r);
   box-shadow: 2px 2px 0 var(--shadow), inset 1px 1px 0 var(--bevel);
 }
+.visual-picker-dialog[data-visual-picker] { margin-block: 12px auto; }
 .visual-picker-dialog[open] { display: flex; flex-direction: column; }
 .visual-picker-dialog::backdrop { background: var(--scrim); }
 .visual-picker-dialog header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line-hi); }
