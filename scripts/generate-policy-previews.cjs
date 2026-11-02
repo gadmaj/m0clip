@@ -149,8 +149,8 @@ async function receipt(filename, value, append = false) {
           previewRobot: entry?.previewRobot, packId: entry?.packId, command: status.command },
         errors: state.errors, finished: state.finished };
     }, { maskedActionSlots, actionCount: controlJoints?.length });
-    const requireIdentity = state => {
-      if (state.errors.length || state.finished.length || !Number.isFinite(state.clock) ||
+    const requireIdentity = (state, priorFinishedCount) => {
+      if (state.errors.length || state.finished.length !== priorFinishedCount || !Number.isFinite(state.clock) ||
           !Array.isArray(state.qpos) || !state.qpos.every(Number.isFinite) ||
           state.status?.policy !== job.policy || state.status.state !== 'policy' ||
           state.status.robotSpec !== job.robot || state.status.previewRobot !== job.robot ||
@@ -162,7 +162,14 @@ async function receipt(filename, value, append = false) {
       }
     };
     const initial = await readState();
-    requireIdentity(initial);
+    // Retain earlier controllers' events; a full bounded history cannot reveal later completion.
+    if (initial.finished.length >= 16 || initial.finished.some(event => event.policy === job.policy)) {
+      throw new Error('Requested policy already finished or pre-capture completion history is full: ' + JSON.stringify(initial.finished));
+    }
+    const priorFinishedCount = initial.finished.length;
+    requireIdentity(initial, priorFinishedCount);
+    await receipt(path.join(output, 'pre-capture-finished-events.json'),
+      { policy: job.policy, clock: initial.clock, finished: initial.finished, baselineCount: priorFinishedCount });
     const jointRanges = initial.controlledJoints.filter(joint => !joint.intentionallyUnbound)
       .map(joint => ({ name: joint.name, qadr: joint.qadr, min: Infinity, max: -Infinity }));
     for (let index = 0; index < count; index++) {
@@ -175,7 +182,7 @@ async function receipt(filename, value, append = false) {
       // Let already-posted real frames settle after the worker receives pause.
       await scene.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       const state = await readState();
-      requireIdentity(state);
+      requireIdentity(state, priorFinishedCount);
       if (clocks.length && state.clock <= clocks[clocks.length - 1]) throw new Error('Worker clock did not advance');
       if (state.controlledJoints.length !== initial.controlledJoints.length || state.controlledJoints.some((joint, index) =>
         joint.name !== initial.controlledJoints[index].name || joint.qadr !== initial.controlledJoints[index].qadr ||
@@ -190,7 +197,7 @@ async function receipt(filename, value, append = false) {
       captures.push({ ...(await capture(scene, { kind: 'policy', format: 'png', filename,
         angle: -Math.PI / 3 + index * Math.PI * 2 / count })), clock: state.clock, qposSHA256: hash(JSON.stringify(state.qpos)) });
       const after = await readState();
-      requireIdentity(after);
+      requireIdentity(after, priorFinishedCount);
       if (after.clock !== state.clock || hash(JSON.stringify(after.qpos)) !== hash(JSON.stringify(state.qpos))) {
         throw new Error('Worker advanced during paused artwork render');
       }

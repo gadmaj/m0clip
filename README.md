@@ -206,6 +206,10 @@ floor) and `PREVIEW_RESERVE_BYTES` (space for final files). Choose a fresh child
 output directory inside that root. The budget covers retained files, not browser
 memory.
 
+Policy capture keeps earlier completion events in its records. It stops if the
+requested policy has already finished, the event history is full, or any policy
+finishes during capture.
+
 Keep generation receipts private. Publish only approved GIFs, stills and
 attribution; add their URLs and captions to
 [`animated-preview-catalog.json`](src/ui/animated-preview-catalog.json).
