@@ -2204,10 +2204,13 @@ class App {
     let phase:'prepare'|'capture'='prepare',message='',restoreHighlights:(()=>void)|undefined;
     try{
       await Promise.race([Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]),aborted]);
+      // Cached visuals can settle inside the click task; defer the render and readback.
+      await Promise.race([new Promise<void>(resolve=>setTimeout(resolve,0)),aborted]);
       if(!current()){this.cancelScreenshot();return}
       const terrain=model.terrain??(review&&isTerrain(take?.meta.terrain)?take!.meta.terrain:this.panel.terrain);
       if(terrain.startsWith('map:local-')&&this.view.mapSource?.id!==mapId(terrain)){message='Reattach the original map bundle, then try Screenshot again.';return;}
       phase='capture';
+      this.panel.setScreenshotState(true,'Rendering PNG…');
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       restoreHighlights=this.view.suspendHighlights();
       if(review&&this.take)this.reviewFrame(0);else this.drawLiveFrame();
