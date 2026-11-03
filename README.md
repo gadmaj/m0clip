@@ -25,13 +25,12 @@ G1 and Go2 robot model bundles. Converted maps, imported character assets and
 policy weights are ignored by Git and must be supplied separately, under terms
 that permit your intended use and redistribution.
 
-There is also a **build-time character prerequisite**: the current
-[`character catalog`](src/characters/catalog.ts) imports generated attribution,
-rig and definition JSON from `public/assets/characters/`. Those files are not
-included in a fresh clone. Supply the metadata and assets for its configured
-characters, or adapt that catalog to the characters you can provide, before
-running development or build commands. Selecting Original at runtime does not
-remove these build-time imports.
+Generated character metadata is optional. The
+[`character catalog`](src/characters/catalog.ts) discovers the JSON files present
+under `public/assets/characters/` when Vite starts or builds. Missing characters
+are omitted; the built-in choices remain. The Wrapped and Skeleton need both
+`attribution.json` and `rig.json`; the PSX collection uses its `catalog.json`.
+Supply permitted model files alongside their metadata before using a character.
 
 A permitted `public/assets/source/flashlight.png` is also required, even on a
 built-in terrain with Original selected and the flashlight off. Prepare it before
@@ -53,7 +52,7 @@ python3 -m venv .venv
 runtime into `public/wasm/`. Do not skip install scripts unless you perform that
 copy yourself with `node scripts/copy-ort-wasm.mjs`.
 
-After preparing the character inputs and flashlight texture above:
+After preparing the flashlight texture and any optional assets above:
 
 ```sh
 npm run dev
@@ -64,7 +63,7 @@ headers required by the simulator. Use the development server rather than
 opening `index.html` with `file://`.
 
 Built-in terrains avoid converted game maps; Original avoids imported character
-binaries. Neither removes the asset prerequisites above. Without a compatible
+metadata and binaries. The flashlight prerequisite still applies. Without a compatible
 policy pack, physics can run without a learned walking controller; character
 appearance does not supply one.
 

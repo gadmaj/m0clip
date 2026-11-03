@@ -4,20 +4,20 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const Module = require('node:module');
-const { build } = require('esbuild');
+const buildFixture = require('./build-fixture.cjs');
 
 (async () => {
   const root = path.resolve(__dirname, '..');
-  const bundle = await build({ stdin: { resolveDir: root, sourcefile: 'visual-plan-fixture.ts', contents: `
+  const bundle = await buildFixture({ root, source: `
     export {planVisualAssets,resolveLaunchVisualSelection,OptionalVisualAssetError} from './src/loading/visual-plan';
     export {loadPreparedPmodelCharacter,discardPreparedPmodelCharacters} from './src/characters/prepared-pmodel';
     export {authoredCharacter} from './src/characters/catalog';
     export {plannedAssets} from './src/loading/catalogue';
     export {SceneProgress} from './src/loading/progress';
-  ` }, bundle: true, platform: 'node', format: 'cjs', write: false, logLevel: 'silent' });
+  `, platform: 'node', format: 'cjs' });
   const compiled = new Module(path.join(__dirname, 'visual-plan-memory.cjs'), module);
   compiled.filename = path.join(__dirname, 'visual-plan-memory.cjs'); compiled.paths = module.paths;
-  compiled._compile(bundle.outputFiles[0].text, compiled.filename);
+  compiled._compile(bundle.code, compiled.filename);
   const { planVisualAssets, resolveLaunchVisualSelection, OptionalVisualAssetError, loadPreparedPmodelCharacter, discardPreparedPmodelCharacters, authoredCharacter, plannedAssets, SceneProgress } = compiled.exports;
   const originalFetch = global.fetch, originalLocation = global.location;
   global.location = new URL('https://scene.test/');

@@ -1,7 +1,7 @@
 /** Actual Chrome PNG bytes, native decoding, IndexedDB abort/quota retention and pictured gallery. Run from the repo root. */
 const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
-const { build } = require('esbuild');
+const buildFixture = require('./build-fixture.cjs');
 const { createServer } = require('node:http');
 const { once } = require('node:events');
 const { mkdtemp, readFile, rm } = require('node:fs/promises');
@@ -13,9 +13,9 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   const profile = await mkdtemp(join(tmpdir(), 'm0clip-photo-idb-'));
   let context, server;
   try {
-    const built = await build({ stdin: { contents: "import {PhotoLibrary} from './src/record/photos';import {ShotLibrary} from './src/record/library';import {Take} from './src/record/take';import {GeometryTrack} from './src/core/geometry';import {RecordingRecovery} from './src/record/recovery';import {ShotLibraryDialog} from './src/ui/shot-library';globalThis.fixture={PhotoLibrary,ShotLibrary,Take,GeometryTrack,RecordingRecovery,ShotLibraryDialog};", resolveDir: process.cwd() }, outfile: 'fixture.js', bundle: true, platform: 'browser', format: 'iife', write: false });
-    const javascript = built.outputFiles.find(file => file.path.endsWith('.js')).contents;
-    const css = built.outputFiles.find(file => file.path.endsWith('.css')).contents;
+    const built = await buildFixture({ root: process.cwd(), source: "import {PhotoLibrary} from './src/record/photos';import {ShotLibrary} from './src/record/library';import {Take} from './src/record/take';import {GeometryTrack} from './src/core/geometry';import {RecordingRecovery} from './src/record/recovery';import {ShotLibraryDialog} from './src/ui/shot-library';globalThis.fixture={PhotoLibrary,ShotLibrary,Take,GeometryTrack,RecordingRecovery,ShotLibraryDialog};", platform: 'browser', format: 'iife' });
+    const javascript = built.code;
+    const css = built.css;
     server = createServer((request, response) => {
       response.setHeader('Cache-Control', 'no-store');
       response.setHeader('Content-Type', request.url === '/fixture.js' ? 'text/javascript' : request.url === '/fixture.css' ? 'text/css' : 'text/html');
