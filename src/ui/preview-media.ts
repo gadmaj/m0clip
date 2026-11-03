@@ -18,7 +18,7 @@ interface MediaEntry {
   cancel?: () => void;
 }
 const entries = new Map<Element, MediaEntry>();
-const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+let reduced: MediaQueryList;
 const maximumRequests = 4;
 const maximumAnimations = 4;
 let requests = 0;
@@ -106,6 +106,7 @@ export function previewMedia(media: PreviewMedia): HTMLElement {
   const entry: MediaEntry = { root, image, media, visible: false, source: '', desiredSource: '', failedAnimation: false, loading: false };
   entries.set(root, entry);
   if (!observer) {
+    reduced = matchMedia('(prefers-reduced-motion: reduce)');
     observer = new IntersectionObserver(changes => {
       for (const change of changes) {
         const entry = entries.get(change.target);
