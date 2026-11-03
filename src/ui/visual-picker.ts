@@ -34,7 +34,7 @@ export class VisualPicker {
     this.root.className='visual-picker';
     this.button.type='button'; this.button.className='btn visual-picker-trigger';
     this.button.id=`${config.id}-trigger`; this.button.dataset.visualPicker=config.id;
-    this.button.setAttribute('aria-label',config.label); this.button.setAttribute('aria-haspopup','dialog');
+    this.button.setAttribute('aria-haspopup','dialog');
     select.before(this.root); this.root.append(select,this.button);
     select.hidden=true; select.tabIndex=-1; select.setAttribute('aria-hidden','true');
     this.button.addEventListener('click',()=>this.open());
@@ -44,8 +44,10 @@ export class VisualPicker {
     select.addEventListener('change',this.changed); this.sync();
   }
   sync(preserveSearch=false){
-    this.button.textContent=`${this.select.selectedOptions[0]?.label || this.config.label} ▦`;
-    const thumbnail=this.select.selectedOptions[0]?.dataset.preview;
+    const selected=this.select.selectedOptions[0],label=selected?.label;
+    this.button.textContent=`${label || this.config.label} ▦`;
+    this.button.setAttribute('aria-label',label?`${this.config.label}: ${label}`:this.config.label);
+    const thumbnail=selected?.dataset.preview;
     if(thumbnail){registerPreviewAsset(thumbnail);const image=document.createElement('img');image.crossOrigin='anonymous';image.loading='lazy';image.decoding='async';image.src=thumbnail;image.alt='';image.onerror=()=>{image.remove();this.button.append(' · Preview unavailable');};this.button.prepend(image);}
     this.button.disabled=this.disabled;
     if(this.dialog){

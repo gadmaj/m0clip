@@ -146,6 +146,9 @@ Compatible biped imports align named left/right limbs to the robot and keep the
 model's reference pose separate from animated bone controllers. Custom skeletons
 may require an explicit rig mapping.
 
+Search maps and characters by name. Clear the search to restore all choices.
+Press Escape to close a gallery and return focus to its button.
+
 Character and policy galleries browse image previews without loading models or
 policy weights. Available turntables use prebuilt GIFs; reduced-motion mode uses
 separate PNG stills. A rest-pose turntable is not a motion or controller demo.
