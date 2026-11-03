@@ -299,6 +299,8 @@ and asset-path changes, not just a Vite base option. Localhost is suitable for
 local development, but a remote plain-HTTP origin cannot provide the secure
 context the simulator needs.
 
+Keep root files such as `favicon.ico` beside `index.html` when deploying the build.
+
 Configure your static host or reverse proxy to send:
 
 ```http
