@@ -277,6 +277,8 @@ class App {
   private playerRec: PlayerTakeRecorder | null = null;
   private recCheckpoint:RecordingCheckpointWriter|null=null;
   private recordStarting = false;
+  /** Between a worker "busy" and its "ready" / "error": a policy or scene is still loading. */
+  private workerBusy = false;
   private screenshotPending=false;
   private screenshotRequest=0;
   private screenshotAbort:AbortController|null=null;
@@ -1427,6 +1429,7 @@ class App {
     if (this.timeline.isOpen) this.closeReview();
     if (this.dialog.isOpen) this.dialog.close();
     this.recordStarting = true;
+    this.syncPolicyActions();
     const generation=this.viewBuildGeneration,model=this.model;
     this.look.setHeadLocked(true);
     this.panel.setRecordInfo('Preparing scene visuals…');
@@ -1441,6 +1444,7 @@ class App {
       this.panel.setRecordInfo(`Recording could not start: ${error instanceof Error ? error.message : error}`);
     }).finally(() => {
       this.recordStarting = false;
+      this.syncPolicyActions();
       if (!this.rec && !this.playerRec && !this.timeline.isOpen) this.look.setHeadLocked(false);
     });
   }
@@ -1716,6 +1720,7 @@ class App {
 
   private setExporting(on: boolean) {
     this.exporting = on;
+    this.syncPolicyActions();
     this.cancelScreenshot();
     this.look.setReadOnly(on);
     this.explore.setReadOnly(on);
@@ -1731,6 +1736,11 @@ class App {
       const state=this.storedTakes.get(this.take);
       if(state?.previewDirty&&!state.deleted)this.scheduleShotPreview(this.take,state);
     }
+  }
+
+  /** Run again follows the same gates as the other live controls; review is handled by the panel. */
+  private syncPolicyActions() {
+    this.panel.setPolicyActionsBlocked(this.workerBusy || this.recordStarting || this.exporting);
   }
 
   private setViewMode(m: ViewMode) {
@@ -2463,8 +2473,11 @@ class App {
         this.renderLidar(m.lidar);
         return;
       case 'viewReady':void this.finishViewRestore(m);return;
-      case "busy": return this.showOverlay(m.msg, "busy");
+      case "busy":
+        this.workerBusy = true; this.syncPolicyActions();
+        return this.showOverlay(m.msg, "busy");
       case "ready": {
+        this.workerBusy = false; this.syncPolicyActions();
         if (launch.active) {
           launch.simulationReady();
           void this.prepareLaunch();
@@ -2485,6 +2498,7 @@ class App {
       case "policyFinished": return this.panel.showPolicyFinished(m.policy,m.active);
       case "notice": return this.showOverlay(m.msg, "notice");
       case "error":
+        this.workerBusy = false; this.syncPolicyActions();
         // A Player world keeps running after a failed spawn, remove or map change; only the request failed.
         if (this.player && !launch.active) {
           const pending = this.pendingMap;

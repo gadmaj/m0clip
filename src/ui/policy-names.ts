@@ -1,3 +1,7 @@
+/** Activity sections in gallery order; robot variants are card detail, never sections. */
+export const POLICY_ACTIVITIES = ['Locomotion', 'Dynamic motions', 'Dance & gestures', 'Martial arts',
+  'Motion imitation', 'Recovery & poses', 'Other policies'] as const;
+
 /** Presentation only. Canonical identifiers remain unchanged for inference,
  * saved selections, remote transitions, recordings and exported packs. */
 export function policyPresentation(name: string): { title: string; label: string; category: string; description: string } {
@@ -16,13 +20,13 @@ export function policyPresentation(name: string): { title: string; label: string
   } else if (/hello/.test(id)) {
     choose('Greeting', 'Dance & gestures');
   } else if (/armsdk|arm_sdk|waist_control|alljoint/.test(id)) {
-    choose(/waist/.test(id) ? 'Walk with waist control' : 'Walk with arm control', 'Walking & running');
+    choose(/waist/.test(id) ? 'Walk with waist control' : 'Walk with arm control', 'Locomotion');
   } else if (/jump|shot/.test(id)) {
     choose(/shot/.test(id) ? 'Shot routine' : 'Walk and jump', 'Dynamic motions');
   } else if (/rough|stair|terrain|plane_encoder|vision_loco/.test(id)) {
-    choose(/stair/.test(id) ? 'Stair walking' : /vision/.test(id) ? 'Vision locomotion' : 'Uneven-ground walking', 'Terrain walking');
+    choose(/stair/.test(id) ? 'Stair walking' : /vision/.test(id) ? 'Vision locomotion' : 'Uneven-ground walking', 'Locomotion');
   } else if (/loco|walk|run|gait|straight_knee/.test(id)) {
-    choose(/straight_knee/.test(id) ? 'Straight-knee walking' : /gait/.test(id) ? 'Gait walking' : /(?:^|\/)run$|cpy_run|hybrid_run/.test(id) ? 'Running' : /walkrun|walk_run|amp_locomotion/.test(id) ? 'Walk and run' : 'Walking', 'Walking & running');
+    choose(/straight_knee/.test(id) ? 'Straight-knee walking' : /gait/.test(id) ? 'Gait walking' : /(?:^|\/)run$|cpy_run|hybrid_run/.test(id) ? 'Running' : /walkrun|walk_run|amp_locomotion/.test(id) ? 'Walk and run' : 'Walking', 'Locomotion');
   } else if (/mimic|actor|amp_motion|traj_/.test(id)) {
     choose(/classic_movie/.test(id) ? 'Movie motion routine' : /interaction/.test(id) ? 'Interaction motions' : 'Motion imitation', 'Motion imitation');
   } else {

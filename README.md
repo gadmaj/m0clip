@@ -61,8 +61,11 @@ from Source game files on your computer; the files are not uploaded.
 - On narrow screens, **Play**, **Scene** and **Reference clip** share one
   Controls area; use the buttons above it to switch.
 - **Reference clip** plays a motion CSV at the FPS you set. **Stop** hands control
-  back to the selected policy. Some motion clips run once, then switch to their
-  configured next policy; select the clip again to replay it.
+  back to the selected policy. Some motions run once, then switch to their
+  configured next policy; press **Run again** beside the finished line to replay
+  that motion from where the robot stands.
+- The policy gallery is grouped by activity. Each card names the motion and
+  lists its robot variant, checkpoint and state number; search matches all three.
 - In review, appearance, display, flashlight, lights and camera edits belong to
   that take. Robot, map and policy controls work only live. The **F** flashlight
   key is live-only; use its button while reviewing.
