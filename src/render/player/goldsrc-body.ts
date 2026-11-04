@@ -49,7 +49,8 @@ export class GoldSrcPlayerBody implements PlayerBodyRig {
   private readonly weight: Int32Array;
   private readonly channels = new Map<string, Channels>();
   private readonly clips = new Map<string, THREE.AnimationClip>();
-  private readonly spine: number;
+  /** 1 for "Bip01 Spine" and its descendants, which play the upper-body sequence. */
+  private readonly upper: Uint8Array;
   private readonly torso: { bone: number; axis: number; rotation: boolean; start: number; end: number; loop: boolean; baked: number }[] = [];
   private readonly gaitLayer: PlayerAnimationLayer = { sequence: 0, cycle: 0, weight: 1 };
   private readonly withGait = [this.gaitLayer];
@@ -91,8 +92,15 @@ export class GoldSrcPlayerBody implements PlayerBodyRig {
       this.activity[s] = view.getInt32(seqIndex + s * 176 + 40, true);
       this.weight[s] = view.getInt32(seqIndex + s * 176 + 44, true);
     }
-    const spine = this.bones.findIndex(b => b.userData.name === 'Bip01 Spine');
-    this.spine = spine < 0 ? this.bones.length : spine;
+    // Half-Life copies the gait into the bones stored before "Bip01 Spine". That equals the
+    // non-spine subtree only in the standard bone order, so select by hierarchy for every model.
+    const spine = this.bones.find(b => b.userData.name === 'Bip01 Spine');
+    this.upper = new Uint8Array(this.bones.length);
+    if (spine) for (let i = 0; i < this.bones.length; i++) {
+      for (let node: THREE.Object3D | null = this.bones[i]; node; node = node.parent) {
+        if (node === spine) { this.upper[i] = 1; break; }
+      }
+    }
     for (const c of info.controllers) {
       if (c.index > 3) continue;
       const type = c.type & 0x7fff, rotation = type >= 8, loop = (c.type & 0x8000) !== 0;
@@ -238,7 +246,7 @@ export class GoldSrcPlayerBody implements PlayerBodyRig {
     if (gait && !this.sequences[gait.sequence]) throw new Error(`GoldSrc model ${this.path} has no gait sequence ${gait.sequence}.`);
     for (let i = 0; i < this.bones.length; i++) {
       const bone = this.bones[i];
-      if (gait && i < this.spine) this.sampleBone(i, gait.sequence, gait.cycle, 0, bone.position, bone.quaternion);
+      if (gait && !this.upper[i]) this.sampleBone(i, gait.sequence, gait.cycle, 0, bone.position, bone.quaternion);
       else this.sampleBone(i, body.sequence, body.cycle, blend, bone.position, bone.quaternion);
     }
     // Spine controllers: the client writes ((yaw / 4) + 30) / (60 / 255) with a gait, else 127.

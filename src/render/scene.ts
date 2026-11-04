@@ -753,7 +753,12 @@ export class SceneView {
     this.previewCache.clear();
   }
   private floors: THREE.Object3D[] = [];
+  /** Simulated plane poses; a Player floor visual is re-centred below the camera inside this plane. */
+  private floorPoses: THREE.Matrix4[] = [];
   private readonly tmp = new THREE.Matrix4();
+  private readonly floorInverse = new THREE.Matrix4();
+  private readonly floorShift = new THREE.Matrix4();
+  private readonly floorCamera = new THREE.Vector3();
   /** set while an export owns the canvas size (beginOffscreen … endOffscreen) */
   private offscreen: { ratio: number; background: THREE.Scene["background"]; fog: THREE.Scene["fog"]; transparent: boolean; restoreHighlights:()=>void } | null = null;
 
@@ -834,6 +839,7 @@ export class SceneView {
     }
     this.geomMeshes = [];
     this.floors = [];
+    this.floorPoses = [];
     this.parts.clear();
     for (let g = 0; g < desc.ngeom; g++) {
       const a = desc.rgba[4 * g + 3];
@@ -855,6 +861,7 @@ export class SceneView {
         });
         this.scene.add(floor);
         this.floors.push(floor);
+        this.floorPoses.push(floor.userData.planePose = new THREE.Matrix4());
         this.geomMeshes.push(floor);
         continue;
       }
@@ -1079,6 +1086,7 @@ export class SceneView {
         xmat[r + 6], xmat[r + 7], xmat[r + 8], xpos[p + 2],
         0, 0, 0, 1);
       mesh.matrix.copy(this.tmp);
+      if (mesh.userData.planePose instanceof THREE.Matrix4) mesh.userData.planePose.copy(this.tmp);
     }
   }
 
@@ -1093,12 +1101,29 @@ export class SceneView {
     if(camera instanceof SceneCamera)camera.setSourceProjection(this.sourceColorMap);
   }
 
+  /** Physics planes are infinite, but each floor visual is a finite 40 m mirror. A player can walk
+   * past its edge within seconds, so in Player scenes shift the visual inside its own plane to stay
+   * under this camera. Whole 2 m steps keep the 0.2 m checker aligned to the simulated world. */
+  private centerPlayerFloors(camera: THREE.Camera) {
+    if (this.renderModel?.mode !== 'player') return;
+    camera.getWorldPosition(this.floorCamera);
+    for (let i = 0; i < this.floors.length; i++) {
+      const pose = this.floorPoses[i], local = this.floorCamera;
+      this.floorInverse.copy(pose).invert();
+      local.applyMatrix4(this.floorInverse);
+      this.floorShift.makeTranslation(Math.round(local.x / 2) * 2, Math.round(local.y / 2) * 2, 0);
+      this.floors[i].matrix.multiplyMatrices(pose, this.floorShift);
+      camera.getWorldPosition(this.floorCamera);
+    }
+  }
+
   private prepareSourceView(camera: THREE.Camera) {
     this.configureCamera(camera);
     this.updateRobotFade();
     this.robotLight.visibility(this.display.robot ? this.robotFade : 0);
     const base = this.geomMeshes.find(object => object?.userData.robotGeom);
     if (base) this.robotLight.position.value.setFromMatrixPosition(base.matrix);
+    this.centerPlayerFloors(camera);
     const time = this.getSourceTime();
     if (this.sourceLighting) this.sourceStyles?.update(time);
     this.sourceMaterials.update(time);

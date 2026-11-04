@@ -2806,7 +2806,17 @@ class App {
       // The loading game owns the screen; prepareLaunch renders one real ready frame.
       if (launch.active) return;
       // Player worlds take no gamepad or Flight input; the controller releases held input while blocked.
-      if (this.player) { this.player.input.update(); this.updatePlayerCamera(dt); this.drawLiveFrame(); return; }
+      // Camera / output owns the viewport while it is open. After a rebuild, wait for the new layout's
+      // first frame so third-person camera collision never bakes unposed geometry.
+      if (this.player) {
+        this.player.input.update();
+        if (this.lastFrame && !this.dialog.isOpen) {
+          this.view.sync(this.lastFrame.xpos, this.lastFrame.xmat);
+          this.updatePlayerCamera(dt);
+        }
+        this.drawLiveFrame();
+        return;
+      }
       if (this.inputBlocked) { this.drawLiveFrame(); return; }
       const padCmd = this.pad.poll((a) => this.onPadAction(a), this.status?.combos,
                                    (combo) => this.remote(combo));

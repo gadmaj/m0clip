@@ -249,6 +249,8 @@ export class PlayerWorld {
 
   /** Simulated seconds of physics on this world's clock. */
   private simTime = 0;
+  /** Absolute physics deadline of the latest Player tick: substep rounding never accumulates. */
+  private tickEnd = 0;
   /** Recorded frame clock: advances only by simulated ticks, monotonic across scene changes. */
   private clock = 0;
   private acc = 0;
@@ -521,7 +523,8 @@ export class PlayerWorld {
     this.eye(scene);
     this.tools(scene, buttons, pressed);
 
-    const engine = scene.engine, end = this.simTime + TICK;
+    this.tickEnd += TICK;
+    const engine = scene.engine, end = this.tickEnd;
     for (;;) {
       const dt = engine.timestep;
       if (this.simTime + 0.5 * dt > end) break;
