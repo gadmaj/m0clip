@@ -187,6 +187,8 @@ class App {
    * saved view that needs the current robot leaves it null and the choice is refused. */
   private mapRobotChoice:'now'|'later'|null=null;
   private deferredRobot:string|null=null;
+  /** The latest robot sent to the worker; earlier rebuilds' statuses must not show an older choice. */
+  private requestedRobot:string|null=null;
   /** Modal surfaces own keyboard, pointer and gamepad input. */
   private get inputBlocked() { return launch.active || this.mapPreparing || !!this.pendingMap || !!document.querySelector('dialog[data-local-map][open]') || !!this.help?.isOpen || !!this.shotLibrary?.isOpen || VisualPicker.active; }
   /** Flight and the live Player camera own the viewport camera; orbit controls stay off. */
@@ -825,6 +827,7 @@ class App {
       if(!this.mapPreparing||this.mapRobotChoice==='now'){
         if(this.noclip)this.setNoclip(false);this.heldView=false;
         // `send` holds live controls during a map change; this rebuild precedes the map's worker job.
+        this.requestedRobot=robot;
         if(this.mapPreparing)this.worker.postMessage({t:'robot',robot});else this.send({t:'robot',robot});
       }else if(this.mapRobotChoice==='later')this.deferredRobot=robot;
       else if(this.status)this.panel.setRobots(this.status.robots,this.status.robot);
@@ -2543,6 +2546,8 @@ class App {
       case "notice": return this.showOverlay(m.msg, "notice");
       case "error":
         this.workerBusy = false; this.syncPolicyActions();
+        // A failed rebuild leaves the running robot authoritative again.
+        if (this.requestedRobot !== null) { this.requestedRobot = null; if (this.status) this.panel.setRobots(this.status.robots, this.deferredRobot ?? this.status.robot); }
         // A Player world keeps running after a failed spawn, remove or map change; only the request failed.
         if (this.player && !launch.active) {
           const pending = this.pendingMap;
@@ -2586,8 +2591,9 @@ class App {
       if (s.hoist !== undefined) this.statusInput("hoist", s.hoist);
     }
     // A choice queued behind a map change stays shown until it is applied.
+    if (this.requestedRobot === s.robot) this.requestedRobot = null;
     if (!prev || prev.robots.join() !== s.robots.join() || prev.robot !== s.robot)
-      this.panel.setRobots(s.robots, this.deferredRobot ?? s.robot);
+      this.panel.setRobots(s.robots, this.deferredRobot ?? this.requestedRobot ?? s.robot);
     let policyOptionsChanged = !prev || prev.policies.length !== s.policies.length;
     if (prev && !policyOptionsChanged) {
       for (let i = 0; i < s.policies.length; i++) {
