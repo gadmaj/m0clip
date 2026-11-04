@@ -1098,6 +1098,7 @@ class App {
     // Flying owns the camera directly. Keep the final view when returning to physics.
     this.heldView = true;
     this.panel.setNoclip(on);
+    this.explore.setFlight(on);
     this.rec?.mark("noclip", on ? "Noclip on" : "Noclip off");
     this.send({ t: "noclip", on });
   }
