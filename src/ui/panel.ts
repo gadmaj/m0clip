@@ -6,6 +6,8 @@ import type { FsmState } from "../sim/fsm";
 import { STATES } from "../sim/fsm";
 import type { PackInfo, PolicyInfo } from "../sim/protocol";
 import { TERRAINS, type MapEntry, type TerrainName } from "../sim/terrain";
+import type { SceneMode } from "../player/types";
+import { mapEntryLabel, TERRAIN_LABELS } from './launch';
 import { policyPresentation } from './policy-names';
 import { TerrainPicker } from './terrain-picker';
 import { VisualPicker } from './visual-picker';
@@ -142,8 +144,9 @@ export class Panel {
   private reviewScope!: HTMLElement;
   padDebugOpen: () => boolean = () => false;
 
+  /** Player scenes label maps as the launch catalogue does; Robot keeps its file names. */
   constructor(root: HTMLElement, mgrRoot: HTMLElement, robots: string[],
-              readonly cb: PanelCallbacks) {
+              readonly cb: PanelCallbacks, private readonly mode: SceneMode) {
     root.innerHTML = "";
     this.mgrEl = mgrRoot;
     this.buildManager(mgrRoot);
@@ -176,6 +179,7 @@ export class Panel {
     this.robotPicker = new VisualPicker(this.robotSel,{id:'robot',label:'Robot',preview:value=>previewImage('robot',value)});
     form.querySelector('label[for="sel-robot"]')!.setAttribute('for','robot-trigger');
     this.terrainSel = field("terrain", "Map", TERRAINS, (v) => cb.onTerrain(v as TerrainName));
+    if (mode === 'player') for (const option of this.terrainSel.options) option.text = TERRAIN_LABELS[option.value];
     this.terrainPicker = new TerrainPicker(this.terrainSel,cb.onLocalMap);
     form.append(this.terrainPicker.root);
     form.querySelector('label[for="sel-terrain"]')!.setAttribute('for', 'terrain-trigger');
@@ -644,7 +648,7 @@ export class Panel {
     for (const [game, list] of byGame) {
       const g = document.createElement("optgroup");
       g.label = game;
-      for (const m of list) g.appendChild(new Option(m.id.startsWith('local-') ? `${m.name} · Local` : m.id.endsWith('.bsp') ? m.id : `${m.id}.bsp`, `map:${m.id}`));
+      for (const m of list) g.appendChild(new Option(m.id.startsWith('local-') ? `${m.name} · Local` : this.mode === 'player' ? mapEntryLabel(m) : m.id.endsWith('.bsp') ? m.id : `${m.id}.bsp`, `map:${m.id}`));
       this.terrainSel.appendChild(g);
     }
     this.terrainSel.value = cur;

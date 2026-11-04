@@ -46,11 +46,14 @@ export interface PlayerBodyOption {
   description?: string;
 }
 export const PICARDIA_PLAYER = 'pmodels:hl:picardia_v1sc';
-/** Mode and Player model only; Robot prefs stay in ume-prefs / ume-appearance. */
+/** Mode, Player model and Player map only; Robot prefs stay in ume-prefs / ume-appearance. */
 const PLAYER_PREFS = 'ume-player';
 const DEFAULT_MODE: SceneMode = 'robot';
 const robots = ['r1', 'r1_air', 'r1_air_edu', 'g1', 'g1_air', 'go2'];
-const labels: Record<string, string> = { flat: 'Flat ground', rough: 'Rough ground', slope: 'Slope', stairs: 'Stairs', park: 'Park' };
+export const TERRAIN_LABELS: Readonly<Record<string, string>> = { flat: 'Flat ground', rough: 'Rough ground', slope: 'Slope', stairs: 'Stairs', park: 'Park' };
+const labels = TERRAIN_LABELS;
+/** Catalogue label of a game map, as the launch gallery shows it. */
+export const mapEntryLabel = (map: MapEntry) => `${map.name} · ${map.game}`;
 const characters = KIT_LABELS;
 const stored = (key: string): Record<string, unknown> => {
   try {
@@ -106,6 +109,8 @@ class LaunchController {
   private playerBodyChosen = false;
   private modeChosen = false;
   private linkedRobot: boolean;
+  /** Last Player map written to ume-player; Robot's map lives only in ume-prefs. */
+  private savedPlayerTerrain?: TerrainName;
   private addGameContent?: () => void;
   private progress = new SceneProgress();
   private loadGeneration = 0;
@@ -134,14 +139,16 @@ class LaunchController {
   constructor() {
     const prefs = stored('ume-prefs'), body = new URLSearchParams(location.search).get('body');
     const query = new URLSearchParams(location.search).get('map');
-    const terrain = this.shared?.terrain ?? (query && isTerrain(`map:${query}`) ? `map:${query}` as TerrainName : undefined)
-      ?? (isTerrain(prefs.terrain) && !prefs.terrain.startsWith('map:local-') ? prefs.terrain : 'map:nt_ghost_ctg');
-    const rememberedRobot = typeof prefs.robot === 'string' && robots.includes(prefs.robot) ? prefs.robot : 'r1';
-    const robot = this.shared?.robot ?? (isBodyVisual(body) && !compatibleBody(body, rememberedRobot) ? characterPhysics(body)! : rememberedRobot);
     // A shared view or ?body= link is an explicit Robot workflow; it never opens in Player mode.
     this.linkedRobot = !!this.shared || isBodyVisual(body);
-    const { mode: savedMode, body: savedBody } = stored(PLAYER_PREFS);
+    const { mode: savedMode, body: savedBody, terrain: savedTerrain } = stored(PLAYER_PREFS);
     const mode: SceneMode = this.linkedRobot ? 'robot' : savedMode === 'player' || savedMode === 'robot' ? savedMode : DEFAULT_MODE;
+    // Each mode reopens the last map it ran live; Player never reads or writes Robot's ume-prefs map.
+    const rememberedTerrain = mode === 'player' ? savedTerrain : prefs.terrain;
+    const terrain = this.shared?.terrain ?? (query && isTerrain(`map:${query}`) ? `map:${query}` as TerrainName : undefined)
+      ?? (isTerrain(rememberedTerrain) && !rememberedTerrain.startsWith('map:local-') ? rememberedTerrain : 'map:nt_ghost_ctg');
+    const rememberedRobot = typeof prefs.robot === 'string' && robots.includes(prefs.robot) ? prefs.robot : 'r1';
+    const robot = this.shared?.robot ?? (isBodyVisual(body) && !compatibleBody(body, rememberedRobot) ? characterPhysics(body)! : rememberedRobot);
     const rememberedBody = typeof savedBody === 'string' ? savedBody : null;
     const playerBody = rememberedBody && decodePmodelId(rememberedBody) ? rememberedBody : PICARDIA_PLAYER;
     if (rememberedBody && rememberedBody !== playerBody) this.pendingPlayerBody = rememberedBody;
@@ -421,9 +428,17 @@ class LaunchController {
 
   /** Robot prefs are untouched; a linked Robot view keeps the remembered mode unless the user switched. */
   private rememberMode() {
-    const mode = this.linkedRobot && !this.modeChosen ? stored(PLAYER_PREFS).mode : this.selection.mode;
+    const prefs = stored(PLAYER_PREFS);
+    const mode = this.linkedRobot && !this.modeChosen ? prefs.mode : this.selection.mode;
     const body = this.pendingPlayerBody ?? this.selection.playerBody;
-    try { localStorage.setItem(PLAYER_PREFS, JSON.stringify({ mode, body })); } catch { /* This load still uses the choice. */ }
+    try { localStorage.setItem(PLAYER_PREFS, JSON.stringify({ ...prefs, mode, body })); } catch { /* This load still uses the choice. */ }
+  }
+
+  /** Player's counterpart of Robot's live ume-prefs map: Main passes the Player map once it runs. */
+  rememberPlayerTerrain(terrain: TerrainName) {
+    if (terrain === this.savedPlayerTerrain) return;
+    this.savedPlayerTerrain = terrain;
+    try { localStorage.setItem(PLAYER_PREFS, JSON.stringify({ ...stored(PLAYER_PREFS), terrain })); } catch { /* This session still runs the map. */ }
   }
 
   private async loadCatalog() {
@@ -448,7 +463,7 @@ class LaunchController {
     const groups = new Map<string,HTMLOptGroupElement>();
     select.replaceChildren();
     const options = [
-      ...this.maps.map(map => ({ value: `map:${map.id}`, label: `${map.name} · ${map.game}`, group:map.game })),
+      ...this.maps.map(map => ({ value: `map:${map.id}`, label: mapEntryLabel(map), group:map.game })),
       ...(this.selection.localIndex?[{value:'map:local-pending',label:`${this.selection.localIndex.name} · Local file`,group:'Local maps'}]:[]),
       ...TERRAINS.map(terrain => ({ value: terrain, label: labels[terrain], group:'Built-in terrains' })),
     ];

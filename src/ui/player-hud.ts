@@ -31,6 +31,8 @@ export const PLAYER_TOOL_LABELS: Readonly<Record<Exclude<PlayerTool, 'none'>, st
 const SLOTS = ['knife', 'physgun', 'spawn'] as const;
 const STRIP_MS = 1500;
 const NOTICE_MS = 2500;
+/** A granted lock arrives well within this; an unfocused Chrome window may never answer at all. */
+const LOCK_WAIT_MS = 1000;
 
 export class PlayerHud {
   readonly root = document.createElement('div');
@@ -48,7 +50,10 @@ export class PlayerHud {
   private readonly state: PlayerHudState = { enabled: false, locked: false, tool: 'none', tools: [], holding: false, spawnLabel: null };
   private stripTimer?: number;
   private noticeTimer?: number;
+  private lockTimer?: number;
   private notice = '';
+  /** The last capture request failed; cleared by the next successful lock. */
+  private lockMissed = false;
 
   constructor(viewport: HTMLElement, private readonly callbacks: PlayerHudCallbacks) {
     this.root.id = 'player-hud';
@@ -78,8 +83,9 @@ export class PlayerHud {
     this.play.id = 'player-play';
     this.play.className = 'btn primary';
     this.play.textContent = 'Click to play';
-    this.play.addEventListener('click', () => this.callbacks.requestLock());
+    this.play.addEventListener('click', () => { this.callbacks.requestLock(); this.lockRequested(); });
     this.playNote.className = 'player-play-note';
+    this.playNote.setAttribute('role', 'status');
     this.spawnChoice.className = 'player-spawn';
     const spawnLabel = document.createElement('label');
     spawnLabel.htmlFor = 'player-spawn-trigger';
@@ -113,6 +119,7 @@ export class PlayerHud {
     if (!toolsChanged && !toolChanged && next.enabled === state.enabled && next.locked === state.locked
       && next.holding === state.holding && next.spawnLabel === state.spawnLabel) return;
     const locking = next.locked && !state.locked;
+    if (locking) { this.lockMissed = false; window.clearTimeout(this.lockTimer); this.lockTimer = undefined; }
     state.enabled = next.enabled; state.locked = next.locked; state.tool = next.tool;
     state.holding = next.holding; state.spawnLabel = next.spawnLabel;
     if (toolsChanged) state.tools = next.tools.slice();
@@ -139,6 +146,22 @@ export class PlayerHud {
     if (tool !== 'none') this.showNotice(`${PLAYER_TOOL_LABELS[tool]} unavailable`);
   }
 
+  /** Pointer lock was refused (commonly: the browser window was not focused). One notice, no retry. */
+  lockFailed() {
+    window.clearTimeout(this.lockTimer); this.lockTimer = undefined;
+    this.lockMissed = true;
+    this.renderCard();
+  }
+
+  /** Call after requestLock(): a request that neither locks nor errors gets the same notice once. */
+  lockRequested() {
+    window.clearTimeout(this.lockTimer);
+    this.lockTimer = window.setTimeout(() => {
+      this.lockTimer = undefined;
+      if (this.mode === 'player' && this.state.enabled && !this.state.locked) this.lockFailed();
+    }, LOCK_WAIT_MS);
+  }
+
   showNotice(message: string) {
     window.clearTimeout(this.noticeTimer);
     this.notice = message;
@@ -147,7 +170,7 @@ export class PlayerHud {
   }
 
   dispose() {
-    window.clearTimeout(this.stripTimer); window.clearTimeout(this.noticeTimer);
+    window.clearTimeout(this.stripTimer); window.clearTimeout(this.noticeTimer); window.clearTimeout(this.lockTimer);
     this.finePointer.removeEventListener('change', this.renderCard);
     this.spawnPicker.dispose();
     this.root.remove();
@@ -182,7 +205,9 @@ export class PlayerHud {
     // Pointer lock needs a mouse; touch controls are not provided, so do not offer a dead button.
     const pointer = this.finePointer.matches && 'requestPointerLock' in HTMLElement.prototype;
     this.play.hidden = !pointer;
-    this.playNote.textContent = pointer ? 'Esc releases the mouse.' : 'Player controls need a mouse and keyboard.';
+    const note = !pointer ? 'Player controls need a mouse and keyboard.'
+      : this.lockMissed ? 'Click the scene again to capture the mouse.' : 'Esc releases the mouse.';
+    if (this.playNote.textContent !== note) this.playNote.textContent = note;
     this.spawnChoice.hidden = !this.state.tools.includes('spawn') || !this.spawnSelect.options.length;
   };
 

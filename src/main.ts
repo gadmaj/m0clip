@@ -411,7 +411,7 @@ class App {
       onNoclip: (on) => this.setNoclip(on),
       onFlashlight: (on) => this.setFlashlight(on),
       onRemote: (combo) => this.remote(combo),
-    });
+    }, this.mode);
     this.timeline = new Timeline(document.getElementById("deck")!, {
       close: () => this.closeReview(),
       exportVideo: () => this.openExport("video"),
@@ -558,7 +558,7 @@ class App {
       discardPreparedPmodelCharacters();
       storageConsent.sceneEntered();
       // Enter scene is the trusted gesture that may capture the mouse.
-      if (this.player) { this.player.input.setEnabled(true); this.player.input.requestLock(); }
+      if (this.player) { this.player.input.setEnabled(true); this.player.input.requestLock(); this.player.hud.lockRequested(); }
     });
     launch.onFailure(() => {
       this.send({ t: 'loadingFinished', generation: launch.loadingId });
@@ -919,7 +919,7 @@ class App {
       locked: locked => { if (!locked) this.send({ t: 'playerStop' }); },
       // The held view is part of every input frame; the camera reads the controller directly.
       thirdPerson: () => {},
-      lockError: error => hud.showNotice(`Mouse capture unavailable: ${error instanceof Error ? error.message : String(error)}`),
+      lockError: () => hud.lockFailed(),
     });
     hud.setMode('player');
     hud.setSpawnRobots(SPAWN_ROBOTS, null);
@@ -982,6 +982,8 @@ class App {
   private applyPlayerStatus(s: Extract<FromWorker, { t: 'playerStatus' }>) {
     const previous = this.playerStatus;
     this.playerStatus = s;
+    // Player's counterpart of Robot's persistPrefs on status: the live map reopens next launch.
+    launch.rememberPlayerTerrain(this.panel.terrain);
     const player = this.player;
     if (!player) return;
     player.input.setAvailableTools(s.availableTools);

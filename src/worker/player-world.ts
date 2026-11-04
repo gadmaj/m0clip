@@ -637,7 +637,9 @@ export class PlayerWorld {
     }
   }
 
-  /** First collision geom along the view ray (visual-only geoms and the player are skipped). */
+  /** First geom along the view ray that is either robot-owned (visual or collision: the robot the
+   * player sees under the crosshair) or a world collision geom. World visual-only geoms are stepped
+   * past and the player collider's body is excluded. */
   private pick(scene: PlayerScene, maxDist: number): { geom: number; dist: number } | null {
     const engine = scene.engine, mj = engine.mj;
     const contype = engine.geomContype, conaffinity = engine.geomConaffinity;
@@ -650,7 +652,7 @@ export class PlayerWorld {
       if (dist < 0 || geom < 0) return null;
       travelled += dist;
       if (travelled > maxDist) return null;
-      if ((contype[geom] | conaffinity[geom]) !== 0) return { geom, dist: travelled };
+      if ((contype[geom] | conaffinity[geom]) !== 0 || this.runtimeOfGeom(geom)) return { geom, dist: travelled };
       const step = dist + 1e-4;
       travelled += 1e-4;
       for (let k = 0; k < 3; k++) start[k] += dir[k] * step;
