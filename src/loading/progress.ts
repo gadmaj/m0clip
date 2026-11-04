@@ -35,6 +35,9 @@ export class SceneProgress {
   private resources = new Map<string, TransferUpdate>();
   private workerRoots = new Set<string>();
   private budget: Map<string, number> | null = null;
+  /** Entities the planner selected with a payload. The budget also absorbs earlier terminal
+   * observations (tolerated probes such as a missing metadata 404), which never prove a requirement. */
+  private required = new Set<string>();
   private maximum = 0;
   private loaded = 0;
   private mismatch = false;
@@ -50,6 +53,7 @@ export class SceneProgress {
     this.resources.clear();
     this.workerRoots.clear();
     this.budget = null;
+    this.required.clear();
     this.maximum = this.loaded = 0;
     this.mismatch = false;
     this.started = this.lastByte = now;
@@ -95,6 +99,7 @@ export class SceneProgress {
       const key = progressEntityKey(asset), previous = budget.get(key);
       if (previous !== undefined && previous !== asset.bytes) throw new Error(`Conflicting asset payload sizes: ${asset.url}`);
       budget.set(key, asset.bytes);
+      if (asset.bytes > 0) this.required.add(key);
     }
     // The launch shell observes actual completed planning/module metadata. Include
     // those unique bodies, not a second read, and never guess an unfinished size.
@@ -164,11 +169,12 @@ export class SceneProgress {
     return this.resources.values();
   }
 
-  /** Selected entities whose request ended with an HTTP error status: the actual cause of a failed load. */
+  /** Required selected entities whose request ended with an HTTP error status: the actual cause of a failed
+   * load. Before the plan is fixed nothing is known to be required; a failed preflight names itself. */
   httpFailures(): Array<{ url: string; status: number }> {
     const failures: Array<{ url: string; status: number }> = [];
     for (const [key, resource] of this.resources) {
-      if (resource.state === 'failed' && resource.status !== undefined && (!this.budget || this.budget.has(key))) {
+      if (resource.state === 'failed' && resource.status !== undefined && this.required.has(key)) {
         failures.push({ url: resource.url, status: resource.status });
       }
     }
@@ -258,10 +264,11 @@ export function assetName(value: string): string {
   } catch { return 'Asset'; }
 }
 
-/** Details text: whole URLs and absolute paths are shortened to asset names; any other word,
- * such as the policy id in "loading amp_locomotion/amp_locomotion…", keeps its exact text. */
+/** Details text: every absolute HTTP(S) URL and each bare /path starting a word is shortened to its
+ * asset name; any other word, such as the policy id in "loading amp_locomotion/amp_locomotion…",
+ * keeps its exact text. Closing brackets stay outside the token. */
 export function detailText(message: string): string {
-  return message.trim().replace(/(?<=^|[\s"'(])(?:https?:\/\/|\/)[^\s<>"']+/g, assetName);
+  return message.trim().replace(/https?:\/\/[^\s<>"'\])]+|(?<=^|[\s"'([])\/[^\s<>"'\])]+/g, assetName);
 }
 
 export function downloadTime(seconds: number): string {

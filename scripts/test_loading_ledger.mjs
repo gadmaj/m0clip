@@ -203,6 +203,13 @@ assert.equal(detailText('Asset download: https://user:secret@cdn.test/packs/r1.z
   'Asset download: cdn.test/packs/r1.zip (HTTP 503)');
 assert.equal(detailText('loading /assets/packs/walk…'), 'loading /assets/packs/walk…', 'A path keeps its trailing ellipsis unencoded');
 assert.equal(assetName('https://scene.test/assets/models/r1/scene%20a.xml?x=1'), '/assets/models/r1/scene a.xml');
+assert.equal(detailText('Failed [https://user:secret@cdn.test/model.glb?sig=private]'), 'Failed [cdn.test/model.glb]',
+  'A bracketed absolute URL loses credentials and query');
+assert.equal(detailText('Failed (https://user:secret@cdn.test/a/model.glb#frag) then x=https://cdn.test/b.zip?sig=1.'),
+  'Failed (cdn.test/a/model.glb) then x=cdn.test/b.zip', 'An absolute URL is sanitized after any character');
+assert.equal(detailText('Model [/assets/models/r1/scene.xml?x=1] failed'), 'Model [/assets/models/r1/scene.xml] failed');
+assert.equal(detailText('loading amp_locomotion/amp_locomotion… (policy amp_locomotion/amp_locomotion…)'),
+  'loading amp_locomotion/amp_locomotion… (policy amp_locomotion/amp_locomotion…)', 'Policy ids keep their exact text');
 
 // An HTTP error body is a failed request, not the asset's payload: a 503 notice read by a
 // synchronous XHR fallback (seen only through ResourceTiming) cannot become a catalogue mismatch.
@@ -229,6 +236,16 @@ assert.equal(assetName(httpLedger.httpFailures()[0].url), '/wasm/mujoco.wasm');
 assert.equal(httpLedger.snapshot(100).stoppedBytes, 8_607_662);
 httpLedger.update(httpGeneration, [transfer('short', '/wasm/mujoco.wasm', 14, 14, 'done')], 200);
 assert.equal(httpLedger.hasCatalogueMismatch, true, 'A genuine short successful body is still a catalogue mismatch');
+
+// A tolerated pre-plan probe (a missing optional metadata .json, 404) joins the accounting budget
+// with 0 bytes but is not a cause; the later required 503 is.
+const probeLedger = new SceneProgress(), probeGeneration = probeLedger.begin(0);
+probeLedger.update(probeGeneration, [{ ...transfer('meta', '/assets/pmodels/x/model.json', 0, null, 'failed'), status: 404 }], 100);
+assert.deepEqual(probeLedger.httpFailures(), [], 'Before the plan is fixed, no failure is known to be required');
+probeLedger.freeze(probeGeneration, [{ url: '/assets/pmodels/x/model.mdl', bytes: 5000 }], 200);
+assert.equal(probeLedger.snapshot(200).knownTotal, 5000, 'Accounting still includes the terminal probe (0 bytes)');
+probeLedger.update(probeGeneration, [{ ...transfer('mdl', '/assets/pmodels/x/model.mdl', 0, null, 'failed'), status: 503 }], 300);
+assert.deepEqual(probeLedger.httpFailures(), [{ url: '/assets/pmodels/x/model.mdl', status: 503 }], 'Only the required failure is the cause');
 
 // Validation failure does not unload a successful import; later imports cannot
 // rewrite the pre-Load snapshot or turn local ZIP bytes into HTTP receipts.
