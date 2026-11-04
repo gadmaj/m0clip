@@ -769,7 +769,7 @@ class App {
     const {signal,onCommit,robot,validate}=options;
     if((source?.id??null)!==mapId(terrain))throw new Error('The selected map source does not match the requested terrain.');
     if(this.mapPreparing||this.pendingMap)throw new Error('A map is already loading.');
-    this.mapPreparing=true;
+    this.mapPreparing=true;this.syncPolicyActions();
     try{
     const previous=this.model?.terrain??this.panel.terrain;
     this.panel.setTerrain(previous);
@@ -794,10 +794,12 @@ class App {
       }else this.worker.postMessage({t:'terrain',terrain,robot,request:id,localMap:source?.payload});
       await promise;
     }catch(error){
+      // A failed or cancelled map request ends the worker's busy state without a "ready".
       if(this.pendingMap===pending){this.pendingMap=null;stage?.dispose();this.worker.postMessage({t:'cancelTerrain'});this.overlay.classList.add('hidden');}
+      this.workerBusy=false;
       throw error;
     }finally{signal?.removeEventListener('abort',cancel);}
-    }finally{this.mapPreparing=false;this.updateCaptureNavigationNotice();}
+    }finally{this.mapPreparing=false;this.syncPolicyActions();this.updateCaptureNavigationNotice();}
   }
 
   /** Existing sources stay synchronous so the initial shared-view worker barrier is installed before init. */
@@ -1740,7 +1742,7 @@ class App {
 
   /** Run again follows the same gates as the other live controls; review is handled by the panel. */
   private syncPolicyActions() {
-    this.panel.setPolicyActionsBlocked(this.workerBusy || this.recordStarting || this.exporting);
+    this.panel.setPolicyActionsBlocked(this.workerBusy || this.recordStarting || this.exporting || this.mapPreparing || !!this.pendingMap);
   }
 
   private setViewMode(m: ViewMode) {
