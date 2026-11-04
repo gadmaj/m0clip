@@ -83,7 +83,7 @@ export class PlayerHud {
     this.play.id = 'player-play';
     this.play.className = 'btn primary';
     this.play.textContent = 'Click to play';
-    this.play.addEventListener('click', () => { this.callbacks.requestLock(); this.lockRequested(); });
+    this.play.addEventListener('click', () => this.callbacks.requestLock());
     this.playNote.className = 'player-play-note';
     this.playNote.setAttribute('role', 'status');
     this.spawnChoice.className = 'player-spawn';
@@ -153,7 +153,7 @@ export class PlayerHud {
     this.renderCard();
   }
 
-  /** Call after requestLock(): a request that neither locks nor errors gets the same notice once. */
+  /** Called for every lock request: one that neither locks nor errors gets the same notice once. */
   lockRequested() {
     window.clearTimeout(this.lockTimer);
     this.lockTimer = window.setTimeout(() => {

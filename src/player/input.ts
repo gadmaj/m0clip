@@ -17,6 +17,8 @@ export interface PlayerInputActions {
   locked(locked: boolean): void;
   thirdPerson(held: boolean): void;
   lockError(error: unknown): void;
+  /** A lock request started: Enter scene, the play card or a click on the scene. */
+  lockRequested(): void;
 }
 
 /** Owns Player input only. App's central keyboard gate calls key() after modal routing. */
@@ -97,6 +99,7 @@ export class PlayerInputController {
     if (!this.enabled || this.actions.blocked() || this.locked) return;
     try {
       const request = this.canvas.requestPointerLock();
+      this.actions.lockRequested();
       if (request) void request.catch(error => this.actions.lockError(error));
     } catch (error) { this.actions.lockError(error); }
   }

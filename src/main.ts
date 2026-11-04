@@ -558,7 +558,7 @@ class App {
       discardPreparedPmodelCharacters();
       storageConsent.sceneEntered();
       // Enter scene is the trusted gesture that may capture the mouse.
-      if (this.player) { this.player.input.setEnabled(true); this.player.input.requestLock(); this.player.hud.lockRequested(); }
+      if (this.player) { this.player.input.setEnabled(true); this.player.input.requestLock(); }
     });
     launch.onFailure(() => {
       this.send({ t: 'loadingFinished', generation: launch.loadingId });
@@ -920,6 +920,7 @@ class App {
       // The held view is part of every input frame; the camera reads the controller directly.
       thirdPerson: () => {},
       lockError: () => hud.lockFailed(),
+      lockRequested: () => hud.lockRequested(),
     });
     hud.setMode('player');
     hud.setSpawnRobots(SPAWN_ROBOTS, null);
