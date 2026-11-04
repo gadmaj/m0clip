@@ -2766,6 +2766,8 @@ class App {
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       restoreHighlights=this.view.suspendHighlights();
       if(review&&this.take)this.reviewFrame(0);else this.drawLiveFrame();
+      // A lost context skips the draw; recovery during encoding must not save that frame.
+      if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       const filename=`${mapId(terrain)??terrain}_${model.robot??'player'}_${stamp()}.png`;
       const created=new Date().toISOString();
       const blob=await Promise.race([capturePng(this.view.renderer.domElement),aborted]);
