@@ -8,7 +8,7 @@ import type { PackInfo, PolicyInfo } from "../sim/protocol";
 import { TERRAINS, type MapEntry, type TerrainName } from "../sim/terrain";
 import type { SceneMode } from "../player/types";
 import { mapEntryLabel, TERRAIN_LABELS } from './launch';
-import { policyPresentation } from './policy-names';
+import { POLICY_ACTIVITIES, policyPresentation } from './policy-names';
 import { TerrainPicker } from './terrain-picker';
 import { VisualPicker } from './visual-picker';
 import { previewImage, staticPreviewOptions, policyPreview } from './preview-catalog';
@@ -109,6 +109,10 @@ export class Panel {
   private terrainPicker!: TerrainPicker;
   private policySel!: HTMLSelectElement;
   private policyPicker!:VisualPicker;
+  private runAgainBtn!: HTMLButtonElement;
+  /** The checkpoint that finished before its authored handover; Run again re-selects exactly this one. */
+  private finishedPolicy: string | null = null;
+  private policyActionsBlocked = false;
   private stateBtns = new Map<FsmState, HTMLButtonElement>();
   private stateDesc!: HTMLElement;
   private statusEl!: HTMLElement;
@@ -193,9 +197,12 @@ export class Panel {
     this.policyPicker.button.setAttribute('aria-describedby','policy-description');
     form.querySelector('label[for="sel-policy"]')!.setAttribute('for','policy-trigger');
     setup.append(form);
-    const policyDescription=el('div.sub', { id: 'policy-description', role:'status', 'aria-live':'polite', 'aria-atomic':'true', style: 'font-size:12px;color:var(--text-2);overflow-wrap:anywhere' });
+    const policyDescription=el('div.sub', { id: 'policy-description', role:'status', 'aria-live':'polite', 'aria-atomic':'true', style: 'font-size:12px;color:var(--text-2);overflow-wrap:anywhere;flex:1 1 auto;min-width:0' });
     policyDescription.hidden=true;
-    setup.append(policyDescription);
+    this.runAgainBtn=button('Run again',{title:'Run the finished policy again from where the robot stands',onclick:()=>this.runAgain()});
+    this.runAgainBtn.setAttribute('aria-describedby','policy-description');
+    this.runAgainBtn.style.cssText='flex:0 0 auto;margin-top:8px;display:none';
+    setup.append(el('div', { style: 'display:flex;align-items:center;gap:8px' }, policyDescription, this.runAgainBtn));
     root.append(setup);
     this.liveSections.push(setup);
 
@@ -412,7 +419,7 @@ export class Panel {
         control.removeAttribute('aria-description');
       }
     }
-    this.robotPicker.sync(); this.terrainPicker.sync(); this.policyPicker.sync();
+    this.robotPicker.sync(); this.terrainPicker.sync(); this.policyPicker.sync(); this.syncRunAgain();
     this.flashlightBtn.title = reviewing ? 'SHOT · Camera flashlight' : 'LIVE · Camera flashlight (F)';
     this.flashlightKey.hidden = reviewing;
   }
@@ -521,6 +528,8 @@ export class Panel {
   }
 
   private clearPolicyCompletion() {
+    this.finishedPolicy=null;
+    this.syncRunAgain();
     const description=document.getElementById('policy-description')!;
     if(description.dataset.completedFor===undefined)return;
     delete description.dataset.completedFor;
@@ -534,6 +543,30 @@ export class Panel {
     description.dataset.completedFor=active;
     description.textContent=`${policyPresentation(policy).title} finished.`;
     description.hidden=false;
+    this.finishedPolicy=policy;
+    this.runAgainBtn.title=`Run ${policyPresentation(policy).title} again from where the robot stands (${policy})`;
+    this.syncRunAgain();
+  }
+
+  /** Recording start and worker loads block Run again, as review and export block live controls. */
+  setPolicyActionsBlocked(blocked:boolean) {
+    this.policyActionsBlocked=blocked;
+    this.syncRunAgain();
+  }
+
+  private syncRunAgain() {
+    const target=this.finishedPolicy;
+    const available=target!==null&&Array.from(this.policySel.options).some(option=>option.value===target&&!option.disabled);
+    this.runAgainBtn.style.display=available?'':'none';
+    this.runAgainBtn.disabled=!available||this.reviewing||this.policyActionsBlocked||this.policySel.disabled;
+  }
+
+  /** Re-select the finished checkpoint through the normal policy selection; its handover stays authored. */
+  private runAgain() {
+    const target=this.finishedPolicy;
+    if(target===null||this.runAgainBtn.disabled)return;
+    this.clearPolicyCompletion();
+    this.cb.onPolicy(target);
   }
 
   setPolicies(entries: PolicyInfo[], active: string, robot = "") {
@@ -541,6 +574,7 @@ export class Panel {
     const description = document.getElementById('policy-description')!;
     if (!entries.length) {
       delete description.dataset.completedFor;
+      this.finishedPolicy=null;
       description.hidden=false;
       description.textContent = 'Import a policy pack to add motions for this robot.';
       const o = new Option("No policies — import a pack", "");
@@ -548,35 +582,37 @@ export class Panel {
       o.selected = true;
       this.policySel.add(o);
       this.policyPicker.sync();
+      this.syncRunAgain();
       return;
     }
-    // group by obs-scheme label; G1 / R1 packs with variants (R1: declared, else from the pack robot)
-    // are listed Air-only first, then Air + EDU, then EDU-only (label prefix says which)
+    // Activity sections first (one Locomotion section across R1 / R1 Air / R1 EDU); within a section
+    // Air-only, then Air + EDU, then EDU-only. The variant, canonical name and FSM State are card detail.
     const fam = robot.toUpperCase() || "G1";
     const variant = (e: PolicyInfo): [number, string] => {
       const m = e.models;
       if (!m?.length) return [3, ""];
       const air = m.includes("air"), edu = m.includes("edu");
-      return air && !edu ? [0, `${fam} Air · `] : air && edu ? [1, `${fam} Air + EDU · `] : [2, `${fam} EDU · `];
+      return air && !edu ? [0, `${fam} Air`] : air && edu ? [1, `${fam} Air + EDU`] : [2, `${fam} EDU`];
     };
     const ordered = [...entries].sort((a, b) =>
       variant(a)[0] - variant(b)[0] || (a.fsmId ?? 1e9) - (b.fsmId ?? 1e9) || a.name.localeCompare(b.name));
     const byGroup = new Map<string, PolicyInfo[]>();
     for (const e of ordered) {
-      const g = variant(e)[1] + policyPresentation(e.name).category;
+      const g = policyPresentation(e.name).category;
       if (!byGroup.has(g)) byGroup.set(g, []);
       byGroup.get(g)!.push(e);
     }
-    for (const [g, list] of byGroup) {
+    const activities: readonly string[] = POLICY_ACTIVITIES;
+    for (const [g, list] of [...byGroup].sort((a, b) => activities.indexOf(a[0]) - activities.indexOf(b[0]))) {
       const grp = document.createElement("optgroup");
       grp.label = g;
-      // prefix the FSM id the policy runs as on the robot, e.g. "[802] cpy_walk_run_29dofs/actor"
       for (const e of list) {
         const presentation = policyPresentation(e.name);
-        const option = new Option(presentation.label, e.name);
+        const option = new Option(presentation.title, e.name);
         option.dataset.label=presentation.title;
         option.dataset.previewRobot=e.previewRobot;
-        option.title = e.fsmId===undefined?presentation.description:presentation.description?`${presentation.description} · State ${e.fsmId}`:`State ${e.fsmId}`;
+        option.dataset.detail=[variant(e)[1], e.name, e.fsmId===undefined?'':`State ${e.fsmId}`].filter(Boolean).join(' · ');
+        option.title = presentation.description;
         grp.appendChild(option);
       }
       this.policySel.appendChild(grp);
@@ -586,10 +622,12 @@ export class Panel {
     this.policySel.title = presentation.label;
     if(description.dataset.completedFor!==active){
       delete description.dataset.completedFor;
+      this.finishedPolicy=null;
       description.textContent=presentation.description;
       description.hidden=!description.textContent;
     }
     this.policyPicker.sync(true);
+    this.syncRunAgain();
   }
 
   setPacks(packs: PackInfo[]) {
