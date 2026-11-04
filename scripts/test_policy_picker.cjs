@@ -50,6 +50,12 @@ const attachReadyApp = require('./attach-ready-app.cjs');
     assert.equal(await search.inputValue(), query);
     assert.equal(await gallery.isVisible(), true);
     assert.equal(await page.evaluate(() => document.activeElement.dataset.value), focused);
+    // A handover status also replaces the Moves buttons; that must not close the open gallery either.
+    await page.evaluate(() => window.__app.panel.setRemoteActions([{ group: 'Speed', items: [{ combo: 'R2+Up', label: 'High' }] }]));
+    await page.evaluate(() => window.__app.panel.setRemoteActions(window.__app.status.actions));
+    assert.equal(await search.inputValue(), query);
+    assert.equal(await gallery.isVisible(), true);
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.value), focused);
     await page.keyboard.press('ArrowDown');
     assert.equal(await gallery.evaluate(dialog => dialog.contains(document.activeElement)), true);
     await page.keyboard.press('Escape');
