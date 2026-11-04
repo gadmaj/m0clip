@@ -22,7 +22,7 @@ const controlled = {
       return metadata.downloadUrl ? parsePack(new Uint8Array(await (await fetchAsset(metadata.downloadUrl)).arrayBuffer())) : fixture.locals[id];
     }
   `,
-  defaults: `export async function installDefaultPacks(packs,progress,fetchMetadata){
+  defaults: `export async function installDefaultPacks(family,packs,progress,fetchMetadata){
     fixture.installCalls++;
     if(fixture.installMetadata) await (await fetchMetadata('/default-catalogue.json')).json();
     return packs;

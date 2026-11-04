@@ -113,7 +113,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
     const hosted = await fresh();
     const firstLoad = await hosted.page.evaluate(async () => {
-      const catalog = await fixture.installDefaultPacks(await fixture.listPacks(), () => {}), id = fixture.realPacks[0].id;
+      const catalog = await fixture.installDefaultPacks('r1', await fixture.listPacks(), () => {}), id = fixture.realPacks[0].id;
       const loaded = await fixture.loadPack(id);
       return { metadataOnly: catalog.every(pack => !Object.hasOwn(pack, 'files')), expected: await fixture.hashes(fixture.realPacks[0]), actual: await fixture.hashes(loaded) };
     });

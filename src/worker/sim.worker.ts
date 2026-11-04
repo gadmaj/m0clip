@@ -263,15 +263,8 @@ class SimWorker {
     });
     post({ t: "busy", msg: "loading imported policy packs…" });
     this.packs = await listPacks();
-    try {
-      this.packs = await installDefaultPacks(this.packs, msg => post({ t: 'busy', msg }),
-        assets ? url => assets.prepare(url) : undefined);
-    } catch (error) {
-      // A failed download must not prevent browsing maps or using manual packs.
-      // Leave the marker unset so the next visit retries, keeping partial imports.
-      console.warn('Default policies could not be installed; reload to retry.', error);
-      this.packs = await listPacks();
-    }
+    await this.installFamilyDefaults(m.robot && m.robot in SPECS ? m.robot : 'r1',
+      assets ? url => assets.prepare(url) : undefined);
     if (isTerrain(m.terrain)) this.terrain = m.terrain;
     if(m.localMap){if(m.localMap.id!==mapId(this.terrain))throw new Error('The selected map source does not match the requested terrain.');this.activeMap=registerLocalMap(m.localMap);}
     this.activeMap=mapSource(this.terrain);
@@ -363,6 +356,19 @@ class SimWorker {
   /** Policy list for the active robot FAMILY (r1 covers r1_air, g1 covers g1_air). */
   private rebuildPolicies() {
     this.policies = this.allEntries().filter((e) => fam(e.robot) === fam(this.robot));
+  }
+
+  /** Install the hosted catalog of the selected robot's family on its first selection;
+   * other families' catalogs are never fetched. A failed download must not prevent
+   * browsing maps or using manual packs: the marker stays unset so the next selection
+   * or visit retries, keeping partial imports. */
+  private async installFamilyDefaults(robot: string, fetchMetadata?: (url: string) => Promise<Response>) {
+    try {
+      this.packs = await installDefaultPacks(fam(robot), this.packs, msg => post({ t: 'busy', msg }), fetchMetadata);
+    } catch (error) {
+      console.warn(`Default ${fam(robot)} policies could not be installed; select the robot again or reload to retry.`, error);
+      this.packs = await listPacks();
+    }
   }
 
 
@@ -530,6 +536,7 @@ class SimWorker {
   /** Preflight an explicit robot selection before touching the active engine or driver.
    * An empty family keeps the existing idle-preview/manual-pack flow. Callers reenter(). */
   private async setRobot(robot: string) {
+    await this.installFamilyDefaults(robot);
     const selection = selectRobotPolicy(robot, this.allEntries(), undefined, true);
     const prevKey = modelKey(getSpec(this.robot));
     this.playback = null;
@@ -659,6 +666,7 @@ class SimWorker {
           }else{
             source=m.localMap?registerLocalMap(m.localMap):mapSource(m.terrain);
             if((source?.id??null)!==mapId(m.terrain))throw new Error('The selected map source does not match the requested terrain.');
+            if(m.robot)await this.installFamilyDefaults(m.robot);
             selection=m.robot?selectRobotPolicy(m.robot,this.allEntries(),undefined,true):undefined;
             robot=selection?.robot??this.robot;
             const mount=source?.identity?`/work/maps/${source.identity.fingerprint}`:'/work/map',spec=getSpec(robot);
