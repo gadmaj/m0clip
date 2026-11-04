@@ -46,7 +46,8 @@ export class VisualPicker {
   sync(preserveSearch=false){
     const selected=this.select.selectedOptions[0],label=selected?.label,detail=selected?.dataset.detail;
     this.button.textContent=`${label || this.config.label} ▦`;
-    if(detail){const text=document.createElement('span');text.className='visual-picker-trigger-text';const small=document.createElement('small');small.className='visual-picker-detail';small.textContent=detail;text.append(this.button.textContent,small);this.button.replaceChildren(text);}
+    // One name line and one detail line keep the trigger height fixed; the full detail stays in title, aria-label and the gallery card.
+    if(detail){const text=document.createElement('span');text.className='visual-picker-trigger-text';const name=document.createElement('span');name.textContent=this.button.textContent;const small=document.createElement('small');small.className='visual-picker-detail';small.textContent=detail;text.append(name,small);this.button.replaceChildren(text);}
     this.button.setAttribute('aria-label',label?`${this.config.label}: ${label}${detail?`, ${detail}`:''}`:this.config.label);
     if(detail)this.button.title=detail; else this.button.removeAttribute('title');
     const thumbnail=selected?.dataset.preview;
