@@ -56,7 +56,7 @@ async function hit(locator) { const value = await geometry(locator); assert.ok(v
 async function snapshot(page) {
   return page.evaluate(() => {
     const stage = document.querySelector('#launch-load-stage'), rect = stage.getBoundingClientRect();
-    return { at: performance.now(), phase: stage.dataset.game, stage: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, ready: !document.querySelector('#launch-enter').disabled, error: document.querySelector('#launch-status').dataset.kind === 'error', status: document.querySelector('#launch-status').textContent, bytes: document.querySelector('#launch-bytes').textContent, eta: document.querySelector('#launch-eta').textContent, focus: document.activeElement.id, overflow: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) > innerWidth, font: getComputedStyle(document.body).fontFamily };
+    return { at: performance.now(), phase: stage.dataset.game, stage: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, ready: !document.querySelector('#launch-enter').disabled, error: document.querySelector('#launch-status').dataset.kind === 'error', status: document.querySelector('#launch-status').textContent, cause: document.querySelector('#launch-detail-status').textContent, bytes: document.querySelector('#launch-bytes').textContent, eta: document.querySelector('#launch-eta').textContent, focus: document.activeElement.id, overflow: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) > innerWidth, font: getComputedStyle(document.body).fontFamily };
   });
 }
 async function observe(page, events, gates, releaseOnMorph) {
@@ -241,7 +241,7 @@ async function runCase(name, page, proxy, run, gates, directory, cdp, events) {
       assert.ok(httpErrors.every(error => error.status === 503 && deliberate.some(resource => resource.path === error.path)));
       const worker = consoleErrors.filter(error => /\/sim\.worker-[^/]+\.js$/.test(new URL(error.location.url).pathname));
       assert.equal(worker.length, name === 'error-morph' ? 1 : 0, 'Every expected caught worker diagnostic is retained, and no unrelated error is hidden');
-      for (const error of worker) assert.ok(result.proof.settled.status.includes(error.text.split('\n')[0]), 'Original caught worker diagnostic remains canonical');
+      for (const error of worker) assert.ok(result.proof.settled.cause.includes(error.text.split('\n')[0]), 'Original caught worker diagnostic remains canonical in Details');
       for (const error of consoleErrors.filter(error => !worker.includes(error))) assert.ok(httpErrors.some(response => response.url === error.location.url && response.status === 503));
       result.passed = true;
     } catch (error) { result.failure = error.stack; await shot(cdp, directory, 'FAILED').catch(error => { result.failureScreenshot = error.message; }); }

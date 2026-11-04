@@ -5,13 +5,13 @@ import { build } from 'esbuild';
 
 globalThis.location = new URL('https://scene.test/');
 const result = await build({ stdin: { resolveDir: process.cwd(), sourcefile: 'loading-ledger-fixture.ts', contents: `
-  export { SceneProgress } from './src/loading/progress';
+  export { SceneProgress, downloadEstimate, loadingPhase } from './src/loading/progress';
   export { plannedAssets, priorIntakeAssets } from './src/loading/catalogue';
   export { inspectLocalMap, localMapIntakeState } from './src/ui/local-map';
 ` }, bundle: true, platform: 'node', format: 'cjs', write: false });
 const module = { exports: {} };
 new Function('module', 'require', result.outputFiles[0].text)(module, createRequire(import.meta.url));
-const { SceneProgress, plannedAssets, priorIntakeAssets, inspectLocalMap, localMapIntakeState } = module.exports;
+const { SceneProgress, downloadEstimate, loadingPhase, plannedAssets, priorIntakeAssets, inspectLocalMap, localMapIntakeState } = module.exports;
 const transfer = (id, url, loaded, total, state = 'loading') => ({ id, url, loaded, total, state });
 const progress = new SceneProgress();
 const first = progress.begin(0);
@@ -113,6 +113,71 @@ progress.freeze(fifth, [{ url: '/required.bin', bytes: 1000 }], 16001);
 progress.update(fifth, [transfer('required:empty', '/required.bin', 0, 0, 'done')], 16500);
 assert.equal(progress.hasCatalogueMismatch, true, 'An empty successful planned asset must not hide a real declared-size mismatch');
 assert.equal(progress.snapshot(16500).knownTotal, 1000);
+
+// Cold load: an open reader with its whole body already credited cannot time unrequested files.
+const stagedLedger = new SceneProgress(), stagedGeneration = stagedLedger.begin(0);
+assert.equal(downloadEstimate(stagedLedger.snapshot(0)), 'Planning downloads…', 'Planning has no download estimate');
+stagedLedger.freeze(stagedGeneration, [{ url: '/active.bin', bytes: 100 }, { url: '/queued.bin', bytes: 900 }], 0);
+value = stagedLedger.snapshot(0);
+assert.deepEqual([value.activeBytes, value.queuedBytes, value.stoppedBytes, value.remaining], [0, 1000, 0, 1000]);
+assert.equal(downloadEstimate(value), 'Download queued', 'Waiting on cache reads or compilation is not a transfer');
+stagedLedger.update(stagedGeneration, [transfer('active', '/active.bin', 20, 100)], 1500);
+value = stagedLedger.snapshot(1500);
+assert.deepEqual([value.activeBytes, value.queuedBytes, value.stoppedBytes], [80, 900, 0]);
+assert.equal(value.etaSeconds, null, 'Queued payload has no open transfer whose completion can be timed');
+assert.equal(downloadEstimate(value), 'Downloading · more queued');
+stagedLedger.update(stagedGeneration, [transfer('active', '/active.bin', 100, 100)], 2000);
+value = stagedLedger.snapshot(2000);
+assert.deepEqual([value.activeBytes, value.queuedBytes, value.stoppedBytes, value.remaining], [0, 900, 0, 900]);
+assert.equal(value.etaSeconds, null, 'A fully credited open reader cannot supply an ETA for queued bytes');
+stagedLedger.update(stagedGeneration, [transfer('active', '/active.bin', 100, 100, 'done'),
+  transfer('optional:probe', '/optional-probe.json', 0, null)], 2200);
+value = stagedLedger.snapshot(2200);
+assert.equal(value.active, 1);
+assert.equal(value.activeBytes, 0, 'An unplanned zero-byte probe has no selected payload left');
+assert.equal(value.queuedBytes, 900);
+assert.equal(value.etaSeconds, null);
+assert.equal(value.stalled, false, 'An unplanned probe cannot report a stalled scene download');
+stagedLedger.update(stagedGeneration, [transfer('queued', '/queued.bin', 300, null)], 3000);
+value = stagedLedger.snapshot(3000);
+assert.deepEqual([value.activeBytes, value.queuedBytes, value.stoppedBytes], [600, 0, 0]);
+assert.ok(Number.isFinite(value.etaSeconds) && value.etaSeconds > 0);
+assert.match(downloadEstimate(value), /^Download ETA ~\d+s$/);
+assert.equal(value.knownTotal, 1000, 'Starting queued work cannot change the frozen maximum');
+value = stagedLedger.snapshot(6600);
+assert.equal(value.stalled, true);
+assert.equal(downloadEstimate(value), 'Waiting for data…', 'A stalled transfer expires its numeric estimate');
+stagedLedger.update(stagedGeneration, [transfer('queued', '/queued.bin', 300, null, 'failed')], 6800);
+value = stagedLedger.snapshot(6800);
+assert.deepEqual([value.activeBytes, value.queuedBytes, value.stoppedBytes, value.remaining], [0, 0, 600, 600]);
+assert.equal(value.etaSeconds, null, 'Stopped payload is not a queued retry or an active transfer');
+assert.equal(downloadEstimate(value), 'Download stopped');
+
+// Warm cache: a completed cache read in the rate window cannot shorten the network estimate.
+const warmLedger = new SceneProgress(), warmGeneration = warmLedger.begin(0);
+warmLedger.freeze(warmGeneration, [{ url: '/cached.bin', bytes: 10_000_000 }, { url: '/network.bin', bytes: 1_000_000 }], 0);
+warmLedger.update(warmGeneration, [transfer('cached', '/cached.bin', 10_000_000, 10_000_000, 'done'),
+  transfer('network', '/network.bin', 10_000, 1_000_000)], 200);
+warmLedger.update(warmGeneration, [transfer('network', '/network.bin', 100_000, 1_000_000)], 2000);
+value = warmLedger.snapshot(2000);
+assert.equal(value.activeBytes, 900_000);
+assert.equal(value.etaSeconds, 18, 'Only bytes of the still-open request set the rate (100 kB in 2 s)');
+assert.equal(downloadEstimate(value), 'Download ETA ~18s');
+warmLedger.update(warmGeneration, [transfer('network', '/network.bin', 1_000_000, 1_000_000, 'done')], 2500);
+value = warmLedger.snapshot(2500);
+assert.equal(value.etaSeconds, null, 'Compilation and readiness after the last byte have no download ETA');
+assert.equal(downloadEstimate(value), 'Download complete');
+
+// The primary line is one short phase; the detailed message belongs in Details.
+for (const [message, label] of [
+  ['Verifying local map files…', 'Verifying map…'], ['Starting renderer and physics…', 'Starting scene…'],
+  ['loading imported policy packs…', 'Loading policy…'], ['Preparing the default R1 policy catalog…', 'Loading policy…'],
+  ['loading Planar walk v2…', 'Loading policy…'], ['Planning selected scene assets…', 'Planning scene…'],
+  ['Planning the Player world…', 'Planning scene…'], ['compiling MuJoCo model (wasm)…', 'Compiling physics…'],
+  ['compiling MuJoCo model (wasm, G1 Air 23-DOF)…', 'Compiling physics…'], ['Preparing map physics…', 'Preparing physics…'],
+  ['Preparing robot and map visuals…', 'Preparing visuals…'], ['Preparing player and map visuals…', 'Preparing visuals…'],
+  ['Some future worker step…', 'Loading scene…'],
+]) assert.equal(loadingPhase(message), label, message);
 
 // Validation failure does not unload a successful import; later imports cannot
 // rewrite the pre-Load snapshot or turn local ZIP bytes into HTTP receipts.
@@ -260,4 +325,5 @@ assert.equal(partialRoot.snapshot(4).remaining, 0);
 assert.equal(partialRoot.snapshot(4).active, 0, 'Migrated request activity ends on its actual terminal update');
 assert.equal(partialRoot.hasCatalogueMismatch, false);
 console.log(JSON.stringify({ fixedMaximum: true, uniqueEntities: true, retainedPreflight: true,
-  retryIsolation: true, generationIsolation: true, realRate: true, stalledEstimate: true, catalogueMismatch: true }));
+  retryIsolation: true, generationIsolation: true, realRate: true, stalledEstimate: true, catalogueMismatch: true,
+  activeOnlyEta: true, phaseLabels: true }));
