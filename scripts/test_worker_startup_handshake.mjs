@@ -29,7 +29,7 @@ const controlled = {
   }`,
   engine: `
     import {Engine as ActualEngine} from ${enginePath};
-    export {MissingBundleError,GEOM_MESH} from ${enginePath};
+    export {MissingBundleError,GEOM_BOX,GEOM_CYLINDER,GEOM_HFIELD,GEOM_MESH,GEOM_PLANE} from ${enginePath};
     export class Engine {
       static prepare(...args){fixture.prepares++;return ActualEngine.prepare(...args);}
       static async create(...args){fixture.compiles.push(args);throw new Error('Selected compiler reached');}
