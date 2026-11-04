@@ -18,7 +18,7 @@ type HelpSection = { id: HelpContext | 'capture' | 'gamepad'; title: string; mod
 const SECTIONS: HelpSection[] = [
   { id: 'player', title: 'Player', mode: 'player', intro: 'Click the scene to capture the mouse. Esc releases it and shows the panels.', rows: [
     [['W / S'], 'Forward / backward'], [['A / D'], 'Left / right'], [['Mouse'], 'Look'],
-    [['Space'], 'Jump'], [['Ctrl'], 'Duck'], [['Shift'], 'Hold to run'],
+    [['Space'], 'Jump'], [['C'], 'Crouch'], [['Shift'], 'Hold to run'],
     [['Mouse 1', 'Mouse 2'], 'Primary / secondary tool action'],
     [['1', '2', '3'], 'Knife / Physics gun / Spawn gun, when available'],
     [['Wheel'], 'Next / previous tool; with a held object, nearer / farther'],

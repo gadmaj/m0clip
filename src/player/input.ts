@@ -1,7 +1,9 @@
 import { PLAYER_BUTTON, type PlayerInputFrame, type PlayerTool } from './types';
 
+// Crouch is C, not Source's Ctrl: Chrome reserves Ctrl+W (close tab) outside fullscreen Keyboard Lock,
+// so crouch-walking with Ctrl closed the page in QA.
 const MOVEMENT_KEYS: Readonly<Record<string, true>> = {KeyW: true, KeyA: true, KeyS: true,
-  KeyD: true, Space: true, ControlLeft: true, ControlRight: true, ShiftLeft: true, ShiftRight: true};
+  KeyD: true, Space: true, KeyC: true, ShiftLeft: true, ShiftRight: true};
 const TOOL_SLOTS = ['knife', 'physgun', 'spawn'] as const;
 const LOOK_DEGREES = .022 * 3;
 
@@ -150,7 +152,7 @@ export class PlayerInputController {
     frame.side = Number(keys.has('KeyD')) - Number(keys.has('KeyA'));
     frame.held = this.mouseButtons
       | (keys.has('Space') ? PLAYER_BUTTON.jump : 0)
-      | (keys.has('ControlLeft') || keys.has('ControlRight') ? PLAYER_BUTTON.duck : 0)
+      | (keys.has('KeyC') ? PLAYER_BUTTON.duck : 0)
       | (keys.has('ShiftLeft') || keys.has('ShiftRight') ? PLAYER_BUTTON.run : 0);
     frame.pressed = this.pendingPressed;
     frame.wheelJump = this.pendingWheelJump;
