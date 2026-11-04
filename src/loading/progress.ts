@@ -8,6 +8,13 @@ export interface LoadingSnapshot {
   active: number;
   unknown: number;
   remaining: number;
+  /** Exact partition of `remaining`: bytes of entities with an open request. */
+  activeBytes: number;
+  /** Planned entities with no request yet (waiting on planning, cache reads or compilation). */
+  queuedBytes: number;
+  /** Entities whose requests ended (failed, cancelled or short) without their full payload. */
+  stoppedBytes: number;
+  /** Time for the open requests, from their own measured rate; null unless they hold every remaining byte. */
   etaSeconds: number | null;
   stalled: boolean;
   frozen: boolean;
@@ -33,7 +40,8 @@ export class SceneProgress {
   private mismatch = false;
   private started = 0;
   private lastByte = 0;
-  private samples: Array<{ at: number; bytes: number }> = [];
+  /** Per-entity consumed bytes at each sample, so the rate only counts requests still open. */
+  private samples: Array<{ at: number; loaded: Map<string, number> }> = [];
 
   begin(now: number): number {
     this.generation++;
@@ -45,7 +53,7 @@ export class SceneProgress {
     this.maximum = this.loaded = 0;
     this.mismatch = false;
     this.started = this.lastByte = now;
-    this.samples = [{ at: now, bytes: 0 }];
+    this.samples = [{ at: now, loaded: new Map() }];
     return this.generation;
   }
 
@@ -152,13 +160,9 @@ export class SceneProgress {
   }
 
   snapshot(now: number): LoadingSnapshot {
-    const last = this.samples[this.samples.length - 1];
-    if (last.at === now) last.bytes = this.loaded;
-    else this.samples.push({ at: now, bytes: this.loaded });
-    const cutoff = now - 5_000;
-    while (this.samples.length > 1 && this.samples[1].at <= cutoff) this.samples.shift();
-
     let knownTotal = this.maximum, active = 0, unknown = 0, unexpected = 0;
+    let activeBytes = 0, queuedBytes = 0, stoppedBytes = 0;
+    const consumed = new Map<string, number>();
     for (const [url, resource] of this.resources) {
       const bytes = this.budget?.get(url);
       if (this.budget && (bytes === undefined ? resource.loaded > 0
@@ -167,18 +171,69 @@ export class SceneProgress {
         active++;
         if (resource.total === null && bytes === undefined) unknown++;
       }
-      if (!this.budget) knownTotal += Math.max(resource.total ?? 0, resource.loaded);
+      // Fixed plan: only planned entities, clamped exactly as recount() counts them.
+      if (this.budget && bytes === undefined) continue;
+      const size = bytes ?? Math.max(resource.total ?? 0, resource.loaded);
+      const loaded = Math.min(size, resource.loaded);
+      consumed.set(url, loaded);
+      if (!this.budget) knownTotal += size;
+      if (resource.state === 'loading') activeBytes += size - loaded;
+      else stoppedBytes += size - loaded;
     }
+    if (this.budget) for (const [url, bytes] of this.budget) if (!this.resources.has(url)) queuedBytes += bytes;
+
+    const last = this.samples[this.samples.length - 1];
+    if (last.at === now) last.loaded = consumed;
+    else this.samples.push({ at: now, loaded: consumed });
+    const cutoff = now - 5_000;
+    while (this.samples.length > 1 && this.samples[1].at <= cutoff) this.samples.shift();
+
     const remaining = Math.max(0, knownTotal - this.loaded);
-    const stalled = active > 0 && remaining > 0 && now - this.lastByte >= 3_500;
+    const stalled = activeBytes > 0 && now - this.lastByte >= 3_500;
+    // Rate of the requests open now: a finished cache read or completed file in the
+    // window cannot speed up the estimate for bytes that are still arriving.
     const first = this.samples[0], elapsed = now - first.at;
-    const bytes = this.loaded - first.bytes;
-    const etaSeconds = this.budget && active > 0 && remaining > 0
-      && !stalled && now - this.started >= 1_500 && elapsed >= 1_000 && bytes > 0
-      ? remaining / (bytes / (elapsed / 1_000)) : null;
-    return { loaded: this.loaded, knownTotal, active, unknown, remaining, etaSeconds, stalled,
-      frozen: this.budget !== null, unexpected };
+    let streamed = 0;
+    for (const [url, loaded] of consumed) {
+      if (this.resources.get(url)!.state === 'loading') streamed += Math.max(0, loaded - (first.loaded.get(url) ?? 0));
+    }
+    // Queued or stopped bytes have no transfer whose completion can be estimated.
+    const etaSeconds = this.budget && activeBytes > 0 && activeBytes === remaining
+      && !stalled && now - this.started >= 1_500 && elapsed >= 1_000 && streamed > 0
+      ? activeBytes / (streamed / (elapsed / 1_000)) : null;
+    return { loaded: this.loaded, knownTotal, active, unknown, remaining, activeBytes, queuedBytes, stoppedBytes,
+      etaSeconds, stalled, frozen: this.budget !== null, unexpected };
   }
+}
+
+/** ETA row for an unfinished, unfailed load. Only bytes in open requests are ever timed. */
+export function downloadEstimate(snapshot: LoadingSnapshot): string {
+  if (!snapshot.frozen) return 'Planning downloads…';
+  if (snapshot.remaining === 0) return 'Download complete';
+  if (snapshot.etaSeconds !== null) return `Download ETA ~${downloadTime(snapshot.etaSeconds)}`;
+  if (snapshot.activeBytes > 0) {
+    if (snapshot.stalled) return 'Waiting for data…';
+    if (snapshot.queuedBytes > 0) return 'Downloading · more queued';
+    if (snapshot.stoppedBytes > 0) return 'Downloading · some stopped';
+    return 'Measuring speed…';
+  }
+  return snapshot.queuedBytes > 0 ? 'Download queued' : 'Download stopped';
+}
+
+/** Short primary label for a detailed loading message; the full message belongs in Details. */
+const PHASES: ReadonlyArray<readonly [RegExp, string]> = [
+  // The worker's lowercase "loading <policy name>…" may contain any word, so it goes first.
+  [/^loading |polic/, 'Loading policy…'],
+  [/verif/i, 'Verifying map…'],
+  [/^starting/i, 'Starting scene…'],
+  [/compil/i, 'Compiling physics…'],
+  [/plan/i, 'Planning scene…'],
+  [/visual/i, 'Preparing visuals…'],
+  [/physics/i, 'Preparing physics…'],
+];
+export function loadingPhase(message: string): string {
+  for (const [pattern, label] of PHASES) if (pattern.test(message)) return label;
+  return 'Loading scene…';
 }
 
 export function downloadTime(seconds: number): string {

@@ -16,8 +16,8 @@
 .launch-actions .primary { margin-left: auto; }
 .launch-mode button { height: 38px; }
 .launch-add-content { margin-top: 8px; }
-#launch-catalog-status:empty, #launch-appearance-note:empty, #launch-map-progress:empty { display: none; }
-#launch-catalog-status, #launch-appearance-note, #launch-context, #launch-map-progress { color: var(--text-2); overflow-wrap: anywhere; }
+#launch-catalog-status:empty, #launch-appearance-note:empty, #launch-map-progress:empty, #launch-local-progress:empty { display: none; }
+#launch-catalog-status, #launch-appearance-note, #launch-context { color: var(--text-2); overflow-wrap: anywhere; }
 #launch-context { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #launch-status { min-height: 18px; margin: 14px 0 0; overflow-wrap: anywhere; }
 #launch-status[data-kind="error"] { color: var(--danger); }

@@ -467,9 +467,10 @@ async function main() {
           if (name === 'original-primary') await waitFor(() => run.resources.some(resource => resource.expectedFailure && /\/source-robots\/.*\.glb$/.test(resource.path)), 'Late optional-native failure must really challenge the early primary map failure');
           await delay(3000); result.lateError = await snapshot(page);
           assert.equal(result.lateError.status, result.firstError.status, 'Later worker messages must preserve canonical error');
+          assert.equal(result.lateError.cause, result.firstError.cause, 'Later worker messages must preserve the canonical cause in Details');
           assert.equal(result.lateError.ready, false, 'Failure must not unlock Enter');
-          assert.match(result.firstError.status, /503|failed|could not load/i);
-          if (name === 'both-failure') assert.ok(!/selected policy unavailable|^failed to load/i.test(result.firstError.status), 'Engine/model error keeps precedence over policy error');
+          assert.match(result.firstError.cause, /503|failed|could not load/i);
+          if (name === 'both-failure') assert.ok(!/selected policy unavailable|^failed to load/i.test(result.firstError.cause), 'Engine/model error keeps precedence over policy error');
           if (['config-failure', 'both-failure'].includes(name)) {
             const failedZip = run.resources.find(resource => isZip(resource.path)), engine = run.resources.find(resource => resource.path === wasm);
             assert.ok(failedZip?.expectedFailure, 'Actual selected policy ZIP must fail before Engine is available');
@@ -510,7 +511,7 @@ async function main() {
         assert.equal(workerDiagnostics.length, expectedWorkerCount, 'Handled worker failures produce exactly one original caught diagnostic, never an extra unhandled rejection');
         for (const diagnostic of workerDiagnostics) {
           const originalLine = diagnostic.text.split('\n')[0];
-          assert.ok(originalLine && result.firstError?.status.includes(originalLine), 'Original worker diagnostic must remain inside the canonical visible failure');
+          assert.ok(originalLine && result.firstError?.cause.includes(originalLine), 'Original worker diagnostic must remain inside the canonical failure Details');
         }
         const browserDiagnostics = consoleErrors.filter(error => !workerDiagnostics.includes(error));
         assert.ok(browserDiagnostics.every(error => {

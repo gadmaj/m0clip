@@ -113,6 +113,8 @@ async function snapshot(page) {
       at: Date.now(), bytes: document.querySelector('#launch-bytes')?.textContent ?? '',
       eta: document.querySelector('#launch-eta')?.textContent ?? '',
       status: document.querySelector('#launch-status')?.textContent ?? '',
+      // The primary line stays short; the actual failure cause lives in Details.
+      cause: document.querySelector('#launch-detail-status')?.textContent ?? '',
       error: document.querySelector('#launch-status')?.dataset.kind === 'error',
       state: document.querySelector('#launch-transfer')?.dataset.state,
       value: progress?.hasAttribute('value') ? progress.value / progress.max : null,
@@ -301,7 +303,7 @@ async function runSuite() {
         if (['interrupt', 'failure', 'original'].includes(name)) {
           await page.locator('#launch-status[data-kind="error"]').waitFor({ timeout: 180000 });
           const failed = await snapshot(page); result.failure = failed;
-          if (name === 'failure') assert.match(failed.status, /503/, 'Original HTTP error detail must remain actionable');
+          if (name === 'failure') assert.match(failed.cause, /503/, 'Original HTTP error detail must remain actionable in Details');
           result.details = await inspectDetails(page, { failed: true });
           if (name === 'failure') {
             run.failureObservedAt = Date.now();
@@ -312,6 +314,7 @@ async function runSuite() {
           }
           await delay(2000); const late = await snapshot(page);
           assert.equal(late.status, failed.status, 'Late asset completion must not replace the canonical failure');
+          assert.equal(late.cause, failed.cause, 'Late asset completion must not replace the canonical failure cause');
           assert.equal(late.ready, false, 'Failed scene must not unlock entry');
           await page.screenshot({ path: path.join(out, `${name}-error.png`), fullPage: mobile });
           if (name === 'original') {
