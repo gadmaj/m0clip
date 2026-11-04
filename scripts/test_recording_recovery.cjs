@@ -1,6 +1,6 @@
 /** Actual Chrome IndexedDB/Web Locks, isolated profile/origin. Run: node scripts/test_recording_recovery.cjs */
 const assert = require('node:assert/strict');
-const { build } = require('esbuild');
+const buildFixture = require('./build-fixture.cjs');
 const { createServer } = require('node:http');
 const { once } = require('node:events');
 const { mkdtemp, rm } = require('node:fs/promises');
@@ -12,11 +12,11 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   const profile = await mkdtemp(join(tmpdir(), 'm0clip-recovery-'));
   let context, server;
   try {
-    const bundled = await build({ stdin: { contents: "import {RecordingRecovery} from './src/record/recovery';import {ShotLibrary} from './src/record/library';import {TakeRecorder,saveTake,loadTake,motionCsv} from './src/record/take';import {denseGeometryPartition} from './src/core/geometry';globalThis.fixture={RecordingRecovery,ShotLibrary,TakeRecorder,saveTake,loadTake,motionCsv,denseGeometryPartition};", resolveDir: process.cwd() }, bundle: true, platform: 'browser', format: 'iife', write: false });
+    const bundled = await buildFixture({ root: process.cwd(), source: "import {RecordingRecovery} from './src/record/recovery';import {ShotLibrary} from './src/record/library';import {TakeRecorder,saveTake,loadTake,motionCsv} from './src/record/take';import {denseGeometryPartition} from './src/core/geometry';globalThis.fixture={RecordingRecovery,ShotLibrary,TakeRecorder,saveTake,loadTake,motionCsv,denseGeometryPartition};", platform: 'browser', format: 'iife' });
     server = createServer((request, response) => {
       response.setHeader('Cache-Control', 'no-store');
       response.setHeader('Content-Type', request.url === '/fixture.js' ? 'text/javascript' : 'text/html');
-      response.end(request.url === '/fixture.js' ? bundled.outputFiles[0].contents : '<!doctype html><title>Recording recovery fixture</title><script src="/fixture.js"></script>');
+      response.end(request.url === '/fixture.js' ? bundled.code : '<!doctype html><title>Recording recovery fixture</title><script src="/fixture.js"></script>');
     });
     server.listen(0, '127.0.0.1'); await once(server, 'listening');
     const origin = `http://127.0.0.1:${server.address().port}`;

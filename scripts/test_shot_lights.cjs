@@ -4,13 +4,13 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { build } = require('esbuild');
+const buildFixture = require('./build-fixture.cjs');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const { png } = require('./source_material_fixture.cjs');
 
 (async () => {
-  const bundle = await build({
-    stdin: { resolveDir: path.resolve(__dirname, '..'), sourcefile: 'shot-light-fixture.ts', contents: `
+  const bundle = await buildFixture({
+    root: path.resolve(__dirname, '..'), source: `
       import * as THREE from 'three';
       import { ShotLights } from './src/render/shot-lights.ts';
       import { SourceAmbient } from './src/render/source-ambient.ts';
@@ -214,8 +214,8 @@ const { png } = require('./source_material_fixture.cjs');
       }
       renderer.setRenderTarget(null); target.dispose(); geometry.dispose(); skinGeometry.dispose();
       renderer.dispose(); window.results = output; window.done = true;
-    ` },
-    bundle: true, format: 'iife', platform: 'browser', write: false,
+    `,
+    platform: 'browser', format: 'iife',
   });
   const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true,
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
@@ -225,7 +225,7 @@ const { png } = require('./source_material_fixture.cjs');
     page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
     await page.route('http://m0clip.test/', route => route.fulfill({ contentType: 'text/html',
       body: '<!doctype html><body><script src="/shot.js"></script>' }));
-    await page.route('http://m0clip.test/shot.js', route => route.fulfill({ contentType: 'text/javascript', body: bundle.outputFiles[0].text }));
+    await page.route('http://m0clip.test/shot.js', route => route.fulfill({ contentType: 'text/javascript', body: bundle.code }));
     await page.route('http://m0clip.test/assets/source/flashlight.png', route => route.fulfill({ contentType: 'image/png', body: png([255, 255, 255, 255]) }));
     await page.goto('http://m0clip.test/');
     await page.waitForFunction(() => window.done, null, { timeout: 60000 });

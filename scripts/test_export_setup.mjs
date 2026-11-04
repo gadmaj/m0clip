@@ -1,15 +1,14 @@
 /** Pure camera framing used by export setup: genuine live poses, no synthetic take. */
 import assert from 'node:assert/strict';
-import { build } from 'esbuild';
-import { mkdir, rm } from 'node:fs/promises';
+import buildFixture from './build-fixture.cjs';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import * as THREE from 'three';
 
 const dir = resolve('node_modules/.cache'), file = resolve(dir, 'export-setup-test.mjs');
 await mkdir(dir, { recursive: true });
 try {
-  await build({ stdin: { contents: "export {applyStaticShot,grabShotView,defaultShot,vfov} from './src/record/shot';export {ExportDialog,defaultPrefs} from './src/record/export-dialog';", resolveDir: process.cwd() },
-    bundle: true, packages: 'external', format: 'esm', platform: 'node', outfile: file });
+  await writeFile(file, (await buildFixture({ root: process.cwd(), source: "export {applyStaticShot,grabShotView,defaultShot,vfov} from './src/record/shot';export {ExportDialog,defaultPrefs} from './src/record/export-dialog';", platform: 'node', format: 'es', externalPackages: true })).code);
   const { applyStaticShot, grabShotView, defaultShot, vfov, ExportDialog, defaultPrefs } = await import(file);
   const shot = { ...defaultShot(.73), distance: 4.25, azimuth: -37, elevation: 22, focal: 85, sensor: 24.89 };
   const base = [17, -8, 2.4], target = new THREE.Vector3(base[0], base[1], shot.height);

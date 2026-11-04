@@ -66,6 +66,8 @@ from Source game files on your computer; the files are not uploaded.
   that motion from where the robot stands.
 - The policy gallery is grouped by activity. Each card names the motion and
   lists its robot variant, checkpoint and state number; search matches all three.
+- While a gallery is open, the scene behind it holds its last frame; simulation
+  and playback keep running. Recording and screenshots still draw every frame.
 - In review, appearance, display, flashlight, lights and camera edits belong to
   that take. Robot, map and policy controls work only live. The **F** flashlight
   key is live-only; use its button while reviewing.
@@ -86,16 +88,18 @@ Chromium. Blender is optional, for converting characters.
 
 **The repository is not the demo’s asset collection.** It includes the R1, G1 and
 Go2 robots. Maps, character models and policy weights are not in Git; bring
-files you are allowed to use and, if you host a build, redistribute. Two inputs
-are required before `npm run dev` or `npm run build` will work:
+files you are allowed to use and, if you host a build, redistribute.
 
-- **Character metadata.** [`src/characters/catalog.ts`](src/characters/catalog.ts)
-  imports attribution, rig and definition JSON from `public/assets/characters/`.
-  Supply those files, or edit the catalog down to the characters you have.
-  Choosing Original at runtime does not remove these imports.
-- **Flashlight texture.** Place a permitted `public/assets/source/flashlight.png`,
-  even if you only use built-in terrain. The map importer extracts it when the
-  asset mount contains `materials/effects/flashlight001.vtf`.
+Before `npm run dev` or `npm run build`, place a permitted
+`public/assets/source/flashlight.png`, even if you only use built-in terrain. The
+map importer extracts it when the asset mount contains
+`materials/effects/flashlight001.vtf`.
+
+Character metadata is optional. [`src/characters/catalog.ts`](src/characters/catalog.ts)
+picks up the JSON in `public/assets/characters/` when Vite starts or builds;
+characters without it are left out and the built-in choices remain. The Wrapped
+and Skeleton need both `attribution.json` and `rig.json`; the PSX collection uses
+its `catalog.json`.
 
 Without a compatible policy pack the robot still simulates, but it has no learned
 walking controller. A character changes appearance, not control.

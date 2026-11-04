@@ -186,6 +186,10 @@ class App {
   private get inputBlocked() { return launch.active || this.mapPreparing || !!this.pendingMap || !!document.querySelector('dialog[data-local-map][open]') || !!this.help?.isOpen || !!this.shotLibrary?.isOpen || VisualPicker.active; }
   /** Flight and the live Player camera own the viewport camera; orbit controls stay off. */
   private get cameraOwned() { return this.noclip || this.mode === 'player'; }
+  /** Freeze only automatic backdrop draws while a gallery covers the scene, never a recording or capture owner. */
+  private get galleryPausesViewport() {
+    return VisualPicker.active && !this.rec && !this.playerRec && !this.recordStarting && !this.screenshotPending && !this.exporting;
+  }
   private help!: HelpDialog;
   private modalKeys = new Set<string>();
   private initialViewRestore: Promise<void> = Promise.resolve();
@@ -2253,7 +2257,7 @@ class App {
     const restore=this.view.suspendHighlights();
     try{
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
-      this.reviewFrame(0);
+      this.reviewFrame(0,true);
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       const source=this.view.renderer.domElement,scale=Math.min(320/source.width,200/source.height);
       const image=document.createElement('canvas');
@@ -2765,7 +2769,7 @@ class App {
       this.panel.setScreenshotState(true,'Rendering PNG…');
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       restoreHighlights=this.view.suspendHighlights();
-      if(review&&this.take)this.reviewFrame(0);else this.drawLiveFrame();
+      if(review&&this.take)this.reviewFrame(0,true);else this.drawLiveFrame();
       // A lost context skips the draw; recovery during encoding must not save that frame.
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       const filename=`${mapId(terrain)??terrain}_${model.robot??'player'}_${stamp()}.png`;
@@ -2826,7 +2830,7 @@ class App {
         ?'An export started. Take another screenshot after it finishes.':undefined);
       if (this.player) this.updatePlayerHud(this.player);
       if (this.exporting) return;                    // the export owns the canvas
-      if (this.timeline.isOpen && this.take) return this.reviewFrame(dt);
+      if (this.timeline.isOpen && this.take) return this.reviewFrame(dt,!this.galleryPausesViewport);
       // The loading game owns the screen; prepareLaunch renders one real ready frame.
       if (launch.active) return;
       // Player worlds take no gamepad or Flight input; the controller releases held input while blocked.
@@ -2838,10 +2842,10 @@ class App {
           this.view.sync(this.lastFrame.xpos, this.lastFrame.xmat);
           this.updatePlayerCamera(dt);
         }
-        this.drawLiveFrame();
+        if (!this.galleryPausesViewport) this.drawLiveFrame();
         return;
       }
-      if (this.inputBlocked) { this.drawLiveFrame(); return; }
+      if (this.inputBlocked) { if (!this.galleryPausesViewport) this.drawLiveFrame(); return; }
       const padCmd = this.pad.poll((a) => this.onPadAction(a), this.status?.combos,
                                    (combo) => this.remote(combo));
       if (padCmd && !this.noclip) {
@@ -2866,11 +2870,12 @@ class App {
   }
 
   /** One animation frame of the review: advance the playhead, pose the take, render the chosen view. */
-  private reviewFrame(dt: number) {
+  private reviewFrame(dt: number, drawViewport: boolean) {
     const take = this.take!, tl = this.timeline;
     tl.tick(dt);
     const t = tl.time;
     const b = this.poseTake(t), followZ = take.mode === 'player' ? b[2] + this.followZ : this.followZ;
+    if (!drawViewport) return;
     if (tl.mode === "recorded") {
       const c = take.camAt(t), cam = this.view.camera;
       cam.position.set(...c.pos);
