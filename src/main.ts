@@ -811,8 +811,9 @@ class App {
     }finally{signal?.removeEventListener('abort',cancel);}
     }finally{
       this.mapPreparing=false;this.mapRobotChoice=null;this.syncPolicyActions();this.updateCaptureNavigationNotice();
+      // The latest choice wins; one that equals the running robot needs no rebuild.
       const deferred=this.deferredRobot;this.deferredRobot=null;
-      if(deferred)this.chooseRobot(deferred);
+      if(deferred&&deferred!==this.status?.robot)this.chooseRobot(deferred);
     }
   }
 
@@ -2584,8 +2585,9 @@ class App {
       if (!s.playback) this.statusInput("state", s.state);
       if (s.hoist !== undefined) this.statusInput("hoist", s.hoist);
     }
+    // A choice queued behind a map change stays shown until it is applied.
     if (!prev || prev.robots.join() !== s.robots.join() || prev.robot !== s.robot)
-      this.panel.setRobots(s.robots, s.robot);
+      this.panel.setRobots(s.robots, this.deferredRobot ?? s.robot);
     let policyOptionsChanged = !prev || prev.policies.length !== s.policies.length;
     if (prev && !policyOptionsChanged) {
       for (let i = 0; i < s.policies.length; i++) {
@@ -2792,10 +2794,10 @@ class App {
     this.updatePendingSaveGuard();
     this.panel.setScreenshotState(true,'Preparing scene visuals…');
     const aborted=new Promise<never>((_,reject)=>controller.signal.addEventListener('abort',()=>reject(new DOMException('Screenshot cancelled.','AbortError')),{once:true}));
-    let phase:'prepare'|'capture'='prepare',message='',restoreHighlights:(()=>void)|undefined;
+    let phase:'prepare'|'capture'='prepare',message='',restoreHighlights:(()=>void)|undefined,frameWaiter:(()=>void)|undefined;
     try{
       // Leaving review rebuilds the live view, which shows the robot from its next simulation frame.
-      const frame=review||this.lastFrame?null:new Promise<void>(resolve=>this.liveFrameWaiters.push(resolve));
+      const frame=review||this.lastFrame?null:new Promise<void>(resolve=>{frameWaiter=resolve;this.liveFrameWaiters.push(resolve);});
       await Promise.race([Promise.all([this.sceneVisuals(),frame]),aborted]);
       // Cached visuals can settle inside the click task; defer the render and readback.
       await Promise.race([new Promise<void>(resolve=>setTimeout(resolve,0)),aborted]);
@@ -2826,6 +2828,8 @@ class App {
       restoreHighlights?.();
       if(request===this.screenshotRequest){
         this.screenshotPending=false;this.screenshotAbort=null;this.screenshotIsCurrent=null;
+      // A cancelled request must not stay registered until a live frame that may never come.
+      if(frameWaiter){const index=this.liveFrameWaiters.indexOf(frameWaiter);if(index>=0)this.liveFrameWaiters.splice(index,1);}
         this.updatePendingSaveGuard();
         this.panel.setScreenshotState(false,message);
       }
