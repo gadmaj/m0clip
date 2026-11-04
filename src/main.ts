@@ -2826,10 +2826,10 @@ class App {
         :'The PNG could not be saved. Try Screenshot again.';
     }finally{
       restoreHighlights?.();
-      if(request===this.screenshotRequest){
-        this.screenshotPending=false;this.screenshotAbort=null;this.screenshotIsCurrent=null;
       // A cancelled request must not stay registered until a live frame that may never come.
       if(frameWaiter){const index=this.liveFrameWaiters.indexOf(frameWaiter);if(index>=0)this.liveFrameWaiters.splice(index,1);}
+      if(request===this.screenshotRequest){
+        this.screenshotPending=false;this.screenshotAbort=null;this.screenshotIsCurrent=null;
         this.updatePendingSaveGuard();
         this.panel.setScreenshotState(false,message);
       }
