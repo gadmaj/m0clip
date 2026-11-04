@@ -40,8 +40,8 @@ export class SceneProgress {
   private mismatch = false;
   private started = 0;
   private lastByte = 0;
-  /** Per-entity consumed bytes at each sample, so the rate only counts requests still open. */
-  private samples: Array<{ at: number; loaded: Map<string, number> }> = [];
+  /** When and at what byte count each entity's current open request was first seen; its rate is measured from there. */
+  private opened = new Map<string, { at: number; loaded: number }>();
 
   begin(now: number): number {
     this.generation++;
@@ -53,7 +53,7 @@ export class SceneProgress {
     this.maximum = this.loaded = 0;
     this.mismatch = false;
     this.started = this.lastByte = now;
-    this.samples = [{ at: now, loaded: new Map() }];
+    this.opened.clear();
     return this.generation;
   }
 
@@ -73,6 +73,8 @@ export class SceneProgress {
       this.activity.set(key, active);
       this.activity.delete(url);
       this.resources.delete(url);
+      const opened = this.opened.get(url);
+      if (opened) { this.opened.delete(url); if (!this.opened.has(key)) this.opened.set(key, opened); }
       if (resource) {
         const loaded = Math.max(resource.loaded, page.loaded);
         const done = resource.state === 'done' || page.state === 'done';
@@ -132,9 +134,11 @@ export class SceneProgress {
       const resource = this.resources.get(key);
       const loaded = Math.max(resource?.loaded ?? 0, request.loaded);
       const done = resource?.state === 'done' || request.state === 'done';
+      const state = done ? 'done' : active > 0 ? 'loading' : request.state;
       this.resources.set(key, { id: key, url, realm, loaded,
-        total: done ? loaded : request.total ?? resource?.total ?? null,
-        state: done ? 'done' : active > 0 ? 'loading' : request.state });
+        total: done ? loaded : request.total ?? resource?.total ?? null, state });
+      if (state !== 'loading') this.opened.delete(key);
+      else if (!this.opened.has(key)) this.opened.set(key, { at: now, loaded });
     }
     this.recount(now);
   }
@@ -182,25 +186,21 @@ export class SceneProgress {
     }
     if (this.budget) for (const [url, bytes] of this.budget) if (!this.resources.has(url)) queuedBytes += bytes;
 
-    const last = this.samples[this.samples.length - 1];
-    if (last.at === now) last.loaded = consumed;
-    else this.samples.push({ at: now, loaded: consumed });
-    const cutoff = now - 5_000;
-    while (this.samples.length > 1 && this.samples[1].at <= cutoff) this.samples.shift();
-
     const remaining = Math.max(0, knownTotal - this.loaded);
     const stalled = activeBytes > 0 && now - this.lastByte >= 3_500;
-    // Rate of the requests open now: a finished cache read or completed file in the
-    // window cannot speed up the estimate for bytes that are still arriving.
-    const first = this.samples[0], elapsed = now - first.at;
-    let streamed = 0;
+    // Rate of the requests open now, each over its own lifetime: a finished cache read,
+    // a completed file or a request that started later cannot skew the estimate.
+    let rate = 0, measured = true;
     for (const [url, loaded] of consumed) {
-      if (this.resources.get(url)!.state === 'loading') streamed += Math.max(0, loaded - (first.loaded.get(url) ?? 0));
+      if (this.resources.get(url)!.state !== 'loading') continue;
+      const start = this.opened.get(url);
+      if (!start || now - start.at < 1_000) { measured = false; break; }
+      rate += Math.max(0, loaded - start.loaded) / ((now - start.at) / 1_000);
     }
     // Queued or stopped bytes have no transfer whose completion can be estimated.
     const etaSeconds = this.budget && activeBytes > 0 && activeBytes === remaining
-      && !stalled && now - this.started >= 1_500 && elapsed >= 1_000 && streamed > 0
-      ? activeBytes / (streamed / (elapsed / 1_000)) : null;
+      && !stalled && now - this.started >= 1_500 && measured && rate > 0
+      ? activeBytes / rate : null;
     return { loaded: this.loaded, knownTotal, active, unknown, remaining, activeBytes, queuedBytes, stoppedBytes,
       etaSeconds, stalled, frozen: this.budget !== null, unexpected };
   }

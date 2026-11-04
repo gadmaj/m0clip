@@ -141,15 +141,19 @@ assert.equal(value.stalled, false, 'An unplanned probe cannot report a stalled s
 stagedLedger.update(stagedGeneration, [transfer('queued', '/queued.bin', 300, null)], 3000);
 value = stagedLedger.snapshot(3000);
 assert.deepEqual([value.activeBytes, value.queuedBytes, value.stoppedBytes], [600, 0, 0]);
-assert.ok(Number.isFinite(value.etaSeconds) && value.etaSeconds > 0);
+assert.equal(value.etaSeconds, null, 'A request is timed only after a second of its own transfer');
+assert.equal(downloadEstimate(value), 'Measuring speed…');
+stagedLedger.update(stagedGeneration, [transfer('queued', '/queued.bin', 600, null)], 4000);
+value = stagedLedger.snapshot(4000);
+assert.equal(value.etaSeconds, 1, '300 B in its own second; 300 B of 900 left');
 assert.match(downloadEstimate(value), /^Download ETA ~\d+s$/);
 assert.equal(value.knownTotal, 1000, 'Starting queued work cannot change the frozen maximum');
-value = stagedLedger.snapshot(6600);
+value = stagedLedger.snapshot(7600);
 assert.equal(value.stalled, true);
 assert.equal(downloadEstimate(value), 'Waiting for data…', 'A stalled transfer expires its numeric estimate');
-stagedLedger.update(stagedGeneration, [transfer('queued', '/queued.bin', 300, null, 'failed')], 6800);
-value = stagedLedger.snapshot(6800);
-assert.deepEqual([value.activeBytes, value.queuedBytes, value.stoppedBytes, value.remaining], [0, 0, 600, 600]);
+stagedLedger.update(stagedGeneration, [transfer('queued', '/queued.bin', 600, null, 'failed')], 7800);
+value = stagedLedger.snapshot(7800);
+assert.deepEqual([value.activeBytes, value.queuedBytes, value.stoppedBytes, value.remaining], [0, 0, 300, 300]);
 assert.equal(value.etaSeconds, null, 'Stopped payload is not a queued retry or an active transfer');
 assert.equal(downloadEstimate(value), 'Download stopped');
 
@@ -167,6 +171,16 @@ warmLedger.update(warmGeneration, [transfer('network', '/network.bin', 1_000_000
 value = warmLedger.snapshot(2500);
 assert.equal(value.etaSeconds, null, 'Compilation and readiness after the last byte have no download ETA');
 assert.equal(downloadEstimate(value), 'Download complete');
+
+// Sequential requests: a later request is timed from its own start, not from the window start.
+const sequential = new SceneProgress(), sequentialGeneration = sequential.begin(0);
+sequential.freeze(sequentialGeneration, [{ url: '/a.bin', bytes: 1000 }, { url: '/b.bin', bytes: 10_000 }], 0);
+sequential.update(sequentialGeneration, [transfer('a', '/a.bin', 0, 1000)], 0);
+sequential.update(sequentialGeneration, [transfer('a', '/a.bin', 1000, 1000, 'done'), transfer('b', '/b.bin', 0, 10_000)], 2000);
+assert.equal(sequential.snapshot(2500).etaSeconds, null, 'A request open for under a second is still being measured');
+assert.equal(downloadEstimate(sequential.snapshot(2500)), 'Measuring speed…');
+sequential.update(sequentialGeneration, [transfer('b', '/b.bin', 1000, 10_000)], 4000);
+assert.equal(sequential.snapshot(4000).etaSeconds, 18, 'B downloaded 1000 B in its own 2 s: 9000 B left at 500 B/s');
 
 // The primary line is one short phase; the detailed message belongs in Details.
 for (const [message, label] of [
