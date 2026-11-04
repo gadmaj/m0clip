@@ -182,6 +182,11 @@ class App {
   private mapRequest=0;
   private mapPreparing=false;
   private pendingMap:{id:number;terrain:TerrainName;source:MapSource|null;stage:PreparedTerrainVisual|null;resolve:()=>void;reject:(error:unknown)=>void;committing:boolean;onCommit?:()=>void;validate?:(scene:SceneIdentity)=>void}|null=null;
+  /** How a robot choice meets a map change: `now` while only the map's visuals download (the worker then
+   * compiles the map for that robot), `later` once the worker compiles it for the current robot. A take or
+   * saved view that needs the current robot leaves it null and the choice is refused. */
+  private mapRobotChoice:'now'|'later'|null=null;
+  private deferredRobot:string|null=null;
   /** Modal surfaces own keyboard, pointer and gamepad input. */
   private get inputBlocked() { return launch.active || this.mapPreparing || !!this.pendingMap || !!document.querySelector('dialog[data-local-map][open]') || !!this.help?.isOpen || !!this.shotLibrary?.isOpen || VisualPicker.active; }
   /** Flight and the live Player camera own the viewport camera; orbit controls stay off. */
@@ -378,11 +383,7 @@ class App {
   constructor() {
     this.panel = new Panel(document.getElementById("panel")!,
                            document.getElementById("policy-manager")!, [], {
-      onRobot: (r) => {
-        if(this.timeline.isOpen||this.exporting||(this.mapPreparing&&!this.viewRestoreAbort))return;
-        this.cancelScreenshot();
-        void this.cancelViewRestore().then(()=>{if(this.noclip)this.setNoclip(false);this.heldView=false;this.send({t:'robot',robot:r});});
-      },
+      onRobot: (r) => this.chooseRobot(r),
       onTerrain: (t) => {
         if(this.timeline.isOpen||this.exporting||(this.mapPreparing&&!this.viewRestoreAbort))return;
         this.cancelScreenshot();
@@ -774,6 +775,7 @@ class App {
     if((source?.id??null)!==mapId(terrain))throw new Error('The selected map source does not match the requested terrain.');
     if(this.mapPreparing||this.pendingMap)throw new Error('A map is already loading.');
     this.mapPreparing=true;this.syncPolicyActions();
+    this.mapRobotChoice=this.mode!=='player'&&!robot&&!validate?'now':null;
     try{
     const previous=this.model?.terrain??this.panel.terrain;
     this.panel.setTerrain(previous);
@@ -783,6 +785,8 @@ class App {
     const stage=terrain===this.mapVisualTerrain&&this.view.mapSource?.id===source?.id
       ?null:await this.view.stageTerrainVisual(source);
     if(signal?.aborted){stage?.dispose();signal.throwIfAborted();}
+    // From here the worker compiles this map for its current robot; a newer choice waits for it.
+    if(this.mapRobotChoice)this.mapRobotChoice='later';
     const {promise,resolve,reject}=Promise.withResolvers<void>();
     const pending={id,terrain,source,stage,resolve,reject,committing:false as boolean,onCommit,validate};
     this.pendingMap=pending;
@@ -801,7 +805,28 @@ class App {
       if(this.pendingMap===pending){this.pendingMap=null;stage?.dispose();this.worker.postMessage({t:'cancelTerrain'});this.overlay.classList.add('hidden');}
       throw error;
     }finally{signal?.removeEventListener('abort',cancel);}
-    }finally{this.mapPreparing=false;this.syncPolicyActions();this.updateCaptureNavigationNotice();}
+    }finally{
+      this.mapPreparing=false;this.mapRobotChoice=null;this.syncPolicyActions();this.updateCaptureNavigationNotice();
+      const deferred=this.deferredRobot;this.deferredRobot=null;
+      if(deferred)this.chooseRobot(deferred);
+    }
+  }
+
+  /** A robot choice never waits for map visuals: before the map reaches the worker, the worker's queue runs
+   * this rebuild first and the map then compiles for the new robot. */
+  private chooseRobot(robot:string){
+    if(this.timeline.isOpen||this.exporting)return;
+    const apply=()=>{
+      if(!this.mapPreparing||this.mapRobotChoice==='now'){
+        if(this.noclip)this.setNoclip(false);this.heldView=false;
+        // `send` holds live controls during a map change; this rebuild precedes the map's worker job.
+        if(this.mapPreparing)this.worker.postMessage({t:'robot',robot});else this.send({t:'robot',robot});
+      }else if(this.mapRobotChoice==='later')this.deferredRobot=robot;
+      else if(this.status)this.panel.setRobots(this.status.robots,this.status.robot);
+    };
+    if(this.mapPreparing&&!this.viewRestoreAbort){apply();return;}
+    this.cancelScreenshot();
+    void this.cancelViewRestore().then(apply);
   }
 
   /** Existing sources stay synchronous so the initial shared-view worker barrier is installed before init. */
