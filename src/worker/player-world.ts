@@ -452,8 +452,11 @@ export class PlayerWorld {
   }
 
   postStatus() {
+    const spawnRobots = this.spawnableRobots();
+    // The spawn target is always one the person can see and pick; without any, spawning reports why.
+    if (spawnRobots.length && !spawnRobots.includes(this.spawnRobot)) this.spawnRobot = spawnRobots[0];
     this.host.post({ t: 'playerStatus', tool: this.tool, availableTools: [...this.available], spawnRobot: this.spawnRobot,
-      robotCount: this.runtimes.length, maxRobots: MAX_ROBOTS, lostTime: this.lost, spawnRobots: this.spawnableRobots() });
+      robotCount: this.runtimes.length, maxRobots: MAX_ROBOTS, lostTime: this.lost, spawnRobots });
     this.lostPosted = this.lost;
     this.lostPostedAt = performance.now();
   }
