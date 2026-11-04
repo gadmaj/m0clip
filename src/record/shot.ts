@@ -1,16 +1,18 @@
 /** Shot cameras for rendering a take: where the camera sits over time and what lens it has.
  *
  *   viewport  the camera the user drove while recording, replayed
- *   follow    a fixed offset (distance / azimuth / elevation) from the robot, tracking it
+ *   follow    a fixed offset (distance / azimuth / elevation) from the subject, tracking it
  *   orbit     follow, with the azimuth turning once per `orbitPeriod` seconds
- *   fixed     the follow offset frozen where the robot stood at the range start
+ *   fixed     the follow offset frozen where the subject stood at the range start
  *
+ * The subject is a Robot take's floating base or a Player take's player origin.
  * Azimuth is degrees counter-clockwise from +x seen from above (0 = in front of a robot facing +x,
  * which is how every robot spawns); elevation is degrees above the horizon. The lens is a focal
  * length on a sensor whose width spans the frame's longer side — Blender's "Auto" sensor fit and
  * three.js's filmGauge — so a 35 mm / 36 mm shot here frames like 35 mm in Blender. */
 import * as THREE from "three";
-import {cameraOrientationAt,type Take} from "./take";
+import type { RecordedTake } from "./take";
+import { cameraOrientationAt } from "./track";
 
 export type ShotMode = "viewport" | "follow" | "orbit" | "fixed";
 
@@ -132,7 +134,7 @@ export class ShotPath {
   private orientation:Float64Array|null=null;
   private readonly z0: number;
 
-  constructor(readonly take: Take, readonly shot: Shot, readonly t0 = 0) {
+  constructor(readonly take: RecordedTake, readonly shot: Shot, readonly t0 = 0) {
     const n = take.n;
     this.z0 = take.basePosAt(0)[2];
     this.target = new Float64Array(3 * n);
@@ -158,11 +160,9 @@ export class ShotPath {
       const b = take.basePosAt(t0);
       for (let i = 0; i < n; i++) this.target.set([b[0], b[1], shot.height + b[2] - this.z0], 3 * i);
     } else {
-      const nq = take.meta.nq, bq = take.meta.baseQadr;
       for (let i = 0; i < n; i++) {
-        const o = i * nq + bq;
-        this.target.set(bq >= 0 ? [take.qpos[o], take.qpos[o + 1], shot.height + take.qpos[o + 2] - this.z0]
-                                : [0, 0, shot.height], 3 * i);
+        take.baseAtFrame(i, this.target, 3 * i);
+        this.target[3 * i + 2] += shot.height - this.z0;
       }
     }
     smooth3(this.target, n, take.dt, shot.smooth);
@@ -195,7 +195,7 @@ export class ShotPath {
   }
 
   /** Framing that reproduces a viewport camera at `time`: distance / azimuth / elevation / height. */
-  static grab(take: Take, time: number, camPos: THREE.Vector3, target: THREE.Vector3):
+  static grab(take: RecordedTake, time: number, camPos: THREE.Vector3, target: THREE.Vector3):
       Pick<Shot, "distance" | "azimuth" | "elevation" | "height"> {
     return grabShotView(camPos, target, take.basePosAt(time)[2] - take.basePosAt(0)[2]);
   }

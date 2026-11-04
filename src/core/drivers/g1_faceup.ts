@@ -45,7 +45,7 @@
  */
 import { clip, matFromWxyz, matTVec } from "../math";
 import type { Command, EvalConfig, RobotSpec } from "../types";
-import type { Engine } from "../../sim/engine";
+import type { EngineScope } from "../../sim/engine";
 import type { OnnxSession } from "../policy";
 import { fetchAsset } from '../prepared-assets';
 import { BaseDriver } from "./base";
@@ -176,7 +176,7 @@ export class G1FaceupDriver extends BaseDriver {
   private dk = 0;
   activeNet = "script";
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine, readonly sess: OnnxSession,
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope, readonly sess: OnnxSession,
               readonly aux: Record<string, OnnxSession>, readonly files: Record<string, string>) {
     super(cfg, spec, eng);
     const g = cfg.g1!;
@@ -210,7 +210,7 @@ export class G1FaceupDriver extends BaseDriver {
   override reset() {
     const s = Math.SQRT1_2;
     const quat = this.spawn === "face_down" ? [s, 0, s, 0] : [s, 0, -s, 0];
-    const all = Array.from({ length: this.eng.model.nbody }, (_, i) => i).filter((i) => i !== 0);
+    const all = this.eng.allBodyIds();
     this.seat(new Float64Array(29), quat, all, 0.02);
     this.stage = (this.fc.settle_s ?? 0.5) > 0 ? "settle" : "check";
     this.k = 0; this.tick = 0; this.tries = 0; this.ft = 0; this.t0 = 0; this.started = false;
@@ -432,7 +432,7 @@ export class G1Squat2StandDriver extends BaseDriver {
   private lastRaw = new Float32Array(13);
   activeNet = "stand";
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine, readonly sess: OnnxSession) {
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope, readonly sess: OnnxSession) {
     super(cfg, spec, eng);
     const g = cfg.g1!;
     this.sc = (g.squat2stand ?? {}) as S2SCfg;

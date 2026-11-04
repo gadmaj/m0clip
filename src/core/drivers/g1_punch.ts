@@ -40,7 +40,7 @@
  */
 import { clip, matFromWxyz, matTVec } from "../math";
 import type { Command, EvalConfig, RobotSpec } from "../types";
-import type { Engine } from "../../sim/engine";
+import type { EngineScope } from "../../sim/engine";
 import type { OnnxSession } from "../policy";
 import { BaseDriver } from "./base";
 import { Task137, loadRows, qyaw, resample } from "./g1_vq137";
@@ -101,7 +101,7 @@ export class G1PunchDriver extends BaseDriver {
   private started = false;
   activeNet = "walk";
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine, readonly sess: OnnxSession,
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope, readonly sess: OnnxSession,
               readonly aux: Record<string, OnnxSession>, readonly files: Record<string, string>) {
     super(cfg, spec, eng);
     const g = cfg.g1!;

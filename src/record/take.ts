@@ -2,7 +2,10 @@
  * kept — each geom's world pose, the full qpos, the command the user was giving, the viewport
  * camera and the hoist — on the worker's frame clock (simulated seconds), together with the user's
  * discrete inputs as timeline events (FSM state, policy, remote moves, reset, hoist, clip).
- * The timeline plays a take back; the exporters resample it at any frame rate. */
+ * The timeline plays a take back; the exporters resample it at any frame rate.
+ *
+ * `Take` is a Robot take (file versions 1 and 2). Player worlds record a `PlayerTake` (version 3,
+ * ./player-take); `RecordedTake` is either. */
 import type { Appearance } from "../render/scene";
 import { validDisplay, type SceneDisplay } from '../render/display';
 import { unzip, zip } from "fflate";
@@ -15,18 +18,19 @@ import { validLook, validShotEdits, validShotLights, type ShotEdits, type ShotLi
 import type { Shot } from './shot';
 import { GEOM_STRIDE, GeometryTrack, validGeometryPartition, validGeometryData, matToQuat, quatToMat, nlerp, type GeometryPartition } from '../core/geometry';
 import { validLocalMap, type LocalMapIdentity } from '../maps/source';
+import { CAM_STRIDE, cameraAt, locateTime, validShotCamera, validTakeRange, type CamPose, type TakeRange } from './track';
+import { PlayerTake, validPlayerTables, type PlayerTakeEvent, type PlayerTakeEventKind, type PlayerTakeMeta, type PlayerTracks } from './player-take';
+import { decodeBinary, encodeBinary, packModel, unpackModel, type MeshBody, type PackedModel } from './model-pack';
+import { validPlayerModel } from './storage';
+import type { RenderModel } from '../sim/protocol';
 
 export type TakeEventKind = "state" | "policy" | "move" | "reset" | "hoist" | "clip" | "noclip";
 export interface TakeEvent { t: number; kind: TakeEventKind; label: string }
 
-/** Non-destructive export bounds in original take seconds. */
-export type TakeRange = [number, number];
-export function validTakeRange(value: unknown, duration: number): value is TakeRange {
-  return Array.isArray(value) && value.length === 2
-    && typeof value[0] === 'number' && Number.isFinite(value[0])
-    && typeof value[1] === 'number' && Number.isFinite(value[1])
-    && Number.isFinite(duration) && 0 <= value[0] && value[0] < value[1] && value[1] <= duration;
-}
+/** A finished recording of either scene mode. */
+export type RecordedTake = Take | PlayerTake;
+export type RecordedEventKind = TakeEventKind | PlayerTakeEventKind;
+export type RecordedEvent = TakeEvent | PlayerTakeEvent;
 
 export interface TakeMeta {
   robot: string;            // exact robot variant the model was compiled for (r1, r1_air, g1, ...)
@@ -50,27 +54,9 @@ export interface TakeMeta {
   hinges: { name: string; qadr: number }[];
 }
 
-/** The optional export-camera recipe is separate from immutable recorded camera tracks. */
-export function validShotCamera(value:unknown):value is Shot {
-  if(!value||typeof value!=='object'||Array.isArray(value))return false;
-  const shot=value as Record<string,unknown>;
-  if(!['viewport','follow','orbit','fixed'].includes(shot.mode as string))return false;
-  for(const key of ['focal','sensor','distance','azimuth','elevation','height','orbitPeriod','smooth'])
-    if(typeof shot[key]!=='number'||!Number.isFinite(shot[key]))return false;
-  return (shot.focal as number)>=4&&(shot.sensor as number)>0&&(shot.distance as number)>0
-    &&(shot.orbitPeriod as number)!==0&&(shot.smooth as number)>=0;
-}
-
-/** Per-frame layout of the camera track: position, look-at target, vertical fov (deg). */
-export const CAM_STRIDE = 7;
-
-export interface CamPose { pos: [number, number, number]; target: [number, number, number]; fov: number; orientation?:[number,number,number,number] }
-export function cameraOrientationAt(track:ArrayLike<number>,i:number,j:number,f:number):[number,number,number,number] {
-  return new Quaternion().fromArray(track,i*4).normalize().slerp(new Quaternion().fromArray(track,j*4).normalize(),f).toArray();
-}
-
-
+/** A Robot take: one compiled model for its whole length. */
 export class Take {
+  readonly mode = 'robot' as const;
   shot?:Shot;
   range?: TakeRange;
   constructor(
@@ -93,14 +79,7 @@ export class Take {
   get dt(): number { return this.n > 1 ? this.duration / (this.n - 1) : 0.02; }
 
   /** Bracketing frame and blend: t[i] ≤ time < t[i+1], f in [0, 1). */
-  locate(time: number): [number, number] {
-    const t = this.t, n = t.length;
-    if (n < 2 || time <= t[0]) return [0, 0];
-    if (time >= t[n - 1]) return [n - 1, 0];
-    let lo = 0, hi = n - 1;
-    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (t[mid] <= time) lo = mid; else hi = mid; }
-    return [lo, (time - t[lo]) / (t[hi] - t[lo])];
-  }
+  locate(time: number): [number, number] { return locateTime(this.t, time); }
 
   /** Nearest frame index to `time`. */
   frameAt(time: number): number {
@@ -178,14 +157,14 @@ export class Take {
     return [Q[a] + (Q[b] - Q[a]) * f, Q[a + 1] + (Q[b + 1] - Q[a + 1]) * f, Q[a + 2] + (Q[b + 2] - Q[a + 2]) * f];
   }
 
-  /** The viewport camera at `time`, interpolated. */
-  camAt(time: number): CamPose {
-    const [i, f] = this.locate(time);
-    const a = i * CAM_STRIDE, b = Math.min(i + 1, this.n - 1) * CAM_STRIDE, C = this.cam;
-    const l = (k: number) => C[a + k] + (C[b + k] - C[a + k]) * f;
-    return { pos: [l(0), l(1), l(2)], target: [l(3), l(4), l(5)], fov: l(6),
-      ...(this.camOrientation?{orientation:cameraOrientationAt(this.camOrientation,i,Math.min(i+1,this.n-1),f)}:{}) };
+  /** Floating-base position at frame i, for shot cameras (origin when the model has no free joint). */
+  baseAtFrame(i: number, out: Float64Array, o = 0): void {
+    const bq = this.meta.baseQadr, a = i * this.meta.nq + bq;
+    for (let k = 0; k < 3; k++) out[o + k] = bq >= 0 ? this.qpos[a + k] : 0;
   }
+
+  /** The viewport camera at `time`, interpolated. */
+  camAt(time: number): CamPose { return cameraAt(this.t, this.cam, this.camOrientation, time); }
 
   /** Hoist anchor at the nearest frame, or null while it was off. */
   hoistAt(time: number): [number, number, number] | null {
@@ -359,7 +338,9 @@ export function motionCsv(take: Take, fps: number, t0 = 0, t1 = take.duration): 
 }
 
 // ---- take files (.take.zip) ----------------------------------------------
-// take.json (meta + events) and one raw little-endian array per track.
+// Robot (v1, v2): take.json (meta + events) and one raw little-endian array per track.
+// Player (v3): take.json with binary references, tracks/*, epochs/<k>/*, one models/<m>/* per distinct
+// recorded model, and meshes/<sha>/* once per distinct mesh body. No game file is ever included.
 
 const FORMAT = "unitree-mujoco-web/take";
 
@@ -368,35 +349,108 @@ const zipAsync = (files: Record<string, Uint8Array>) => new Promise<Uint8Array>(
 const unzipAsync = (data: Uint8Array) => new Promise<Record<string, Uint8Array>>((res, rej) =>
   unzip(data, (e, d) => (e ? rej(e) : res(d))));
 const bytes = (a: Float32Array | Float64Array | Uint32Array) => new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+const json = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 
-export async function saveTake(take: Take): Promise<Blob> {
+export async function saveTake(take: RecordedTake): Promise<Blob> {
+  if(take.shot!==undefined&&!validShotCamera(take.shot))throw new Error('take file: invalid shot camera');
+  if (take.range !== undefined && !validTakeRange(take.range, take.duration)) throw new Error('take file: invalid shot range');
+  const files = take instanceof PlayerTake ? await playerFiles(take) : robotFiles(take);
+  if(take.shot!==undefined)files['shot.json']=json(take.shot);
+  if (take.range !== undefined) files['range.json'] = json(take.range);
+  return new Blob([(await zipAsync(files)) as Uint8Array<ArrayBuffer>], { type: "application/zip" });
+}
+
+function robotFiles(take: Take): Record<string, Uint8Array> {
   if (take.meta.look !== undefined && !validLook(take.meta.look)) throw new Error('take file: invalid recorded look');
   if (take.meta.display !== undefined && !validDisplay(take.meta.display)) throw new Error('take file: invalid recorded display');
   if (take.meta.flashlight !== undefined && typeof take.meta.flashlight !== 'boolean') throw new Error('take file: invalid recorded flashlight');
   if (take.meta.lights !== undefined && !validShotLights(take.meta.lights)) throw new Error('take file: invalid recorded lights');
   if (take.meta.edits !== undefined && !validShotEdits(take.meta.edits, take.meta.robot))
     throw new Error('take file: invalid shot edits');
-  if(take.shot!==undefined&&!validShotCamera(take.shot))throw new Error('take file: invalid shot camera');
-  if (take.range !== undefined && !validTakeRange(take.range, take.duration)) throw new Error('take file: invalid shot range');
   const head = { format: FORMAT, version: 2, frames: take.n, meta: take.meta, events: take.events };
   const files: Record<string, Uint8Array> = { "take.json": new TextEncoder().encode(JSON.stringify(head, null, 1)) };
-  if(take.shot!==undefined)files['shot.json']=new TextEncoder().encode(JSON.stringify(take.shot));
-  if (take.range !== undefined) files['range.json'] = new TextEncoder().encode(JSON.stringify(take.range));
   files["t.f64"] = bytes(take.t);
   files['geom.f32'] = bytes(take.geom.values);
   files['geom-fixed.u32'] = bytes(take.geom.fixedIds);
   for (const k of ['qpos', 'cmd', 'cam', 'hoist'] as const) files[`${k}.f32`] = bytes(take[k]);
   if(take.camOrientation)files['camOrientation.f32']=bytes(take.camOrientation);
-  return new Blob([(await zipAsync(files)) as Uint8Array<ArrayBuffer>], { type: "application/zip" });
+  return files;
 }
 
-export async function loadTake(data: ArrayBuffer): Promise<Take> {
+async function playerFiles(take: PlayerTake): Promise<Record<string, Uint8Array>> {
+  const files: Record<string, Uint8Array> = {}, models = new Map<RenderModel, number>(), bodies = new Map<string, MeshBody>();
+  const packedModels: unknown[] = [];
+  for (const epoch of take.epochs) {
+    if (models.has(epoch.model)) continue;
+    const packed = await packModel(epoch.model);
+    models.set(epoch.model, packedModels.length);
+    packedModels.push(encodeBinary(packed.model, `models/${packedModels.length}`, files));
+    for (const body of packed.bodies) bodies.set(body.id, body);
+  }
+  const meshes = [...bodies.values()].map(body => encodeBinary(body, `meshes/${body.id}`, files));
+  const head = { format: FORMAT, version: 3, mode: 'player', frames: take.n, meta: take.meta, events: take.events, tables: take.tables,
+    tracks: encodeBinary(take.tracks, 'tracks', files), models: packedModels, meshes,
+    epochs: take.epochs.map((epoch, k) => ({ start: epoch.start, model: models.get(epoch.model),
+      geometry: encodeBinary(epoch.geometry.toData(), `epochs/${k}/geometry`, files), qpos: encodeBinary(epoch.qpos, `epochs/${k}/qpos`, files) })) };
+  files['take.json'] = json(head);
+  return files;
+}
+
+export async function loadTake(data: ArrayBuffer): Promise<RecordedTake> {
   const files = await unzipAsync(new Uint8Array(data));
   const raw = files["take.json"];
   if (!raw) throw new Error("not a take file (take.json missing)");
   const head = JSON.parse(new TextDecoder().decode(raw));
   if (head.format !== FORMAT) throw new Error("not a take file");
-  if (head.version !== 1 && head.version !== 2) throw new Error('take file: unsupported version');
+  if (head.version !== 1 && head.version !== 2 && head.version !== 3) throw new Error('take file: unsupported version');
+  const take = head.version === 3 ? loadPlayerFiles(head, files) : loadRobotFiles(head, files);
+  if(files['shot.json']) {
+    let shot:unknown;
+    try{shot=JSON.parse(new TextDecoder().decode(files['shot.json']));}
+    catch{throw new Error('take file: invalid shot camera');}
+    if(!validShotCamera(shot))throw new Error('take file: invalid shot camera');
+    take.shot=shot;
+  }
+  if (files['range.json']) {
+    let range: unknown;
+    try { range = JSON.parse(new TextDecoder().decode(files['range.json'])); }
+    catch { throw new Error('take file: invalid shot range'); }
+    if (!validTakeRange(range, take.duration)) throw new Error('take file: invalid shot range');
+    take.range = range;
+  }
+  return take;
+}
+
+interface StoredEpoch { start: number; model: number; geometry: { fixedIds: Uint32Array; values: Float32Array }; qpos: Float32Array }
+function loadPlayerFiles(head: Record<string, unknown>, files: Record<string, Uint8Array>): PlayerTake {
+  const { models: modelRefs, meshes: meshRefs, epochs: epochRefs, tables } = head, n = Number(head.frames);
+  if (head.mode !== 'player' || !Array.isArray(modelRefs) || !Array.isArray(meshRefs) || !Array.isArray(epochRefs) || !validPlayerTables(tables))
+    throw new Error('take file: invalid Player take');
+  const bodies = new Map<string, MeshBody>();
+  for (const ref of meshRefs) {
+    const body = decodeBinary(ref, files) as MeshBody;
+    if (!body || typeof body.id !== 'string' || !(body.vert instanceof Float32Array) || !(body.face instanceof Uint32Array))
+      throw new Error('take file: invalid mesh body');
+    bodies.set(body.id, body);
+  }
+  const models = modelRefs.map((ref: unknown) => {
+    const model = unpackModel(decodeBinary(ref, files) as PackedModel, bodies);
+    if (!validPlayerModel(model)) throw new Error('take file: invalid recorded Player scene');
+    return model;
+  });
+  const decoded = epochRefs.map((ref: unknown) => decodeBinary(ref, files) as StoredEpoch);
+  const epochs = decoded.map((epoch, k) => {
+    const end = k + 1 < decoded.length ? decoded[k + 1]?.start : n;
+    const model = epoch && Number.isSafeInteger(epoch.model) ? models[epoch.model] : undefined;
+    if (!model || !Number.isSafeInteger(epoch.start) || !Number.isSafeInteger(end) || end <= epoch.start
+      || !validGeometryData(epoch.geometry, model.ngeom, end - epoch.start)) throw new Error('take file: invalid Player epoch');
+    return { start: epoch.start, model, geometry: new GeometryTrack(model.ngeom, end - epoch.start, epoch.geometry), qpos: epoch.qpos };
+  });
+  try { return new PlayerTake(head.meta as PlayerTakeMeta, decodeBinary(head.tracks, files) as PlayerTracks, tables, epochs, head.events as PlayerTakeEvent[]); }
+  catch (error) { throw new Error(`take file: ${error instanceof Error ? error.message : error}`); }
+}
+
+function loadRobotFiles(head: Record<string, unknown>, files: Record<string, Uint8Array>): Take {
   const meta = head.meta as TakeMeta, n = Number(head.frames);
   if ((meta.terrain.startsWith('map:local-') || meta.localMap !== undefined) && !validLocalMap(meta.localMap,meta.terrain))
     throw new Error('take file: invalid local map identity');
@@ -428,23 +482,8 @@ export async function loadTake(data: ArrayBuffer): Promise<Take> {
     if (!validGeometryData(data, meta.ngeom, n)) throw new Error('take file: invalid geometry data');
     geometry = new GeometryTrack(meta.ngeom, n, data);
   }
-  const take=new Take(meta, arr("t.f64", 1, true) as Float64Array, geometry,
+  return new Take(meta, arr("t.f64", 1, true) as Float64Array, geometry,
                   arr("qpos.f32", meta.nq) as Float32Array, arr("cmd.f32", 3) as Float32Array,
                   arr("cam.f32", CAM_STRIDE) as Float32Array, arr("hoist.f32", 3) as Float32Array,
                   (head.events ?? []) as TakeEvent[],orientation);
-  if(files['shot.json']) {
-    let shot:unknown;
-    try{shot=JSON.parse(new TextDecoder().decode(files['shot.json']));}
-    catch{throw new Error('take file: invalid shot camera');}
-    if(!validShotCamera(shot))throw new Error('take file: invalid shot camera');
-    take.shot=shot;
-  }
-  if (files['range.json']) {
-    let range: unknown;
-    try { range = JSON.parse(new TextDecoder().decode(files['range.json'])); }
-    catch { throw new Error('take file: invalid shot range'); }
-    if (!validTakeRange(range, take.duration)) throw new Error('take file: invalid shot range');
-    take.range = range;
-  }
-  return take;
 }

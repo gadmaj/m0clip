@@ -38,6 +38,23 @@ the walking policies.
 Takes, screenshots and imported policies stay in your browser for that site.
 Download anything you want to keep before clearing site data.
 
+### Play as a player
+
+On the character step, choose **Player** to walk a map yourself instead of
+driving a robot. Click the scene to capture the mouse; **Esc** releases it.
+
+- **W A S D** move, **Shift** runs, **C** crouches and **Space** jumps.
+- Hold **X** for third person.
+- **2** selects the physics gun. Hold the left button on a robot to pick it up;
+  scroll to move it nearer or farther.
+- **3** selects the spawn gun. Left-click places the robot chosen with **Q**;
+  right-click removes the one under the crosshair. Only robots with an installed
+  policy are offered.
+- **V** records, and takes keep going when robots are added or removed.
+
+Player mode needs a mouse and keyboard. **Add game content…** reads player models
+from Source game files on your computer; the files are not uploaded.
+
 <details>
 <summary>More about scenes and takes</summary>
 
@@ -324,6 +341,8 @@ attribution, and list them in
 - Saved data belongs to one browser and hostname. It is not a cloud backup.
 - Policies must match the robot model, observation/action scheme and driver.
   This is a simulator, not a safety controller for a real robot.
+- Player mode moves like Garry’s Mod but does not run its game code. The knife
+  and weapon view models are not available yet.
 
 ## Credits and licenses
 

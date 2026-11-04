@@ -59,7 +59,7 @@ export class DogRetarget {
   };
 
   static available(model:RenderModel) {
-    return model.robot.startsWith('r1')&&!!model.bodyFrames&&!!model.geomFrames
+    return !!model.robot?.startsWith('r1')&&!!model.bodyFrames&&!!model.geomFrames
       &&['pelvis','torso_link','left_knee_link','right_knee_link','left_elbow_link','right_elbow_link'].every(n=>model.bodyNames.includes(n));
   }
   constructor(readonly native:NativeRig,readonly model:RenderModel) {

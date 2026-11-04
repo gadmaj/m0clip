@@ -1,8 +1,9 @@
 /** Original PNG captures, stored independently from motion and scene records. */
-import { connect, transact, object, integer, date } from './storage';
+import { connect, transact, object, integer, date, readInfo } from './storage';
+import type { SceneMode } from '../player/types';
 
 export interface SavedPhotoInfo {
-  id: string; name: string; created: string; updated: string; robot: string; terrain: string;
+  id: string; name: string; created: string; updated: string; mode: SceneMode; robot: string | null; terrain: string;
   width: number; height: number; bytes: number; thumbnail: Blob | null;
 }
 export interface SavedPhoto { info: SavedPhotoInfo; png: Blob }
@@ -10,9 +11,11 @@ interface PhotoRecord { id: string; info: SavedPhotoInfo }
 interface PhotoData { id: string; png: Blob }
 const invalid = () => new Error('Saved PNG data is invalid.');
 
+/** A Robot capture names its robot; a Player capture has none. Older rows are migrated by readInfo. */
 function validInfo(info: SavedPhotoInfo): boolean {
   return object(info) && typeof info.id === 'string' && !!info.id && typeof info.name === 'string'
-    && date(info.created) && date(info.updated) && typeof info.robot === 'string' && typeof info.terrain === 'string'
+    && date(info.created) && date(info.updated) && typeof info.terrain === 'string'
+    && (info.mode === 'robot' ? typeof info.robot === 'string' : info.mode === 'player' && info.robot === null)
     && integer(info.width) && info.width > 0 && integer(info.height) && info.height > 0 && integer(info.bytes) && info.bytes > 0
     && (info.thumbnail === null || info.thumbnail instanceof Blob && info.thumbnail.type === 'image/png');
 }
@@ -48,15 +51,15 @@ async function preview(bitmap: ImageBitmap): Promise<Blob> {
 }
 
 export class PhotoLibrary {
-  async save(input: { id: string; name: string; created: string; robot: string; terrain: string; png: Blob }): Promise<SavedPhotoInfo> {
+  async save(input: { id: string; name: string; created: string; mode: SceneMode; robot: string | null; terrain: string; png: Blob }): Promise<SavedPhotoInfo> {
     // Strings and immutable Blob ownership are captured before the first await. Never re-encode the original.
-    const { id, name, created, robot, terrain, png } = input;
-    if (typeof id !== 'string' || !id || typeof name !== 'string' || !date(created)
-      || typeof robot !== 'string' || typeof terrain !== 'string') throw invalid();
+    const { id, name, created, mode, robot, terrain, png } = input;
+    if (typeof id !== 'string' || !id || typeof name !== 'string' || !date(created) || typeof terrain !== 'string'
+      || (mode === 'robot' ? typeof robot !== 'string' : mode !== 'player' || robot !== null)) throw invalid();
     const bitmap = await decode(png);
     let info: SavedPhotoInfo;
     try {
-      info = { id, name, created, updated: new Date().toISOString(), robot, terrain, width: bitmap.width, height: bitmap.height,
+      info = { id, name, created, updated: new Date().toISOString(), mode, robot, terrain, width: bitmap.width, height: bitmap.height,
         bytes: png.size, thumbnail: await preview(bitmap) };
     } finally { bitmap.close(); }
     const db = await connect();
@@ -74,7 +77,7 @@ export class PhotoLibrary {
     try {
       return await transact<SavedPhotoInfo[]>(db, ['photos'], 'readonly', (tx, request, result) => {
         request(tx.objectStore('photos').getAll(), (records: PhotoRecord[]) => {
-          if (!records.every(record => object(record) && validInfo(record.info) && record.id === record.info.id)) throw invalid();
+          if (!records.every(record => object(record) && validInfo(readInfo(record.info)) && record.id === record.info.id)) throw invalid();
           result(records.map(record => record.info).sort((a, b) => b.updated.localeCompare(a.updated) || a.id.localeCompare(b.id)));
         });
       });
@@ -93,7 +96,7 @@ export class PhotoLibrary {
       });
     } finally { db.close(); }
     const { record, data } = stored;
-    if (!validInfo(record.info) || record.id !== id || record.info.id !== id || !object(data) || data.id !== id
+    if (!validInfo(readInfo(record.info)) || record.id !== id || record.info.id !== id || !object(data) || data.id !== id
       || !(data.png instanceof Blob) || data.png.size !== record.info.bytes) throw invalid();
     const bitmap = await decode(data.png);
     try { if (bitmap.width !== record.info.width || bitmap.height !== record.info.height) throw invalid(); }

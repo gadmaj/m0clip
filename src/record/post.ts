@@ -72,14 +72,16 @@ export function validShotLights(v: unknown): v is ShotLight[] {
   return true;
 }
 
-/** Only cosmetic choices supported by the recorded robot may be applied to its fixed tracks. */
-export function validShotEdits(v: unknown, robot: string): v is ShotEdits {
-  if (!object(v) || v.version !== 1 || typeof robot !== 'string'
+/** Only cosmetic choices supported by the recorded robot may be applied to its fixed tracks.
+ * `null` is a Player take: it has no primary robot, so robot-specific bodies and heads are refused. */
+export function validShotEdits(v: unknown, robot: string | null): v is ShotEdits {
+  if (!object(v) || v.version !== 1 || robot !== null && typeof robot !== 'string'
     || !Object.keys(v).every(key => ['version', 'appearance', 'sourceHead', 'look', 'display', 'flashlight', 'lights'].includes(key))) return false;
   if (v.appearance !== undefined && (!validAppearance(v.appearance)
-    || !compatibleBody(v.appearance.sourceBody, robot))) return false;
+    || (robot === null ? v.appearance.sourceBody !== undefined && v.appearance.sourceBody !== 'stock'
+      : !compatibleBody(v.appearance.sourceBody, robot)))) return false;
   if (v.sourceHead !== undefined && (v.sourceHead !== 'stock' && v.sourceHead !== 'ghost'
-    || v.sourceHead === 'ghost' && !robot.startsWith('r1'))) return false;
+    || v.sourceHead === 'ghost' && !robot?.startsWith('r1'))) return false;
   if (v.look !== undefined && !validLook(v.look)) return false;
   if (v.display !== undefined && !validDisplay(v.display)) return false;
   if (v.flashlight !== undefined && typeof v.flashlight !== 'boolean') return false;

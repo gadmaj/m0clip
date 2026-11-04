@@ -13,7 +13,7 @@
 import { clip } from "../core/math";
 import type { Command } from "../core/types";
 import type { BaseDriver } from "../core/drivers";
-import type { Engine, HingeSet } from "./engine";
+import type { EngineScope, HingeSet } from "./engine";
 
 export type FsmState = "zero_torque" | "damping" | "lock" | "stance" | "policy";
 
@@ -24,7 +24,7 @@ export class SimFSM {
   private readonly hinges: HingeSet;
   private holdPose: Float64Array | null = null;
 
-  constructor(readonly eng: Engine,
+  constructor(readonly eng: EngineScope,
               readonly dampKd = 3.0, readonly holdKp = 80.0, readonly holdKd = 4.0) {
     this.hinges = eng.hinges();
   }
@@ -45,11 +45,11 @@ export class SimFSM {
     return null;
   }
 
-  /** Every PHYSICS substep: write torques into eng.qfrcApplied. */
+  /** Every PHYSICS substep: write torques into eng.qfrcApplied over this scope's dofs only. */
   substepTorque(driver: BaseDriver | null, target: Float64Array | null) {
     const { eng } = this;
     const qfrc = eng.qfrcApplied;
-    qfrc.fill(0);
+    eng.clearAppliedTorque();
     const h = this.hinges;
     if (this.state === "zero_torque") {
       return;
