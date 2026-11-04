@@ -25,7 +25,9 @@ export const GMOD_MOVE_PROFILE: PlayerMoveProfile = Object.freeze({
   tickInterval: 0.015,
   gravity: 600,
   friction: 8,
-  stopSpeed: 100,
+  // Garry's Mod sv_stopspeed is 10 (wiki.facepunch.com/gmod/ConVars_In_Garrysmod), not the SDK's 100.
+  // With sv_friction 8, the SDK value outweighs crouch acceleration and pins crouch-walking near 9 u/s.
+  stopSpeed: 10,
   groundAccelerate: 10,
   airAccelerate: 10,
   airWishCap: 30,

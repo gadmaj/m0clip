@@ -991,9 +991,10 @@ class App {
     // Adopt the worker's tool unless a newer choice is still on its way to it.
     if (this.playerToolPending === s.tool) this.playerToolPending = null;
     if (this.playerToolPending === null && s.tool !== player.input.tool) player.input.selectTool(s.tool);
-    if (!previous || previous.spawnRobot !== s.spawnRobot) {
-      this.playerSpawnLabel = SPAWN_ROBOTS.find(option => option.value === s.spawnRobot)?.label ?? null;
-      player.hud.setSpawnRobots(SPAWN_ROBOTS, this.playerSpawnLabel === null ? null : s.spawnRobot);
+    if (!previous || previous.spawnRobot !== s.spawnRobot || previous.spawnRobots.join() !== s.spawnRobots.join()) {
+      const options = SPAWN_ROBOTS.filter(option => s.spawnRobots.includes(option.value));
+      this.playerSpawnLabel = options.find(option => option.value === s.spawnRobot)?.label ?? null;
+      player.hud.setSpawnRobots(options, this.playerSpawnLabel === null ? null : s.spawnRobot);
     }
   }
 

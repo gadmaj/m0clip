@@ -453,9 +453,17 @@ export class PlayerWorld {
 
   postStatus() {
     this.host.post({ t: 'playerStatus', tool: this.tool, availableTools: [...this.available], spawnRobot: this.spawnRobot,
-      robotCount: this.runtimes.length, maxRobots: MAX_ROBOTS, lostTime: this.lost });
+      robotCount: this.runtimes.length, maxRobots: MAX_ROBOTS, lostTime: this.lost, spawnRobots: this.spawnableRobots() });
     this.lostPosted = this.lost;
     this.lostPostedAt = performance.now();
+  }
+
+  /** Variants with a runnable imported policy; a robot with none cannot be spawned. */
+  private spawnableRobots(): string[] {
+    const entries = this.host.entries();
+    return Object.keys(SPECS).filter(robot => {
+      try { return selectRobotPolicy(robot, entries, undefined, true).index >= 0; } catch { return false; }
+    });
   }
 
   // ---- simulation --------------------------------------------------------

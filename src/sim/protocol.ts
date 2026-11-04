@@ -156,6 +156,8 @@ export type FromWorker =
   | { t: "frame"; xpos: Float32Array; xmat: Float32Array; baseX: number; baseY: number;
       hoistAnchor?: [number, number, number] | null; clock: number; qpos: Float64Array; player?: PlayerSimFrame }
   | { t: 'playerStatus'; tool: PlayerTool; availableTools: PlayerTool[]; spawnRobot: string; robotCount: number; maxRobots: number;
+      /** Robot variants an imported policy pack can actually run; only these are offered to spawn. */
+      spawnRobots: string[];
       /** Cumulative simulated seconds the real-time accumulator dropped because the worker fell behind. */
       lostTime?: number }
   | StatusMsg
