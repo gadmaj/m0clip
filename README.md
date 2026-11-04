@@ -66,6 +66,8 @@ from Source game files on your computer; the files are not uploaded.
   that motion from where the robot stands.
 - The policy gallery is grouped by activity. Each card names the motion and
   lists its robot variant, checkpoint and state number; search matches all three.
+- While a gallery is open, the scene behind it holds its last frame; simulation
+  and playback keep running. Recording and screenshots still draw every frame.
 - In review, appearance, display, flashlight, lights and camera edits belong to
   that take. Robot, map and policy controls work only live. The **F** flashlight
   key is live-only; use its button while reviewing.
