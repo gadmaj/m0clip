@@ -2254,6 +2254,7 @@ class App {
     try{
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       this.reviewFrame(0);
+      if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       const source=this.view.renderer.domElement,scale=Math.min(320/source.width,200/source.height);
       const image=document.createElement('canvas');
       image.width=Math.max(1,Math.round(source.width*scale));image.height=Math.max(1,Math.round(source.height*scale));
