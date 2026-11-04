@@ -1,265 +1,118 @@
 # m0clip
 
-Put robots and characters into Source maps, move them around, and record clips in
-your browser.
+Drop Unitree robots and game characters into Source maps, walk them around and
+record clips. It all runs in Chrome; the server only hosts files.
 
-[Open the public demo](https://m0clip.com)
+**[Try it at m0clip.com](https://m0clip.com)**
 
-m0clip builds on [unitree-mujoco-web](https://github.com/legion1581/unitree-mujoco-web)
-and Source-map rendering from [noclip.website](https://github.com/magcius/noclip.website).
-MuJoCo runs physics in a worker, Three.js renders the scene, and ONNX Runtime Web
-runs compatible robot policies. A production build is a static site.
+![A Unitree R1 on m0clip’s reflective Flat grid terrain](readme-assets/screenshot-flat-r1.png)
 
-## Before you build
+<sub>An R1 on the built-in Flat terrain, saved with the <b>Screenshot</b> button.</sub>
 
-| Requirement | Used for |
-| --- | --- |
-| Git, Node.js and npm | Installing dependencies and running Vite. Use a current Node.js LTS release, such as 22 or 24. |
-| Python 3.12+ with `venv` | Asset processing during production builds and map conversion. |
-| NumPy, Pillow with WebP support, PyYAML | The Python asset tools; installation is shown below. |
-| Chrome or Chromium | The supported development browser; WebGL, WebAssembly and cross-origin isolation are required. |
-| Blender, optional | Converting supported third-party character sources. |
+m0clip started from Konstantin Severov’s
+[unitree-mujoco-web](https://github.com/legion1581/unitree-mujoco-web) and draws
+Source maps with code from [noclip.website](https://github.com/magcius/noclip.website).
+MuJoCo simulates the robot, Three.js renders the scene and ONNX Runtime Web runs
+the walking policies.
 
-**A clone is not the demo's asset collection.** The repository includes the R1,
-G1 and Go2 robot model bundles. Converted maps, imported character assets and
-policy weights are ignored by Git and must be supplied separately, under terms
-that permit your intended use and redistribution.
+## Make a clip
 
-There is also a **build-time character prerequisite**: the current
-[`character catalog`](src/characters/catalog.ts) imports generated attribution,
-rig and definition JSON from `public/assets/characters/`. Those files are not
-included in a fresh clone. Supply the metadata and assets for its configured
-characters, or adapt that catalog to the characters you can provide, before
-running development or build commands. Selecting Original at runtime does not
-remove these build-time imports.
+<p>
+  <img src="readme-assets/choose-map.png" alt="Choose Map gallery with an Open map bundle button, a search field and pictured NeoTokyo maps: Ballistrade, Bullet, Dawn and Decom" width="260">
+  <img src="readme-assets/choose-character.png" alt="Choose Character gallery with Included and Search Source models tabs, showing the Original, Tinbot, Orbit and Prism R1 body styles, with Original selected" width="260">
+  <img src="readme-assets/load-scene.png" alt="Pick a character step with Gingerbread Man on R1 robot physics, and Back and Load scene buttons" width="260">
+</p>
 
-A permitted `public/assets/source/flashlight.png` is also required, even on a
-built-in terrain with Original selected and the flashlight off. Prepare it before
-development or build. The Source importer extracts it only when the selected
-asset mount contains `materials/effects/flashlight001.vtf`.
+1. **Choose.** Pick a map (Ghost is the default) and a character, then press
+   **Load scene**. The galleries show previews; models and policies download
+   only after you load.
+2. **Load.** The loader shows megabytes and time remaining. Press **Enter scene**
+   when it finishes.
+3. **Record.** Drive with W A S D and Q / E, or a gamepad. Press **N** to fly the
+   camera instead. Press **V** to start recording and **V** again to stop.
+   **? Help** lists every key.
+4. **Export.** **Timeline** replays the take. From there, export video, a motion
+   CSV or a GLB scene for Blender; **Camera / output** sets the camera, lens and
+   format. **Screenshot** downloads a PNG and keeps a copy in **Shots**.
 
-## Install and develop
+Takes, screenshots and imported policies stay in your browser for that site.
+Download anything you want to keep before clearing site data.
+
+### Play as a player
+
+On the character step, choose **Player** to walk a map yourself instead of
+driving a robot. Click the scene to capture the mouse; **Esc** releases it.
+
+- **W A S D** move, **Shift** runs, **C** crouches and **Space** jumps.
+- Hold **X** for third person.
+- **2** selects the physics gun. Hold the left button on a robot to pick it up;
+  scroll to move it nearer or farther.
+- **3** selects the spawn gun. Left-click places the robot chosen with **Q**;
+  right-click removes the one under the crosshair. Only robots with an installed
+  policy are offered.
+- **V** records, and takes keep going when robots are added or removed.
+
+Player mode needs a mouse and keyboard. **Add game content…** reads player models
+from Source game files on your computer; the files are not uploaded.
+
+<details>
+<summary>More about scenes and takes</summary>
+
+- On narrow screens, **Play**, **Scene** and **Reference clip** share one
+  Controls area; use the buttons above it to switch.
+- **Reference clip** plays a motion CSV at the FPS you set. **Stop** hands control
+  back to the selected policy. Some motion clips run once, then switch to their
+  configured next policy; select the clip again to replay it.
+- In review, appearance, display, flashlight, lights and camera edits belong to
+  that take. Robot, map and policy controls work only live. The **F** flashlight
+  key is live-only; use its button while reviewing.
+- Exports need an open recorded take. Starting a recording closes
+  **Camera / output** and keeps its settings. Controls lock while encoding.
+- **Details** in the loader lists each transfer. The total counts decoded scene
+  files, including cache reads, not network traffic or memory. If loading takes
+  more than 30 seconds, the progress bar turns into Pong.
+- **Character wireframe** with **Map wireframe** off keeps the map solid. Keep
+  **Textures** and **Map geometry** on to see the textured map.
+
+</details>
+
+## Build it yourself
+
+You need Git, Node.js 22 or 24 with npm, Python 3.12+ with `venv`, and Chrome or
+Chromium. Blender is optional, for converting characters.
+
+**The repository is not the demo’s asset collection.** It includes the R1, G1 and
+Go2 robots. Maps, character models and policy weights are not in Git; bring
+files you are allowed to use and, if you host a build, redistribute. Two inputs
+are required before `npm run dev` or `npm run build` will work:
+
+- **Character metadata.** [`src/characters/catalog.ts`](src/characters/catalog.ts)
+  imports attribution, rig and definition JSON from `public/assets/characters/`.
+  Supply those files, or edit the catalog down to the characters you have.
+  Choosing Original at runtime does not remove these imports.
+- **Flashlight texture.** Place a permitted `public/assets/source/flashlight.png`,
+  even if you only use built-in terrain. The map importer extracts it when the
+  asset mount contains `materials/effects/flashlight001.vtf`.
+
+Without a compatible policy pack the robot still simulates, but it has no learned
+walking controller. A character changes appearance, not control.
 
 ```sh
 git clone https://github.com/gadmaj/m0clip.git
 cd m0clip
 npm ci
-
 python3 -m venv .venv
 .venv/bin/python -m pip install numpy==2.4.6 Pillow==12.3.0 PyYAML==6.0.3
-```
 
-`npm ci` runs the postinstall script that copies MuJoCo's JavaScript and WASM
-runtime into `public/wasm/`. Do not skip install scripts unless you perform that
-copy yourself with `node scripts/copy-ort-wasm.mjs`.
-
-After preparing the character inputs and flashlight texture above:
-
-```sh
 npm run dev
 ```
 
-Open the URL printed by Vite in Chrome or Chromium. Vite sets the isolation
-headers required by the simulator. Use the development server rather than
-opening `index.html` with `file://`.
+Open the URL Vite prints in Chrome. Don’t open `index.html` from disk: the
+simulator needs the isolation headers the dev server sends. `npm ci` also copies
+the MuJoCo JavaScript and WASM runtime into `public/wasm/`; if you skip install
+scripts, run `node scripts/copy-ort-wasm.mjs` yourself.
 
-Built-in terrains avoid converted game maps; Original avoids imported character
-binaries. Neither removes the asset prerequisites above. Without a compatible
-policy pack, physics can run without a learned walking controller; character
-appearance does not supply one.
-
-## Supply your own assets
-
-Only import assets you are allowed to use. Permission to download a file is not
-necessarily permission to redistribute it from a public host. Prepare assets
-before building: Vite copies `public/` into the output, including any third-party
-files you place there.
-
-### Source maps
-
-Map conversion is a **command-line preparation step**, not a browser BSP upload
-feature. For a local Source BSP, replace `asset-sources/map.bsp` with your file:
-
-```sh
-.venv/bin/python scripts/import_source_bsp.py \
-  --bsp asset-sources/map.bsp --name "My map"
-```
-
-The importer writes `public/assets/maps/<map-id>/` and updates
-`public/assets/maps/index.json`, which populates the map picker. The map ID comes
-from the BSP filename. The input must be a supported `VBSP` map; LZMA-compressed
-BSP lumps are not supported.
-
-A local BSP may not contain all of its materials or models. The importer can
-read embedded assets, but external game dependencies need a compatible asset
-mount. The `--game neotokyo --maps <map-id>` mode uses the importer's configured
-remote catalog and mounts; it is not a general adapter for every Source game.
-Consult [`import_source_bsp.py`](scripts/import_source_bsp.py) for its arguments
-and mount definitions before selecting a source. Do not assume a converted map
-reproduces every prop, material or gameplay entity.
-
-### Local map bundles
-
-Package a converted map directory without adding it to your hosted catalog:
-
-```sh
-node scripts/package_map.mjs public/assets/maps/my_map \
-  --output my_map.map.zip --name "My map" --game "Source"
-```
-
-The packager requires Linux with `/proc/self/fd`, rejects symlinked inputs and
-checks the selected world, props, texture and physics dependencies. It never
-overwrites an existing ZIP; output must stay below **4 GiB** (ZIP32). Bundles are
-portable—the browser does not need Linux. Unsafe paths and excessively complex
-dependency metadata are rejected before a map becomes active.
-
-Choose **Open map bundle…** in the map gallery. Files are checked locally in a
-dedicated worker, not uploaded. Cancel verification before installation to keep
-the current scene; archive bytes are separate from download progress.
-Local maps last for the tab's session. Saved takes and views remember
-the map's identity, not its files: after reloading, reattach the same bundle.
-Finish a map or saved-view load before opening Timeline or another take.
-Raw BSP, GMA and VPK files are not browser import formats yet.
-
-### Characters
-
-Imported characters need geometry, textures, attribution and a compatible rig
-mapping. They are visual bodies attached to supported robot physics, not new
-controllers. Adding an arbitrary GLB to `public/` does not register a character.
-
-[`import_character_assets.py`](scripts/import_character_assets.py) runs inside
-Blender and accepts a JSON configuration through `--config`, plus an optional
-`--source-root`. It supports Blender, FBX and glTF inputs and writes a GLB and
-preview. Its configuration declares source/output paths, source-file hashes and
-attribution. Public output requires an explicit redistribution approval and
-license evidence. Register the resulting definition and rig in the
-[`character catalog`](src/characters/catalog.ts); the importer does not do that
-integration automatically.
-
-The in-app Source model search uses the
-[pmodels index](https://github.com/wootguy/pmodels). Its loader supports GoldSrc
-`IDST` version 10 models, not arbitrary Source or Source 2 model files. Individual
-models retain their own authorship and terms; search results are not a license
-grant. Remote search also depends on its upstream services and CORS support.
-
-Compatible biped imports align named left/right limbs to the robot and keep the
-model's reference pose separate from animated bone controllers. Custom skeletons
-may require an explicit rig mapping.
-
-Search maps and characters by name. Clear the search to restore all choices.
-Press Escape to close a gallery and return focus to its button.
-
-Character and policy galleries browse image previews without loading models or
-policy weights. Available turntables use prebuilt GIFs; reduced-motion mode uses
-separate PNG stills. A rest-pose turntable is not a motion or controller demo.
-Remote player models keep their upstream still pictures; browsing does not
-download unselected models or imply permission to publish new animations.
-
-Policy animations require captures from the exact robot and checkpoint, not
-motion inferred from a policy name. Where no such capture exists, the gallery
-labels the robot-only picture rather than implying policy playback.
-
-<details>
-<summary>Prepare gallery previews (optional)</summary>
-
-For assets you have permission to publish,
-[`generate-character-turntables.py`](scripts/generate-character-turntables.py)
-runs in Blender with an explicit `--job` JSON. Supply a new output directory,
-frame count/rate and `characters` entries containing `id`, `input`, `sha256`,
-`approvedRuntimeAsset` and `attribution`. It orbits each GLB's native rest pose.
-The encoder emits `turntable.gif` and `still.min.png`: GIF palette reduction is
-lossy; PNG recompression preserves decoded pixels.
-
-[`generate-policy-previews.cjs`](scripts/generate-policy-previews.cjs) captures
-controller motion from your running build. Its JSON job supplies
-`approvedRuntimeAsset`, `robot`, `policy`, `pack`, `packSHA256` and `attribution`;
-use `frames` and `fps` to set the capture length and rate. It checks the actual
-robot, checkpoint and joint identity and retains joint states and simulation times.
-
-Install Playwright separately so Node can resolve it, or set `PLAYWRIGHT_MODULE`
-to its installed module path; `npm ci` does not install it. Set `CHROMIUM_PATH`
-if Chrome is not at the helper's default `/usr/bin/google-chrome`.
-
-For the scene and policy helpers, export these before running:
-
-- `PREVIEW_CHROME_PROFILE`: the absolute path to a dedicated, owner-only Chrome
-  profile—not your normal browser profile.
-- `PREVIEW_CHROME_VERSION`: the four-part version shown by
-  `"$CHROMIUM_PATH" --version` (or `google-chrome --version` when using the default).
-
-Open that profile interactively, review any browser prompts yourself, then close
-Chrome completely before generation. After a browser update, reopen the profile
-interactively and update the version. The helpers refuse a busy profile or a
-different browser version; they do not remove profile locks.
-During artwork generation, the helpers decline m0clip’s optional storage notice
-through **Not now**; they do not request persistent storage.
-
-Use the Pillow virtual environment and pass the job filename as a positional argument:
-
-```sh
-PYTHON="$PWD/.venv/bin/python" BASE_URL=http://localhost:4173 \
-  PREVIEW_OUTPUT=/path/to/new-output \
-  node scripts/generate-policy-previews.cjs /path/to/job.json
-```
-
-`PREVIEW_OUTPUT` must be a new directory outside `public/`; its parent must exist.
-For bounded jobs, create the budget root first, then set `PREVIEW_BUDGET_ROOT`,
-`PREVIEW_BUDGET_BYTES` (retained-file cap), `PREVIEW_MIN_FREE_BYTES` (disk-space
-floor) and `PREVIEW_RESERVE_BYTES` (space for final files). Choose a fresh child
-output directory inside that root. The budget covers retained files, not browser
-memory.
-
-Policy capture keeps earlier completion events in its records. It stops if the
-requested policy has already finished, the event history is full, or any policy
-finishes during capture.
-
-Keep generation receipts private. Publish only approved GIFs, stills and
-attribution; add their URLs and captions to
-[`animated-preview-catalog.json`](src/ui/animated-preview-catalog.json).
-
-</details>
-
-### Robot policies
-
-Import your compatible policy ZIP through **Controls → Play → Packs →
-Import .zip…**. Packs are stored in this browser's IndexedDB. A pack contains
-`pack.json`, its YAML policy configuration and ONNX checkpoints, plus any
-auxiliary networks or reference data required by the driver. A bundle is a ZIP
-of pack ZIPs. The manifest and parser are defined in
-[`src/packs/index.ts`](src/packs/index.ts); the runtime is not a general-purpose
-loader for arbitrary neural networks.
-
-Some motion clips run once, then switch to their configured next policy.
-Re-select a clip to play it again.
-
-If you have compatible local registry, YAML, ONNX and auxiliary inputs, the
-optional producer can build a bundle:
-
-```sh
-node scripts/build-packs.mjs --robot r1 --public . --out policy-packs/generated
-```
-
-Despite its name, `--public` is the **input checkout root**, not its `public/`
-folder. This writes `policy-packs/generated/r1-all.zip` and individual pack ZIPs.
-Use a dedicated output directory: stale ZIPs there are removed. Inspect warnings
-for skipped inputs; a successful command can produce a partial catalog. See the
-[policy-pack guide](policy-packs/README.md) for the input and output contract.
-
-For an optional hosted R1 catalog, provide your own compatible R1 bundle before
-building, replacing the example input path with your file:
-
-```sh
-node scripts/host-default-packs.mjs asset-sources/r1-all.zip
-```
-
-This writes `public/assets/packs/r1-default-v1.json` and the individual pack ZIPs
-under `public/assets/packs/r1/`. The browser installs the catalog metadata and
-downloads weights when a policy is selected. Publishing these files distributes
-the weights: confirm you have permission first.
-
-## Build
-
-The following commands use the Python virtual environment created above:
+To build and preview a static release:
 
 ```sh
 npm run typecheck
@@ -267,144 +120,246 @@ PYTHON="$PWD/.venv/bin/python" npm run build
 npm run preview
 ```
 
-These are POSIX-shell examples. On another shell, set `PYTHON` to your virtual
-environment's Python executable before invoking `npm run build`.
+On a non-POSIX shell, set `PYTHON` to the virtual environment’s Python first.
+The build writes `dist/`, compresses robot meshes, processes map visuals when
+their inputs are present, and finally writes a startup asset catalogue from the
+final file sizes. Keep everything in `dist/`, including `.gz` files.
 
-The build typechecks the application, writes `dist/`, then generates compressed
-robot meshes and processes native map visuals when the corresponding map inputs
-are present. It writes a release-specific startup asset catalogue **after** those
-steps, using the final file sizes and dependencies. Keep the complete output,
-including `assets/`, `wasm/`, manifests, the startup catalogue and `.gz` files.
-`npm run preview` serves it locally with the required isolation headers; it is a
-preview server, not a production hosting service.
+<details>
+<summary>Changing assets after a build</summary>
 
-Map, character and Source-robot conversion records are omitted from public builds
-and the startup catalogue. Keep source analysis, candidate comparisons, conversion
-recipes and rig-mapping notes with your local asset sources, not on the static host.
-Runtime rig definitions, embedded model rig data and attribution remain included.
-
-If you change assets in an already-built output directory, regenerate its
-catalogue before serving that output:
+If you change files in a built `dist/`, regenerate its catalogue before serving:
 
 ```sh
 node scripts/build_startup_catalogue.mjs dist
 ```
 
-This keeps the catalogue URL compiled into that build. Prepare character previews
-and model conversions before the final catalogue pass; do not mix a catalogue
-from one output with files from another.
+Prepare previews and model conversions before this pass, and don’t mix a
+catalogue from one build with files from another. Map, character and robot
+conversion records are left out of builds; keep them with your source assets.
 
-## Host the static build
+</details>
 
-Serve the contents of `dist/` at the **root of an HTTPS origin**. Several asset
-URLs are root-relative; putting the site under a URL subdirectory requires code
-and asset-path changes, not just a Vite base option. Localhost is suitable for
-local development, but a remote plain-HTTP origin cannot provide the secure
-context the simulator needs.
+## Host it
 
-Keep root files such as `favicon.ico` beside `index.html` when deploying the build.
-
-Configure your static host or reverse proxy to send:
+Serve `dist/` at the root of an HTTPS origin (subdirectories need code changes)
+with these headers:
 
 ```http
 Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-These headers enable cross-origin isolation for MuJoCo's `SharedArrayBuffer`.
-Serve workers and runtime files from the same origin where possible. Resources
-fetched from another origin must satisfy CORS or the relevant cross-origin
-resource policy; do not disable isolation to work around a blocked asset.
+MuJoCo needs them for `SharedArrayBuffer`. Don’t switch isolation off to get
+past a blocked cross-origin asset; serve it from the same origin or with proper
+CORS. [`deploy/home/`](deploy/home/README.md) has a ready Docker and Caddy setup.
+`npm run preview` is for local testing only.
 
-| Resource | Serving requirement |
+<details>
+<summary>File types and caching</summary>
+
+| Files | Serve as |
 | --- | --- |
-| JavaScript modules and workers | A JavaScript MIME type; preserve the generated paths. |
-| `.wasm` | `Content-Type: application/wasm`; preserve binary bytes. |
-| `.json` manifests | `Content-Type: application/json`; missing assets must not become an HTML fallback. |
-| GLB, ONNX, meshes and ZIPs | Serve the actual binary files, with an appropriate binary MIME type. Do not apply text conversion. |
-| Explicit `.gz` mesh or lightstyle files | Keep their filenames and bytes. Serve as `application/gzip` without `Content-Encoding`; the application inflates them. |
+| JavaScript modules and workers | A JavaScript MIME type, at their generated paths. |
+| `.wasm` | `application/wasm`, bytes unchanged. |
+| `.json` manifests | `application/json`. A missing file must 404, not fall back to HTML. |
+| GLB, ONNX, meshes, ZIPs | The original binary files with a binary MIME type. |
+| Explicit `.gz` mesh and lightstyle files | `application/gzip` **without** `Content-Encoding`; the app inflates them itself. |
 
-HTTP compression is separate from an explicit `.gz` asset. For ordinary resources,
-if your host sends `Content-Encoding: gzip` or `br`, the response body must actually
-use that encoding. The browser decodes it before the application receives it.
-Do not label an explicit `.gz` file as HTTP gzip: its compressed file bytes are
-part of the generated scene payload budget. Do not strip the generated `.gz`
-files as redundant precompression artifacts or replace missing files with HTML.
+Ordinary HTTP compression is fine if the body really is encoded as declared.
+Deploy HTML, scripts, manifests and their files together, and keep root files
+such as `favicon.ico` beside `index.html`. Don’t cache `index.html` or mutable
+manifests for long; use long-lived caching only for content-hashed URLs.
 
-Deploy HTML, scripts, asset manifests and their referenced files together. Avoid
-long-lived caching for `index.html` and mutable catalog/manifest URLs; reserve
-immutable caching for files whose URLs change with their contents.
+</details>
 
-## Use and limitations
+## Add your own assets
 
-Choose a map and character, then **Load scene**. The scene controls and **? Help**
-list movement, camera and capture actions. **Screenshot** downloads a PNG and
-saves a copy in **Shots**. Record takes, review them in Timeline and download
-saved files for backup.
+Only add assets you may use. Permission to download a file is not permission to
+host it: Vite copies everything in `public/` into the build.
 
-On narrow screens, **Play**, **Scene** and **Reference clip** share the Controls
-area. Use the buttons above it to switch panels. Your desktop layout returns
-when the window widens.
+<details>
+<summary>Source maps</summary>
 
-Loading plans the selected scene, model, appearance and policy. External player
-models may download during planning; their prepared data is reused. Before the
-remaining transfers, the loader fixes its **scene asset payload** maximum:
-unique HTTP-decoded resources, including cache reads—not wire traffic or GPU/RAM
-use. A full meter is not readiness: **Enter scene** also waits for simulation,
-visuals and a rendered frame. Expand **Details** for transfers and readiness.
-Pong appears only when an unfinished load exceeds 30 seconds.
+Maps are converted on the command line, not uploaded in the browser:
 
-Local-map verification, local file bytes and optional reader code loaded during
-file selection are separate from the later scene download total.
+```sh
+.venv/bin/python scripts/import_source_bsp.py \
+  --bsp asset-sources/map.bsp --name "My map"
+```
 
-Open **Camera / output** before recording to set the static camera, lens and output
-format. **Scene** remains available above setup for look, parts, lighting and
-display controls. Motion/video/data exports require an open recorded take; static
-setup does not create one. Press **Escape** to close setup. Starting a recording
-also closes it and restores the live camera without losing the output recipe;
-setup cannot open while a recording is starting or active. In review, appearance,
-display, flashlight, added lights and camera edits belong to that shot, not live
-preferences. Robot, map, policy and other simulation controls are LIVE-only.
-Controls lock while encoding, not merely while setup is open.
+This writes `public/assets/maps/<map-id>/` (the ID comes from the filename) and
+adds the map to `public/assets/maps/index.json`. Input must be a `VBSP` map
+without LZMA-compressed lumps. Materials and models the BSP doesn’t embed need a
+compatible asset mount; `--game neotokyo --maps <map-id>` uses the importer’s
+built-in NeoTokyo catalogue, not a general adapter for every Source game. See
+[`import_source_bsp.py`](scripts/import_source_bsp.py) for arguments and mounts.
+Not every prop, material or gameplay entity carries over.
 
-Finished motion clips report completion in **Play** without opening a dialog.
-The flashlight’s **F** shortcut is LIVE-only; use its button while reviewing a take.
+</details>
 
-Open **Reference clip** to load a motion CSV and set its playback FPS. It starts
-collapsed; your panel layout and open/closed choices are remembered. **Stop**
-returns control to the selected policy.
+<details>
+<summary>Map bundles</summary>
 
-In **Render controls**, enable **Character wireframe** and leave **Map wireframe**
-off to keep the map solid. Keep **Textures** and **Map geometry** enabled to see
-the textured environment.
-On Flat, the camera flashlight keeps the floor and its reflection visible.
+Package a converted map so someone can open it without adding it to your host:
 
-- Detailed maps can require substantial downloads, memory and startup time.
+```sh
+node scripts/package_map.mjs public/assets/maps/my_map \
+  --output my_map.map.zip --name "My map" --game "Source"
+```
+
+The packager needs Linux (`/proc/self/fd`), rejects symlinks, checks the world,
+prop, texture and physics dependencies, never overwrites an existing ZIP and
+stays under 4 GiB. The bundle itself works in any browser.
+
+In the map gallery, choose **Open map bundle…**. The file is checked locally in a
+worker and is not uploaded; cancel before installation to keep the current
+scene. Local maps last for the tab’s session. Saved takes and views remember the
+map, not its files, so reattach the same bundle after a reload. Finish loading a
+map or saved view before opening Timeline or another take. Raw BSP, GMA and VPK
+files can’t be opened in the browser.
+
+</details>
+
+<details>
+<summary>Characters</summary>
+
+A character is a visual body on a supported robot’s physics, not a new
+controller. It needs geometry, textures, attribution and a rig mapping; dropping
+a GLB into `public/` does not register one.
+
+[`import_character_assets.py`](scripts/import_character_assets.py) runs inside
+Blender with a JSON `--config` (and optional `--source-root`). It reads Blender,
+FBX and glTF sources and writes a GLB and preview. The config records source and
+output paths, source hashes and attribution; public output requires an explicit
+redistribution approval and license evidence. Register the result in
+[`src/characters/catalog.ts`](src/characters/catalog.ts) yourself. Bipeds with
+named left/right limbs align automatically; other skeletons may need an explicit
+rig mapping.
+
+**Search Source models** in the character gallery uses the
+[pmodels index](https://github.com/wootguy/pmodels) and loads GoldSrc `IDST`
+version 10 models only. Each model keeps its own authorship and terms; a search
+result is not a license. Remote search depends on upstream services and CORS.
+
+Galleries show still images and prebuilt turntable GIFs (PNG stills with reduced
+motion) without loading models or weights. A turntable shows the rest pose, not
+motion. Policy previews come only from captures of the exact robot and
+checkpoint; without one, the gallery says it is showing the robot alone.
+
+</details>
+
+<details>
+<summary>Policy packs</summary>
+
+Import a compatible ZIP in **Controls → Play → Packs → Import .zip…**. Packs are
+kept in the browser’s IndexedDB. A pack holds `pack.json`, its YAML config and
+ONNX checkpoints, plus any extra networks or data its driver needs; a bundle is a
+ZIP of pack ZIPs. The format is described in the
+[policy-pack guide](policy-packs/README.md) and
+[`src/packs/index.ts`](src/packs/index.ts). This is not a loader for arbitrary
+neural networks.
+
+To build a bundle from compatible local registry, YAML, ONNX and auxiliary files:
+
+```sh
+node scripts/build-packs.mjs --robot r1 --public . --out policy-packs/generated
+```
+
+`--public` is the input checkout root, not its `public/` folder. The command
+writes `r1-all.zip` and individual packs, removes stale ZIPs from the output
+folder, and can succeed with a partial set: read its warnings.
+
+To host a default R1 catalogue, give it your own R1 bundle before building:
+
+```sh
+node scripts/host-default-packs.mjs asset-sources/r1-all.zip
+```
+
+This writes `public/assets/packs/r1-default-v1.json` and the packs under
+`public/assets/packs/r1/`. Browsers download weights when a policy is selected.
+Hosting them distributes the weights, so check you are allowed to.
+
+</details>
+
+<details>
+<summary>Gallery previews</summary>
+
+For assets you may publish:
+
+- [`generate-character-turntables.py`](scripts/generate-character-turntables.py)
+  runs in Blender with a `--job` JSON: a new output directory, frame count and
+  rate, and `characters` entries with `id`, `input`, `sha256`,
+  `approvedRuntimeAsset` and `attribution`. It orbits each GLB’s rest pose and
+  writes `turntable.gif` (lossy palette) and `still.min.png` (lossless).
+- [`generate-policy-previews.cjs`](scripts/generate-policy-previews.cjs) records
+  controller motion from your running build. Its JSON job supplies
+  `approvedRuntimeAsset`, `robot`, `policy`, `pack`, `packSHA256`, `attribution`,
+  `frames` and `fps`. It checks the robot, checkpoint and joints, and stops if
+  the policy already finished, finishes during capture or the event history is
+  full.
+
+The policy helper needs Playwright, which `npm ci` does not install; install it
+so Node can resolve it or set `PLAYWRIGHT_MODULE`. Set `CHROMIUM_PATH` if Chrome
+is not at `/usr/bin/google-chrome`. Also set:
+
+- `PREVIEW_CHROME_PROFILE`: absolute path to a dedicated Chrome profile, not your
+  everyday one. Open it once, deal with any prompts, then quit Chrome.
+- `PREVIEW_CHROME_VERSION`: the four-part version from
+  `"${CHROMIUM_PATH:-/usr/bin/google-chrome}" --version`. Update it after a browser update.
+
+The helpers refuse a busy profile or a different browser version and never
+remove profile locks. They answer m0clip’s storage notice with **Not now**.
+
+```sh
+PYTHON="$PWD/.venv/bin/python" BASE_URL=http://localhost:4173 \
+  PREVIEW_OUTPUT=/path/to/new-output \
+  node scripts/generate-policy-previews.cjs /path/to/job.json
+```
+
+`PREVIEW_OUTPUT` must be a new directory outside `public/` whose parent exists.
+To cap disk use, create a budget root, choose a new output inside it and set
+`PREVIEW_BUDGET_ROOT`, `PREVIEW_BUDGET_BYTES` (retained files),
+`PREVIEW_MIN_FREE_BYTES` (free-space floor) and `PREVIEW_RESERVE_BYTES` (room for
+final files). The budget does not cover browser memory.
+
+Keep generation records private. Publish only approved GIFs, stills and
+attribution, and list them in
+[`animated-preview-catalog.json`](src/ui/animated-preview-catalog.json).
+
+</details>
+
+## Limitations
+
+- Detailed maps can take a large download, a lot of memory and a while to load.
 - Source gameplay, moving doors, prop physics, particles and HDR bloom are not
-  reproduced. This is not a general loader for every game on noclip.website.
-- Video export depends on the codecs the browser can encode.
-- GLB exports use solid triangle geometry, not viewport wireframe lines. **Textures**
-  also controls the optional exported ground plane. Source's custom shaders,
-  lightmaps and final tone mapping are not reproduced in GLB.
-- Saved takes, screenshots and imported policies are local to the browser and
-  site origin, not cloud backups. Clearing site data can remove them; another
-  hostname cannot read them. Download backups before changing origins.
-- Simulation compatibility depends on the robot model, policy observation/action
-  scheme and supported driver. A different visual character does not change that
-  contract, and this browser application is not a real-robot safety controller.
+  reproduced, and m0clip does not load every game noclip.website supports.
+- Video export depends on the codecs your browser can encode.
+- GLB exports use solid triangles, not wireframe lines, and skip Source’s
+  shaders, lightmaps and tone mapping. **Textures** also controls the optional
+  exported ground plane.
+- Saved data belongs to one browser and hostname. It is not a cloud backup.
+- Policies must match the robot model, observation/action scheme and driver.
+  This is a simulator, not a safety controller for a real robot.
+- Player mode moves like Garry’s Mod but does not run its game code. The knife
+  and weapon view models are not available yet.
 
 ## Credits and licenses
 
-- **Konstantin Severov** — the original
-  [unitree-mujoco-web](https://github.com/legion1581/unitree-mujoco-web) simulator.
-- **Jasper St. Pierre and noclip.website contributors** — Source format and
-  rendering work; see [LICENSE.noclip](LICENSE.noclip).
-- **MuJoCo, Three.js, ONNX Runtime and Mediabunny contributors** — physics,
+- **Konstantin Severov**: the original
+  [unitree-mujoco-web](https://github.com/legion1581/unitree-mujoco-web) simulator,
+  including the R1, G1 and Go2 MuJoCo model bundles.
+- **Unitree Robotics**: the R1, G1 and Go2 robots.
+- **Jasper St. Pierre and noclip.website contributors**: Source formats and
+  rendering; see [LICENSE.noclip](LICENSE.noclip).
+- **MuJoCo, Three.js, ONNX Runtime and Mediabunny contributors**: physics,
   rendering, inference and media export.
-- Game, robot and character creators — retain each asset's notices and attribution
-  when preparing or redistributing a build.
+- **Game, robot and character creators**: keep each asset’s notices and
+  attribution when you build or redistribute. The screenshots show map previews
+  from the NEOTOKYO° mod and
+  [Rigged Gingerbread Man](https://opengameart.org/content/rigged-gingerbread-man)
+  by Elegant Crow ([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)).
 
-Application code is covered by [LICENSE](LICENSE), with the separate noclip
-notice above. Those notices do **not** relicense game maps, robot assets,
-character models or policy weights. Check their individual terms, including
-attribution and redistribution requirements, independently of the code license.
+The code is under [LICENSE](LICENSE), with the separate noclip notice above.
+Neither license covers game maps, robot assets, character models or policy
+weights; check each one’s own terms before you redistribute it.

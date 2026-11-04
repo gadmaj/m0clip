@@ -25,7 +25,7 @@
  */
 import { matFromWxyz, matTVec } from "../math";
 import type { Command, EvalConfig, RobotSpec } from "../types";
-import type { Engine } from "../../sim/engine";
+import type { EngineScope } from "../../sim/engine";
 import type { OnnxSession } from "../policy";
 import { BaseDriver } from "./base";
 import { fetchAsset } from '../prepared-assets';
@@ -61,7 +61,7 @@ export class G1GetupDriver extends BaseDriver {
   /** interp | policy | stand — for the UI / test harness */
   phase = "interp";
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine, readonly sess: OnnxSession,
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope, readonly sess: OnnxSession,
               readonly aux: Record<string, OnnxSession>, readonly files: Record<string, string>) {
     super(cfg, spec, eng);
     const g = cfg.g1!;
@@ -112,7 +112,7 @@ export class G1GetupDriver extends BaseDriver {
     // face_up: the attitude the bench G1 settled in after being dropped in damping (lowstate at 1001 entry)
     const quat = this.spawnMode === "face_down" ? [s, 0, s, 0] : [0.479, 0, -0.878, 0];
     const nq = Math.hypot(...quat);
-    const all = Array.from({ length: this.eng.model.nbody }, (_, i) => i).filter((i) => i !== 0);
+    const all = this.eng.allBodyIds();
     this.seat(this.initPose, quat.map((v) => v / nq), all, 0.02);
     this.tick = 0;
     this.row = 0;

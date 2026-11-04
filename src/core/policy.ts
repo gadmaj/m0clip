@@ -27,6 +27,8 @@ async function loadSession(url: string): Promise<ort.InferenceSession> {
 
 const sessions = new Map<string, Promise<ort.InferenceSession>>();
 let loadingSessions: Set<string> | null = null;
+/** Sessions used by every driver of one composed scene while its drivers are (re)created. */
+let groupSessions: Set<string> | null = null;
 
 function createSession(url: string): Promise<ort.InferenceSession> {
   loadingSessions?.add(url);
@@ -56,6 +58,10 @@ async function retainSessions(keep: Set<string>) {
  * A failed replacement keeps the previous driver's sessions usable. */
 export async function withPolicySessions<T>(load: () => Promise<T>): Promise<T> {
   if (loadingSessions) throw new Error('Policy session loads must be serialized');
+  if (groupSessions) {
+    loadingSessions = groupSessions;
+    try { return await load(); } finally { loadingSessions = null; }
+  }
   const previous = new Set(sessions.keys()), used = new Set<string>();
   loadingSessions = used;
   try {
@@ -68,8 +74,24 @@ export async function withPolicySessions<T>(load: () => Promise<T>): Promise<T> 
   } finally { loadingSessions = null; }
 }
 
+/** Several drivers in one scene: retain every network any of them uses, and only after all load.
+ * A failed group keeps the previous drivers' sessions usable. */
+export async function withPolicySessionGroup<T>(load: () => Promise<T>): Promise<T> {
+  if (loadingSessions || groupSessions) throw new Error('Policy session loads must be serialized');
+  const previous = new Set(sessions.keys()), used = new Set<string>();
+  groupSessions = used;
+  try {
+    const result = await load();
+    await retainSessions(used);
+    return result;
+  } catch (error) {
+    await retainSessions(previous);
+    throw error;
+  } finally { groupSessions = null; }
+}
+
 export async function releasePolicySessions() {
-  if (loadingSessions) throw new Error('Cannot release policy sessions during a load');
+  if (loadingSessions || groupSessions) throw new Error('Cannot release policy sessions during a load');
   await retainSessions(new Set());
 }
 

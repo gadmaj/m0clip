@@ -19,7 +19,7 @@
  * are appended to the actor input. Actions (12 legs) are clipped at 10; target = default + a x scale. */
 import { clip, matFromWxyz, matTVec } from "../math";
 import type { Command, EvalConfig, RobotSpec } from "../types";
-import type { Engine } from "../../sim/engine";
+import type { EngineScope } from "../../sim/engine";
 import type { OnnxSession } from "../policy";
 import { BaseDriver } from "./base";
 
@@ -86,7 +86,7 @@ export class G1LegacyDriver extends BaseDriver {
   private nextKick = Infinity;
   activeNet = "main";
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine, readonly sess: OnnxSession,
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope, readonly sess: OnnxSession,
               readonly aux: Record<string, OnnxSession>, readonly files: Record<string, string>) {
     super(cfg, spec, eng);
     const g = cfg.g1!;

@@ -1,10 +1,14 @@
 /** Browser-local capture transactions and shared scene ownership. */
 import type { TakeMeta, TakeEvent } from './take';
+import type { PlayerTables, PlayerTakeEvent, PlayerTakeMeta } from './player-take';
+import { validPlayerModelIdentity } from './player-take';
 import { validLook, validShotEdits, validShotLights } from './post';
 import { validDisplay } from '../render/display';
 import type { RenderModel, SceneIdentity } from '../sim/protocol';
+import type { SceneMode } from '../player/types';
 import { denseGeometryPartition, validGeometryData, type GeometryData, type GeometryPartition } from '../core/geometry';
 import { validLocalMap } from '../maps/source';
+import { unpackModel, type MeshBody, type PackedModel, type PackedScene } from './model-pack';
 
 export interface TrackSpanData {
   t: Float64Array; geom: Float32Array; qpos: Float32Array; cmd: Float32Array;
@@ -13,15 +17,24 @@ export interface TrackSpanData {
 export interface TrackData extends Omit<TrackSpanData, 'geom'> {
   id: string; geom: GeometryData;
 }
+/** A Robot take's compiled model, stored whole as before. */
 export interface SceneRecord { id: string; terrain: string; model: RenderModel }
+/** A Player epoch model; mesh bodies live once each in the 'meshes' store. */
+export interface PackedSceneRecord { id: string; terrain: string; model: PackedModel; meshIds: string[] }
 export interface RecordingRecoveryInfo {
-  id: string; name: string; created: string; updated: string; robot: string; terrain: string;
+  id: string; name: string; created: string; updated: string; mode: SceneMode; robot: string | null; terrain: string;
   duration: number; frames: number; bytes: number; thumbnail: null;
 }
 export interface RecordingDraft {
-  id: string; info: RecordingRecoveryInfo; meta: TakeMeta; events: TakeEvent[]; sceneId: string;
+  id: string; mode?: 'robot'; info: RecordingRecoveryInfo; meta: TakeMeta; events: TakeEvent[]; sceneId: string;
   geometry: GeometryPartition;
 }
+export interface PlayerEpochStored { start: number; sceneId: string; layout: GeometryPartition }
+export interface PlayerRecordingDraft {
+  id: string; mode: 'player'; info: RecordingRecoveryInfo; meta: PlayerTakeMeta; events: PlayerTakeEvent[]; tables: PlayerTables;
+  sceneIds: string[]; epochs: PlayerEpochStored[]; ragged: { bodyParams: number; bodyLayers: number; viewParams: number; viewLayers: number };
+}
+export type AnyRecordingDraft = RecordingDraft | PlayerRecordingDraft;
 
 // Compiled model identity, never a geometry serialization or hash.
 const scenes = new WeakMap<RenderModel, { id: string; terrain: string }>();
@@ -39,13 +52,30 @@ export function storageErrorMessage(error: unknown): string {
   return /[.!?]$/.test(detail) ? detail : `${detail}.`;
 }
 
+/** Card and search text for a stored take or recovery: the robot, or Player for a no-robot world. */
+export function subjectLabel(info: { mode: SceneMode; robot: string | null }): string {
+  return info.mode === 'player' ? 'Player' : info.robot ?? '';
+}
+
+/** Rows written before Player mode have no `mode`; they are Robot rows with a robot id. Nothing else is filled in. */
+export function readInfo<T extends { mode: SceneMode; robot: string | null }>(info: T): T {
+  if (object(info) && info.mode === undefined && typeof info.robot === 'string') Object.assign(info, { mode: 'robot' });
+  return info;
+}
+/** Robot scene models saved before Player mode carry no `mode`. Only a model with a robot id becomes Robot;
+ * a Player model is never migrated and must be valid as stored. */
+export function readRobotModel(model: RenderModel): RenderModel {
+  if (object(model) && model.mode === undefined && typeof model.robot === 'string' && model.robot) model.mode = 'robot';
+  return model;
+}
+
 export function sceneFor(model: RenderModel, terrain: string): { id: string; terrain: string } {
   let scene = scenes.get(model);
   if (scene && scene.terrain !== terrain) throw invalid();
   if (!scene) { scene = { id: crypto.randomUUID(), terrain }; scenes.set(model, scene); }
   return scene;
 }
-export function rememberScene(scene: SceneRecord): void {
+export function rememberScene(scene: { id: string; terrain: string; model: RenderModel }): void {
   scenes.set(scene.model, { id: scene.id, terrain: scene.terrain });
 }
 export function validMeta(meta: TakeMeta): boolean {
@@ -65,9 +95,14 @@ export function sameIdentity(a: TakeMeta, b: TakeMeta | SceneIdentity): boolean 
     && a.baseQadr === b.baseQadr && Array.isArray(b.hinges) && a.hinges.length === b.hinges.length
     && a.hinges.every((h, i) => h.name === b.hinges[i].name && h.qadr === b.hinges[i].qadr);
 }
-export function validModel(model: RenderModel, meta: TakeMeta): boolean {
-  if (!object(model) || !sameIdentity(meta, model) || !Array.isArray(model.bodyNames) || !model.bodyNames.every(n => typeof n === 'string')) return false;
-  const n = meta.ngeom;
+/** Array shapes of a compiled render model, for either scene mode. */
+export function validModelShape(model: RenderModel): boolean {
+  if (!object(model) || model.mode !== 'robot' && model.mode !== 'player' || !integer(model.ngeom) || !integer(model.nq)
+    || model.terrain !== undefined && typeof model.terrain !== 'string'
+    || !Array.isArray(model.bodyNames) || !model.bodyNames.every(n => typeof n === 'string')
+    || !Number.isInteger(model.baseQadr) || model.baseQadr !== -1 && (model.baseQadr < 0 || model.baseQadr + 7 > model.nq)
+    || !Array.isArray(model.hinges) || !model.hinges.every(h => object(h) && typeof h.name === 'string' && integer(h.qadr) && h.qadr < model.nq)) return false;
+  const n = model.ngeom;
   if (!(model.type instanceof Int32Array) || model.type.length !== n || !(model.size instanceof Float64Array) || model.size.length !== n * 3
     || !(model.rgba instanceof Float32Array) || model.rgba.length !== n * 4) return false;
   for (const a of [model.group, model.contype, model.bodyid, model.dataid]) if (!(a instanceof Int32Array) || a.length !== n) return false;
@@ -83,6 +118,14 @@ export function validModel(model: RenderModel, meta: TakeMeta): boolean {
     || !(model.bodyFrames.quat instanceof Float64Array) || model.bodyFrames.quat.length !== model.bodyNames.length * 4)) return false;
   return !model.geomFrames || model.geomFrames.pos instanceof Float64Array && model.geomFrames.pos.length === n * 3
     && model.geomFrames.quat instanceof Float64Array && model.geomFrames.quat.length === n * 4;
+}
+/** The Robot model a Robot take was recorded on. */
+export function validModel(model: RenderModel, meta: TakeMeta): boolean {
+  return object(model) && model.mode === 'robot' && sameIdentity(meta, model) && validModelShape(model);
+}
+/** A recorded Player epoch model. */
+export function validPlayerModel(model: RenderModel): boolean {
+  return validModelShape(model) && validPlayerModelIdentity(model);
 }
 export function validTrackSpan(tracks: TrackSpanData, meta: TakeMeta, frames: number, geometryLength: number, minimumFrames = 2): boolean {
   if (!object(tracks) || !integer(frames) || frames < minimumFrames || !(tracks.t instanceof Float64Array) || tracks.t.length !== frames) return false;
@@ -121,20 +164,26 @@ export function validEvents(events: TakeEvent[], duration: number): boolean {
 export function connect(): Promise<IDBDatabase> {
   const { promise, resolve, reject } = Promise.withResolvers<IDBDatabase>();
   let request: IDBOpenDBRequest;
-  try { request = indexedDB.open('m0clip-shots', 3); }
+  try { request = indexedDB.open('m0clip-shots', 4); }
   catch (error) { reject(error); return promise; }
   let settled = false;
   request.onupgradeneeded = event => {
-    const db = request.result;
+    const db = request.result, tx = request.transaction!;
     if (!db.objectStoreNames.contains('shots')) db.createObjectStore('shots', { keyPath: 'id' }).createIndex('sceneId', 'sceneId');
-    for (const name of ['tracks', 'scenes', 'photos', 'photoData']) {
+    for (const name of ['tracks', 'scenes', 'photos', 'photoData', 'meshes']) {
       if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: 'id' });
     }
     if (!db.objectStoreNames.contains('drafts')) db.createObjectStore('drafts', { keyPath: 'id' }).createIndex('sceneId', 'sceneId');
     if (!db.objectStoreNames.contains('chunks')) db.createObjectStore('chunks', { keyPath: ['recordingId', 'from'] });
+    // Player takes reference one scene per epoch; Player scenes reference shared mesh bodies.
+    for (const name of ['shots', 'drafts']) {
+      const store = tx.objectStore(name);
+      if (!store.indexNames.contains('sceneIds')) store.createIndex('sceneIds', 'sceneIds', { multiEntry: true });
+    }
+    const sceneStore = tx.objectStore('scenes');
+    if (!sceneStore.indexNames.contains('meshIds')) sceneStore.createIndex('meshIds', 'meshIds', { multiEntry: true });
     if (event.oldVersion > 0 && event.oldVersion < 3) {
       // Migration belongs to the versionchange transaction: abort leaves the old schema and bytes intact.
-      const tx = request.transaction!;
       const migrate = (name: string, update: (record: Record<string, unknown>) => void) => {
         const cursor = tx.objectStore(name).openCursor();
         cursor.onsuccess = () => {
@@ -183,21 +232,82 @@ export function transact<T>(db: IDBDatabase, stores: string[], mode: IDBTransact
 export function chunkRange(id: string): IDBKeyRange {
   return IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]);
 }
-/** Both finished takes and recording checkpoints can own a compiled scene. */
+/** Stores any transaction that may collect a scene must include. */
+export const SCENE_STORES = ['shots', 'drafts', 'scenes', 'meshes'];
+/** Both finished takes and recording checkpoints can own a compiled scene, Robot or Player. */
 export function collectScene(tx: IDBTransaction, request: RequestReceiver, sceneId: string): void {
-  request(tx.objectStore('shots').index('sceneId').count(sceneId), shots => {
-    if (shots) return;
-    request(tx.objectStore('drafts').index('sceneId').count(sceneId), drafts => {
-      if (!drafts) tx.objectStore('scenes').delete(sceneId);
+  const owners: [string, string][] = [['shots', 'sceneId'], ['shots', 'sceneIds'], ['drafts', 'sceneId'], ['drafts', 'sceneIds']];
+  const next = (k: number) => {
+    if (k === owners.length) {
+      const store = tx.objectStore('scenes');
+      request(store.get(sceneId), (scene: SceneRecord | PackedSceneRecord | undefined) => {
+        if (!scene) return;
+        store.delete(sceneId);
+        // Requests run in order: each count already excludes the deleted scene.
+        if ('meshIds' in scene && Array.isArray(scene.meshIds)) for (const meshId of scene.meshIds)
+          request(store.index('meshIds').count(meshId), users => { if (!users) tx.objectStore('meshes').delete(meshId); });
+      });
+      return;
+    }
+    const [name, index] = owners[k];
+    request(tx.objectStore(name).index(index).count(sceneId), count => { if (!count) next(k + 1); });
+  };
+  next(0);
+}
+/** Add Player epoch scenes and their mesh bodies unless already stored. Epochs can share a body that
+ * is not stored yet; its existence check and insert are queued once, because IndexedDB answers every
+ * queued check before any insert a callback adds, and a second add of one key aborts the transaction. */
+export function putPlayerScenes(tx: IDBTransaction, request: RequestReceiver, list: { id: string; terrain: string; packed: PackedScene }[]): void {
+  const sceneStore = tx.objectStore('scenes'), meshes = tx.objectStore('meshes');
+  const admitted = new Set<string>();
+  for (const { id, terrain, packed } of list) {
+    request(sceneStore.getKey(id), key => {
+      if (key !== undefined) return;
+      sceneStore.add({ id, terrain, model: packed.model, meshIds: packed.bodies.map(b => b.id) } satisfies PackedSceneRecord);
+      for (const body of packed.bodies) {
+        if (admitted.has(body.id)) continue;
+        admitted.add(body.id);
+        request(meshes.getKey(body.id), have => { if (have === undefined) meshes.add(body satisfies MeshBody); });
+      }
+    });
+  }
+}
+/** Read Player epoch scenes with their shared mesh bodies; `receive` gets them in `ids` order. */
+export function readPlayerScenes(tx: IDBTransaction, request: RequestReceiver, ids: string[], terrain: string,
+  receive: (scenes: { id: string; model: RenderModel }[]) => void): void {
+  const records = new Map<string, PackedSceneRecord>(), bodies = new Map<string, MeshBody>();
+  const unique = [...new Set(ids)];
+  let pending = unique.length;
+  const finish = () => {
+    const models = new Map<string, RenderModel>();
+    for (const [id, scene] of records) {
+      const model = unpackModel(scene.model, bodies);
+      if (!validPlayerModel(model)) throw invalid();
+      models.set(id, model);
+    }
+    receive(ids.map(id => ({ id, model: models.get(id)! })));
+  };
+  if (!pending) { receive([]); return; }
+  for (const id of unique) request(tx.objectStore('scenes').get(id), (scene: PackedSceneRecord | undefined) => {
+    if (!scene || scene.id !== id || scene.terrain !== terrain || !Array.isArray(scene.meshIds)
+      || !scene.meshIds.every(m => typeof m === 'string')) throw invalid();
+    records.set(id, scene);
+    const missing = scene.meshIds.filter(m => !bodies.has(m));
+    let left = missing.length;
+    if (!left && !--pending) finish();
+    for (const meshId of missing) request(tx.objectStore('meshes').get(meshId), (body: MeshBody | undefined) => {
+      if (!body || body.id !== meshId || !(body.vert instanceof Float32Array) || !(body.face instanceof Uint32Array)) throw invalid();
+      bodies.set(meshId, body);
+      if (!--left && !--pending) finish();
     });
   });
 }
 /** Used in the same transaction that commits a full take; abort retains the recovery. */
 export function clearDraft(tx: IDBTransaction, request: RequestReceiver, id: string): void {
-  request(tx.objectStore('drafts').get(id), (draft: RecordingDraft | undefined) => {
+  request(tx.objectStore('drafts').get(id), (draft: AnyRecordingDraft | undefined) => {
     if (!draft) return;
     tx.objectStore('drafts').delete(id);
     tx.objectStore('chunks').delete(chunkRange(id));
-    collectScene(tx, request, draft.sceneId);
+    for (const sceneId of draft.mode === 'player' ? draft.sceneIds : [draft.sceneId]) collectScene(tx, request, sceneId);
   });
 }

@@ -10,13 +10,14 @@ import type { VideoCodec } from "mediabunny";
 import { CODEC_LABEL, CODECS, CONTAINER_LABEL, canAlpha, encodableCodecs, frameCount, renderVideo,
          type Container, type QualityLevel, type Stage, type VideoJob } from "./export-video";
 import { FOCALS, PRESETS, SENSORS, hfov, vfov, type Shot, type ShotMode, type ShotPath } from "./shot";
-import { csvJointNames, type Take } from "./take";
+import { csvJointNames, motionCsv, type RecordedTake } from "./take";
+import { entityJointNames, entityMotionCsv, playerMotionCsv, type PlayerTake } from "./player-take";
 import { fmtTime } from "./timeline";
 import { VisualPicker } from "../ui/visual-picker";
 
 export interface ExportHost {
   /** Active recorded review only; setup for a live scene has no take or range. */
-  take(): Take | null;
+  take(): RecordedTake | null;
   range(): [number, number] | null;
   shot: Shot;
   /** the shot or output aspect changed: rebuild the camera path, repaint the preview */
@@ -27,7 +28,6 @@ export interface ExportHost {
   stage(): Stage;
   setExporting(on: boolean): void;
   glb(fps: number, camera: boolean, floor: boolean): Promise<Blob>;
-  csv(fps: number): string;
   saveTake(): Promise<void>;
   save(blob: Blob, ext: string): void;
   onClose(): void;
@@ -148,6 +148,8 @@ export class ExportDialog {
   private status!: HTMLElement;
   private pickers: { picker: VisualPicker; select: HTMLSelectElement }[] = [];
   private refreshVideoFields: (() => void) | null = null;
+  /** Robot entity chosen for a Player take's per-robot CSV. */
+  private csvEntity: string | null = null;
 
   constructor(readonly root: HTMLElement, readonly host: ExportHost) {
     this.out = loadPrefs().out;
@@ -279,12 +281,12 @@ export class ExportDialog {
     if (this.probeRequest?.key !== key) this.supported = null;
 
     const cam = this.section("Camera");
-    const seg = h("div", "seg");
+    const seg = h("div", "seg"), subject = this.host.take()?.mode === "player" ? "player" : "robot";
     for (const [m, label, title] of [
       ["viewport", "Viewport", this.host.take() ? "Camera movement recorded in the take" : "Use the current viewport camera"],
-      ["follow", "Follow", "Track the robot from a fixed offset"],
-      ["orbit", "Orbit", "Track and circle the robot"],
-      ["fixed", "Fixed", "Camera fixed at the robot's position at range start"]] as [ShotMode, string, string][]) {
+      ["follow", "Follow", `Track the ${subject} from a fixed offset`],
+      ["orbit", "Orbit", `Track and circle the ${subject}`],
+      ["fixed", "Fixed", `Camera fixed at the ${subject}'s position at range start`]] as [ShotMode, string, string][]) {
       const b = btn(label, shot.mode === m ? "active" : "", () => this.shotEdit({ mode: m }, true), title);
       seg.append(b);
     }
@@ -561,8 +563,11 @@ export class ExportDialog {
     camL.append(cam, " Shot camera (Video tab camera, lens and frame)");
     floorL.append(floor, " Ground plane");
     glb.append(field("Key rate", rate(o.glbFps, (v) => { o.glbFps = v; this.persist(); })), field("", camL), field("", floorL),
-      h("p", "x-note", "Every robot part and terrain piece is its own named object with its materials, " +
-        "keyed in world space; the camera keeps its field of view (focal / sensor are in its custom properties). " +
+      h("p", "x-note", (take?.mode === "player"
+        ? "The world, every robot and the player are named objects with their materials, keyed in world space. " +
+          "glTF has no visibility keys, so a part outside its lifetime is scaled to zero with step keys. "
+        : "Every robot part and terrain piece is its own named object with its materials, keyed in world space; ") +
+        "the camera keeps its field of view (focal / sensor are in its custom properties). " +
         "In Blender: File › Import › glTF 2.0, then press play. Keys are in seconds, so the motion runs at true " +
         "speed at any scene frame rate; set the scene to the key rate for one key per frame."),
       this.action("Export .glb", async () => {
@@ -571,33 +576,87 @@ export class ExportDialog {
         return `Saved ${(blob.size / 1e6).toFixed(1)} MB (${fmtTime(range![1] - range![0])} s at ${o.glbFps} fps).`;
       }, recorded));
 
-    const csv = this.section("Motion CSV", "base pose + joint angles");
-    const names = take ? csvJointNames(take.meta) : null;
-    const jointOrder = names
-      ? this.details("Joint order", names.map((n, i) => `${i + 8}. ${n}`).join("\n"))
-      : h("p", "x-note", "Joint order is unavailable until a recorded take is open.");
-    if (!names) jointOrder.setAttribute("aria-disabled", "true");
-    csv.append(field("Rate", rate(o.csvFps, (v) => { o.csvFps = v; this.persist(); })),
-      h("p", "x-note", "One row per frame: base position (3), base quaternion x y z w (4), then " +
-        (names ? `${names.length} joint angles` : "recorded joint angles") +
-        " in radians, no header. Opens again here under Reference clip (at the same fps) and in " +
-        "retargeting tools that read this layout."),
-      jointOrder,
-      this.action("Export .csv", async () => {
-        const text = this.host.csv(o.csvFps);
-        this.host.save(new Blob([text], { type: "text/csv" }), `${o.csvFps}fps.csv`);
-        return `Saved ${text.split("\n").length - 1} rows.`;
-      }, recorded));
+    if (take?.mode === "player") this.renderPlayerCsv(take, range, recorded, rate);
+    else {
+      const csv = this.section("Motion CSV", "base pose + joint angles");
+      const names = take ? csvJointNames(take.meta) : null;
+      const jointOrder = names
+        ? this.details("Joint order", names.map((n, i) => `${i + 8}. ${n}`).join("\n"))
+        : h("p", "x-note", "Joint order is unavailable until a recorded take is open.");
+      if (!names) jointOrder.setAttribute("aria-disabled", "true");
+      csv.append(field("Rate", rate(o.csvFps, (v) => { o.csvFps = v; this.persist(); })),
+        h("p", "x-note", "One row per frame: base position (3), base quaternion x y z w (4), then " +
+          (names ? `${names.length} joint angles` : "recorded joint angles") +
+          " in radians, no header. Opens again here under Reference clip (at the same fps) and in " +
+          "retargeting tools that read this layout."),
+        jointOrder,
+        this.action("Export .csv", async () => {
+          const current = this.host.take(), [t0, t1] = this.host.range()!;
+          if (current?.mode !== "robot") throw new Error("the open take changed");
+          const text = motionCsv(current, o.csvFps, t0, t1);
+          this.host.save(new Blob([text], { type: "text/csv" }), `${o.csvFps}fps.csv`);
+          return `Saved ${text.split("\n").length - 1} rows.`;
+        }, recorded));
+    }
 
     const tk = this.section("Take file", ".take.zip");
-    tk.append(h("p", "x-note", "Save the whole recording: motion, inputs and camera. Reopen with Recording › Open take. " +
-      "Requires the same robot model and terrain loaded."),
+    tk.append(h("p", "x-note", take?.mode === "player"
+      ? "Save the whole recording: the player, robots, inputs, camera and every scene layout. Reopen with Recording › Open take. " +
+        "Game files are not included: attach the same map and matching local game files to open it."
+      : "Save the whole recording: motion, inputs and camera. Reopen with Recording › Open take. " +
+        "Requires the same robot model and terrain loaded."),
       this.action("Save take", async () => { await this.host.saveTake(); return "Saved."; }, recorded));
     const rangeLabel = h("div", "x-range", range && take
       ? `Range ${fmtTime(range[0])} → ${fmtTime(range[1])} s (set In / Out on the timeline)`
       : "Range unavailable · open a recorded take to export or save.");
     rangeLabel.setAttribute("aria-disabled", String(!range || !take));
     this.body.append(rangeLabel);
+  }
+
+  /** Player motion is its own honestly named table; each robot exports separately, named by entity and spec. */
+  private renderPlayerCsv(take: PlayerTake, range: [number, number] | null, recorded: boolean,
+                          rate: (v: number, set: (v: number) => void) => HTMLSelectElement) {
+    const o = this.out;
+    const player = this.section("Player motion CSV", "header row · Source inches");
+    player.append(field("Rate", rate(o.csvFps, (v) => { o.csvFps = v; this.persist(); })),
+      h("p", "x-note", "One row per frame with a header: time, origin and velocity in Source inches, view yaw and pitch " +
+        "in degrees, duck fraction, eye height, grounded, ducked, third person, tool and the body animation. " +
+        "This is the player's own movement, not a robot Reference clip."),
+      this.action("Export player .csv", async () => {
+        const current = this.host.take(), [t0, t1] = this.host.range()!;
+        if (current !== take) throw new Error("the open take changed");
+        const text = playerMotionCsv(take, o.csvFps, t0, t1);
+        this.host.save(new Blob([text], { type: "text/csv" }), `player-motion.${o.csvFps}fps.csv`);
+        return `Saved ${text.split("\n").length - 2} rows.`;
+      }, recorded));
+
+    const robots = this.section("Robot motion CSV", "one robot · base pose + joint angles");
+    const seen = new Map<string, string>();
+    for (const span of take.entityLifetimes())
+      if (!range || take.t[span.to] >= range[0] && take.t[span.from] <= range[1]) seen.set(span.id, span.robot);
+    if (!seen.size) {
+      robots.append(h("p", "x-note", "No robot is in the scene during this range."));
+      return;
+    }
+    if (!this.csvEntity || !seen.has(this.csvEntity)) this.csvEntity = seen.keys().next().value!;
+    const pick = select([...seen].map(([id, robot]) => [id, `${id} · ${robot}`] as [string, string]), this.csvEntity,
+      (id) => { this.csvEntity = id; this.render(); });
+    const epoch = take.epochs.find((e) => e.model.entities?.some((x) => x.id === this.csvEntity))!;
+    const entity = epoch.model.entities!.find((x) => x.id === this.csvEntity)!;
+    const names = entityJointNames(epoch.model, entity);
+    robots.append(field("Robot", pick),
+      h("p", "x-note", `Reference clip layout for ${entity.id} (${entity.robot}): base position (3), base quaternion ` +
+        `x y z w (4), then ${names.length} joint angles in radians, no header. Only the span where this robot exists ` +
+        "is exported; the file name carries its id and model."),
+      this.details("Joint order", names.map((n, i) => `${i + 8}. ${n}`).join("\n")),
+      this.action("Export robot .csv", async () => {
+        const current = this.host.take(), [t0, t1] = this.host.range()!;
+        if (current !== take) throw new Error("the open take changed");
+        const out = entityMotionCsv(take, entity.id, o.csvFps, t0, t1);
+        const stem = `${entity.id}-${out.robot}`.replace(/[^A-Za-z0-9_-]+/g, "_");
+        this.host.save(new Blob([out.csv], { type: "text/csv" }), `${stem}.${o.csvFps}fps.csv`);
+        return `Saved ${out.csv.split("\n").length - 1} rows (${fmtTime(out.from)} → ${fmtTime(out.to)} s).`;
+      }, recorded));
   }
 
   private details(summary: string, text: string): HTMLElement {

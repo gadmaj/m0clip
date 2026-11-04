@@ -7,19 +7,22 @@ import { listPacks, deletePack, deleteAllPacks, loadPack, importAny, packEntries
          revokePack, type PackMetadata } from "../packs";
 import { installDefaultPacks } from '../packs/defaults';
 import { releasePolicySessions } from '../core/policy';
-import { Engine, MissingBundleError, GEOM_MESH, type PreparedEngine } from "../sim/engine";
+import { Engine, MissingBundleError, type PreparedEngine } from "../sim/engine";
 import { SimFSM, type FsmState } from "../sim/fsm";
 import { isTerrain, mapId, terrainTransform, type TerrainName } from "../sim/terrain";
 import { getSpec, SPECS } from "../robots";
 import { observeTransfers } from "../loading/transfers";
 import { robotFamily as fam, r1Models, modelKey, specFor, selectRobotPolicy, type RobotPolicySelection } from './robot-policy';
-import type { FromWorker, RenderModel, ToWorker, SceneIdentity } from "../sim/protocol";
+import type { FromWorker, ToWorker, SceneIdentity } from "../sim/protocol";
+import { renderModelFromEngine } from '../sim/render-model';
 import { createFrameGeometryLayout, copyMovingGeometry } from '../sim/geometry-frames';
 import { PreparedAssets, httpAssetKey, usePreparedAssets } from '../core/prepared-assets';
 import { StartupGate } from '../core/startup-gate';
 import { driverAssetUrls, selectedDriverAssets } from '../core/driver-assets';
 import { expandAssetUrls } from '../loading/catalogue';
 import { mapSource, registerLocalMap, type MapSource } from '../maps/source';
+import type { SceneMode } from '../player/types';
+import { PlayerWorld } from './player-world';
 
 /** Kinematic-playback state: a user-supplied reference clip is set into qpos
  * frame-by-frame (no physics), to preview retargeted mocap on the robot. */
@@ -120,6 +123,11 @@ class SimWorker {
   private hoistOff: [number, number, number] = [0, 0, 0];   // hoist point in that body's frame
   private stallSteps = 0;              // leash taut but dog not moving
   private lastInspect = 0;
+  /** Scene mode of the first init; a worker never switches between Robot and Player worlds. */
+  private sceneMode: SceneMode | null = null;
+  /** The Player world (Player mode only); Robot mode never creates it. */
+  private player: PlayerWorld | null = null;
+  private playerLoop = false;
 
   /** Leash: a capped horizontal spring pulling the "collar" (front of the
    * trunk) toward the anchor point — the interactive form of the reference
@@ -252,6 +260,12 @@ class SimWorker {
 
   async init(m: Extract<ToWorker, { t: "init" }>, epoch = loadingEpoch) {
     if (epoch !== loadingEpoch) return;
+    const mode: SceneMode = m.mode ?? 'robot';
+    if (this.sceneMode !== null && mode !== this.sceneMode) {
+      post({ t: 'error', msg: `This simulation runs a ${this.sceneMode} scene; a ${mode} scene needs a new simulation worker.` });
+      return;
+    }
+    this.sceneMode = mode;
     stopLoading?.();
     releasePrepared?.();
     loadingGeneration = m.loadingId;
@@ -265,6 +279,7 @@ class SimWorker {
     this.packs = await listPacks();
     await this.installFamilyDefaults(m.robot && m.robot in SPECS ? m.robot : 'r1',
       assets ? url => assets.prepare(url) : undefined);
+    if (mode === 'player') return this.initPlayer(m, epoch, assets, generation);
     if (isTerrain(m.terrain)) this.terrain = m.terrain;
     if(m.localMap){if(m.localMap.id!==mapId(this.terrain))throw new Error('The selected map source does not match the requested terrain.');this.activeMap=registerLocalMap(m.localMap);}
     this.activeMap=mapSource(this.terrain);
@@ -348,6 +363,104 @@ class SimWorker {
     void this.controlLoop();
   }
 
+  /** Player world init: no robot manifest, zero robots. The startup plan covers the worker and
+   * MuJoCo runtime plus the world's own files, through the same fixed-byte gate as Robot mode.
+   * A re-init (map change) compiles the new world first; on failure the current one keeps running. */
+  private async initPlayer(m: Extract<ToWorker, { t: "init" }>, epoch: number, assets: PreparedAssets | undefined,
+      generation: number | undefined) {
+    const current = () => epoch === loadingEpoch && generation === loadingGeneration;
+    const terrain: TerrainName = isTerrain(m.terrain) ? m.terrain : this.terrain;
+    if (m.localMap) {
+      if (m.localMap.id !== mapId(terrain)) throw new Error('The selected map source does not match the requested terrain.');
+      registerLocalMap(m.localMap);
+    }
+    const source = mapSource(terrain);
+    const world = this.player ??= new PlayerWorld({
+      post, entries: () => this.allEntries(), config: entry => this.cfgFor(entry),
+    });
+    post({ t: 'busy', msg: 'Planning the Player world…' });
+    const plan = await world.prepare(terrain, source, assets ? url => assets.prepare(url) : undefined);
+    if (!current()) return;
+    if (assets && m.catalogue && generation !== undefined) {
+      const catalogue = m.catalogue;
+      const roots = [...catalogue.runtime.worker, '/wasm/mujoco.js', '/wasm/mujoco.wasm',
+        ...plan.prepared.urls, ...assets.snapshot().map(asset => asset.url)];
+      const urls = expandAssetUrls(catalogue, roots.filter(url => httpAssetKey(url) !== null));
+      for (const url of urls) {
+        if (!current()) return;
+        if (catalogue.sizes[url] === undefined) await assets.prepare(url);
+      }
+      if (!current()) return;
+      const waiting = startupGate.wait(generation);
+      post({ t: 'loadingPlan', plan: { generation, token: waiting.token, robot: '', policy: null, pack: null,
+        inference: false, urls, prepared: assets.snapshot() } });
+      if (!await waiting.ready || !current()) return;
+    }
+    post({ t: 'busy', msg: 'compiling MuJoCo model (wasm)…' });
+    this.busy = true;
+    try {
+      if (!await world.load(plan, { tools: m.playerTools, knifeTiming: m.knifeTiming }, current)) return;
+    } finally { this.busy = !world.loaded; }
+    this.terrain = terrain;
+    this.activeMap = source;
+    post({ t: 'ready' });
+    world.postStatus();
+    if (!this.playerLoop) { this.playerLoop = true; void this.controlLoop(); }
+  }
+
+  /** Player mode routes only the messages a Player world understands; Robot controls do nothing. */
+  private async onPlayerMessage(world: PlayerWorld, m: ToWorker) {
+    switch (m.t) {
+      case 'playerInput': return world.input(m.input);
+      case 'playerTool': return world.selectTool(m.tool);
+      case 'playerWheel': return world.wheel(m.direction);
+      case 'playerSpawnRobot': return world.selectSpawnRobot(m.robot);
+      case 'playerUndo': return world.undo();
+      case 'playerStop': return world.stop();
+      case 'playerInspect': return;            // view-model presentation only; no simulation effect
+      case 'pause': this.paused = m.on; return world.setPaused(m.on);
+      case 'viewReady': post({ t: 'viewReady', request: m.request, robot: '', terrain: this.terrain }); return;
+      case 'inspect': this.inspectOn = m.on; return;
+      case 'importPack': return this.importPlayerPacks(m.zip);
+      case 'deletePack': return this.deletePlayerPacks(m.id);
+      case 'deleteAllPacks': return this.deletePlayerPacks(null);
+      case 'terrain':
+        post({ t: 'terrainFailed', request: m.request, msg: 'Player mode changes maps by loading a new Player world.' });
+        return;
+      default: return;
+    }
+  }
+
+  /** Catalogue-only pack changes: spawned robots keep the drivers they were built with. */
+  private async importPlayerPacks(zip: ArrayBuffer) {
+    try {
+      const imported = await importAny(new Uint8Array(zip));
+      for (const pack of imported) {
+        revokePack(pack.id);
+        for (const e of packEntries(pack)) this.configs.delete(e.name);
+        this.packs = this.packs.filter((p) => p.id !== pack.id);
+        const { files: _files, ...metadata } = pack;
+        this.packs.push(metadata);
+      }
+      post({ t: 'ready' });
+    } catch (e) {
+      console.error(e);
+      post({ t: 'error', msg: `import failed: ${e instanceof Error ? e.message : e}` });
+    }
+  }
+
+  private async deletePlayerPacks(id: string | null) {
+    const gone = id === null ? this.packs : this.packs.filter((p) => p.id === id);
+    if (id === null) await deleteAllPacks();
+    else await deletePack(id);
+    for (const pack of gone) {
+      for (const e of packEntries(pack)) this.configs.delete(e.name);
+      revokePack(pack.id);
+    }
+    this.packs = id === null ? [] : this.packs.filter((p) => p.id !== id);
+    this.player?.postStatus();
+  }
+
   /** Every imported pack entry, unfiltered. */
   private allEntries(): PolicyEntry[] {
     return this.packs.flatMap(packEntries);
@@ -400,56 +513,16 @@ class SimWorker {
     if (!(bodyIds instanceof Int32Array)) throw new Error('The compiled model has no geometry body IDs.');
     const geometry = createFrameGeometryLayout(bodyIds, this.eng.geomXpos, this.eng.geomXmat);
     this.movingGeomIds = geometry.movingIds;
-    post({ t: "model", desc: this.renderModel(identity), geometry: geometry.layout });
+    post({ t: "model", desc: renderModelFromEngine(this.eng, identity ?? this.sceneIdentity(this.eng,this.robot,this.terrain)), geometry: geometry.layout });
   }
 
   private sceneIdentity(engine:Engine,robot:string,terrain:TerrainName):SceneIdentity {
     const hinges=engine.hinges();
-    return {robot,terrain,ngeom:engine.model.ngeom,nq:engine.model.nq,
+    return {mode:'robot',robot,terrain,ngeom:engine.model.ngeom,nq:engine.model.nq,
       baseQadr:engine.jointQposAdr(getSpec(robot).floating_base_joint),
       hinges:hinges.names.map((name,i)=>({name,qadr:hinges.qadr[i]}))};
   }
 
-  /** Copy the geom/mesh tables out of wasm memory for the renderer. */
-  private renderModel(identity=this.sceneIdentity(this.eng,this.robot,this.terrain)): RenderModel {
-    const m = this.eng.model as any;
-    const ngeom = this.eng.model.ngeom;
-    const geomType: Int32Array = m.geom_type;
-    const dataid = Int32Array.from(m.geom_dataid as Int32Array);
-    const meshes: RenderModel["meshes"] = {};
-    const vertadr: Int32Array = m.mesh_vertadr, vertnum: Int32Array = m.mesh_vertnum;
-    const faceadr: Int32Array = m.mesh_faceadr, facenum: Int32Array = m.mesh_facenum;
-    const vert: Float32Array = m.mesh_vert, face: Int32Array = m.mesh_face;
-    const mpos: Float64Array = m.mesh_pos, mquat: Float64Array = m.mesh_quat;
-    for (let g = 0; g < ngeom; g++) {
-      const mid = dataid[g];
-      if (geomType[g] === GEOM_MESH && mid >= 0 && !(mid in meshes)) {
-        const name = this.eng.mj.mj_id2name(this.eng.model, this.eng.mj.mjtObj.mjOBJ_MESH.value, mid) ?? '';
-        meshes[mid] = {
-          name,
-          vert: vert.slice(3 * vertadr[mid], 3 * (vertadr[mid] + vertnum[mid])),
-          face: Uint32Array.from(
-            face.subarray(3 * faceadr[mid], 3 * (faceadr[mid] + facenum[mid]))),
-          pos: [mpos[3 * mid], mpos[3 * mid + 1], mpos[3 * mid + 2]],
-          quat: [mquat[4 * mid], mquat[4 * mid + 1], mquat[4 * mid + 2], mquat[4 * mid + 3]],
-        };
-      }
-    }
-    return {
-      ...identity,
-      type: Int32Array.from(geomType),
-      size: Float64Array.from(m.geom_size as Float64Array),
-      rgba: Float32Array.from(m.geom_rgba as Float32Array),
-      group: Int32Array.from(m.geom_group as Int32Array),
-      contype: Int32Array.from(m.geom_contype as Int32Array),
-      bodyid: Int32Array.from(m.geom_bodyid as Int32Array),
-      dataid, meshes,
-      bodyFrames: { parent: Int32Array.from(m.body_parentid), pos: Float64Array.from(m.body_pos), quat: Float64Array.from(m.body_quat) },
-      geomFrames: { pos: Float64Array.from(m.geom_pos), quat: Float64Array.from(m.geom_quat) },
-      bodyNames: Array.from({ length: this.eng.model.nbody }, (_, i) =>
-        this.eng.mj.mj_id2name(this.eng.model, this.eng.mj.mjtObj.mjOBJ_BODY.value, i) ?? ''),
-    };
-  }
 
   private async cfgFor(entry: PolicyEntry): Promise<EvalConfig> {
     let c = this.configs.get(entry.name);
@@ -561,6 +634,7 @@ class SimWorker {
   }
 
   async onMessage(m: ToWorker, current=()=>true) {
+    if (this.player && m.t !== 'init') return this.onPlayerMessage(this.player, m);
     switch (m.t) {
       case "init": return this.init(m);
       case "playback": return this.startPlayback(m.csv, m.fps, m.name);
@@ -1029,6 +1103,7 @@ class SimWorker {
   private lastControlStatus = 0;
 
   private async controlStep(): Promise<number> {
+    if (this.player) return this.busy ? 50 : this.player.wake(performance.now(), this.paused);
     let lastStatus = this.lastControlStatus;
     try {
       if (this.busy || this.paused) return 50;

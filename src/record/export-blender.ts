@@ -8,8 +8,10 @@ import * as THREE from "three";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { checkerTexture, type SceneView } from "../render/scene";
 import type { RenderModel } from "../sim/protocol";
-import { GEOM_STRIDE } from '../core/geometry';
+import { GEOM_STRIDE, matToQuat } from '../core/geometry';
 import type { Take } from "./take";
+import type { PlayerTake } from "./player-take";
+import type { SceneDisplay } from '../render/display';
 import type { Shot, ShotPath } from "./shot";
 import { prepareLosslessTextures } from "./lossless-textures";
 import { expandDetailBatches } from '../render/source-details';
@@ -17,7 +19,7 @@ import { losslessImageWriter } from "./lossless-images";
 import { SceneCamera, infiniteCameraWriter } from '../render/scene-camera';
 import { shotLightObjects } from '../render/shot-lights';
 import type { LookState } from '../ui/look';
-import type { ShotEdits } from './post';
+import type { ShotEdits, ShotLight } from './post';
 import { extraSkinningWriter } from '../render/extra-skin';
 
 export interface GlbJob {
@@ -129,6 +131,14 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
     wrap.add(sourceBody.root);robot.add(wrap);tracks.push(...sourceBody.tracks);
   }
 
+  return finishGlb({ scene, world, view, job, display, lights, times, tracks, unique, detailCleanup });
+  } finally { restoreHighlights(); }
+}
+
+/** Map visual, ground, shot lights and shot camera shared by Robot and Player exports, then the binary glTF. */
+async function finishGlb(s: { scene: THREE.Scene; world: THREE.Group; view: SceneView; job: GlbJob; display: Required<SceneDisplay>;
+  lights: ShotLight[]; times: Float32Array; tracks: THREE.KeyframeTrack[]; unique: (base: string) => string; detailCleanup: (() => void)[] }): Promise<Blob> {
+  const { scene, world, view, job, display, lights, times, tracks, unique, detailCleanup } = s, N = times.length, q = new THREE.Quaternion();
   // a converted game map's textured visual (already in the MuJoCo frame): wrapped into Y-up
   if (display.map && view.terrainObject) {
     const wrap = new THREE.Group();
@@ -195,5 +205,141 @@ export async function exportGlb(take: Take, view: SceneView, model: RenderModel,
     });
     return new Blob([glb as ArrayBuffer], { type: "model/gltf-binary" });
   } finally { images.dispose();cleanup();for(const dispose of detailCleanup)dispose(); }
-  } finally { restoreHighlights(); }
+}
+
+/** Main's render adapter for a Player take. Each epoch's recorded model is shown in `view` before its parts
+ * are read; the player body and view model are built from the recorded presentation, never substituted. */
+export interface PlayerGlbStage {
+  view: SceneView;
+  /** Show recorded epoch `epoch` (its own RenderModel) in `view`; resolves once its visuals are ready. */
+  useEpoch(epoch: number, model: RenderModel): Promise<void>;
+  /** The player body and view model in the MuJoCo frame, keyed at take times t0 + times[i]. Track names must
+   * address uniquely named nodes inside `root`. Throws when a displayed actor cannot be exported. */
+  playerActors(take: PlayerTake, times: Float32Array, t0: number): Promise<{ root: THREE.Object3D; tracks: THREE.KeyframeTrack[]; limitations: string[] }>;
+  /** Return the view to the review state after export, including after a failure. */
+  restore(): Promise<void> | void;
+}
+
+interface PlayerNode { node: THREE.Mesh; pos: Float32Array; rot: Float32Array; seen: Uint8Array; signature: string }
+
+/** A Player take as glTF. A part keeps one node across epochs while its owner (entity id, or the world) and
+ * shape stay the same; outside its lifetime it is scaled to zero with step keys, since glTF has no visibility
+ * animation. Positions come from each epoch's own recorded geometry; nothing blends across a layout boundary. */
+export async function exportPlayerGlb(take: PlayerTake, stage: PlayerGlbStage, job: GlbJob): Promise<Blob> {
+  const { view } = stage;
+  let restoreHighlights: (() => void) | null = null;
+  try {
+    const N = Math.max(2, Math.round((job.t1 - job.t0) * job.fps) + 1);
+    const times = Float32Array.from({ length: N }, (_, i) => Math.min(i / job.fps, job.t1 - job.t0));
+    const epochOf = Int32Array.from(times, (t) => take.epochAt(job.t0 + t));
+    const nodes = new Map<string, PlayerNode>(), used = new Set<string>();
+    const unique = (base: string) => {
+      const b = THREE.PropertyBinding.sanitizeNodeName(base) || "part";
+      let name = b;
+      for (let k = 2; used.has(name); k++) name = `${b}_${k}`;
+      used.add(name);
+      return name;
+    };
+    const scene = new THREE.Scene(), robots = new THREE.Group(), world = new THREE.Group();
+    robots.name = unique("robots"); world.name = unique("terrain");
+    scene.add(robots, world);
+    const q = new THREE.Quaternion(), wxyz = new Float32Array(4);
+    for (let epoch = 0; epoch < take.epochs.length; epoch++) {
+      if (!epochOf.includes(epoch)) continue;
+      const model = take.epochs[epoch].model;
+      restoreHighlights?.();
+      await stage.useEpoch(epoch, model);
+      if (take.meta.localMap && view.mapSource?.identity?.fingerprint !== take.meta.localMap.fingerprint)
+        throw new Error('Reattach this take’s original map bundle before exporting.');
+      restoreHighlights = view.suspendHighlights();
+      const parts = view.exportParts().map(({ geom, mesh }) => {
+        const entity = model.entities?.find(e => geom >= e.geomStart && geom < e.geomEnd);
+        const body = model.bodyid[geom], meshName = model.dataid[geom] >= 0 ? model.meshes[model.dataid[geom]]?.name ?? '' : '';
+        const owner = entity ? `${entity.id}:${geom - entity.geomStart}` : `world:${geom}`;
+        const signature = `${model.type[geom]}:${meshName}:${Array.from(model.size.subarray(geom * 3, geom * 3 + 3)).join(',')}`;
+        let key = owner, record = nodes.get(key);
+        for (let k = 2; record && record.signature !== signature; k++) record = nodes.get(key = `${owner}#${k}`);
+        if (!record) {
+          const node = new THREE.Mesh(mesh.geometry, mesh.material), bodyName = model.bodyNames[body] ?? '';
+          const local = entity && bodyName.startsWith(entity.prefix) ? bodyName.slice(entity.prefix.length) : bodyName;
+          node.name = unique(entity ? `${entity.id}__${local}${meshName && meshName !== local ? `__${meshName}` : ''}`
+            : body > 0 ? `${bodyName}${meshName && meshName !== bodyName ? `__${meshName}` : ''}` : meshName || `terrain_${geom}`);
+          node.userData = { geom, body: bodyName, mesh: meshName, ...(entity ? { entity: entity.id, robot: entity.robot } : {}),
+            ...(mesh.userData.sourceRobotPart ? { sourceModel: mesh.userData.sourceRobotPart } : {}) };
+          (entity || body > 0 ? robots : world).add(node);
+          record = { node, pos: new Float32Array(N * 3), rot: new Float32Array(N * 4), seen: new Uint8Array(N), signature };
+          nodes.set(key, record);
+        }
+        return { geom, record };
+      });
+      for (let i = 0; i < N; i++) {
+        if (epochOf[i] !== epoch) continue;
+        const pose = take.poseAt(job.t0 + times[i]);
+        if (pose.epoch !== epoch) throw new Error('Player take epoch changed while sampling.');
+        for (const { geom, record } of parts) {
+          const p = pose.xpos, o = i * 3, r = i * 4;
+          record.pos[o] = p[geom * 3]; record.pos[o + 1] = p[geom * 3 + 2]; record.pos[o + 2] = -p[geom * 3 + 1];
+          matToQuat(pose.xmat, geom * 9, wxyz, 0);
+          q.set(wxyz[1], wxyz[2], wxyz[3], wxyz[0]).premultiply(TO_YUP);
+          record.rot[r] = q.x; record.rot[r + 1] = q.y; record.rot[r + 2] = q.z; record.rot[r + 3] = q.w;
+          record.seen[i] = 1;
+        }
+      }
+    }
+    restoreHighlights?.();
+    restoreHighlights = view.suspendHighlights();
+
+    const tracks: THREE.KeyframeTrack[] = [], lifetimes: { node: string; from_s: number; to_s: number }[] = [];
+    for (const { node, pos, rot, seen } of nodes.values()) {
+      // Hidden samples hold the nearest shown pose, so linear keys never sweep through invented space.
+      let last = -1;
+      for (let i = 0; i < N; i++) if (seen[i]) last = i; else if (last >= 0) { pos.copyWithin(i * 3, last * 3, last * 3 + 3); rot.copyWithin(i * 4, last * 4, last * 4 + 4); }
+      const first = seen.indexOf(1);
+      for (let i = first - 1; i >= 0; i--) { pos.copyWithin(i * 3, first * 3, first * 3 + 3); rot.copyWithin(i * 4, first * 4, first * 4 + 4); }
+      for (let i = 1; i < N; i++) if (rot[i * 4] * rot[i * 4 - 4] + rot[i * 4 + 1] * rot[i * 4 - 3] + rot[i * 4 + 2] * rot[i * 4 - 2] + rot[i * 4 + 3] * rot[i * 4 - 1] < 0)
+        for (let k = 0; k < 4; k++) rot[i * 4 + k] = -rot[i * 4 + k];
+      node.position.fromArray(pos, 0); node.quaternion.fromArray(rot, 0); node.scale.setScalar(seen[0]);
+      let moves = false;
+      for (let i = 1; i < N && !moves; i++) for (let k = 0; k < 4; k++) if (k < 3 && Math.abs(pos[i * 3 + k] - pos[k]) > 1e-6 || Math.abs(rot[i * 4 + k] - rot[k]) > 1e-6) { moves = true; break; }
+      if (moves) {
+        tracks.push(new THREE.VectorKeyframeTrack(`${node.name}.position`, times, pos));
+        tracks.push(new THREE.QuaternionKeyframeTrack(`${node.name}.quaternion`, times, rot));
+      }
+      if (!seen.every(Boolean)) {
+        const scale = new Float32Array(N * 3);
+        for (let i = 0; i < N; i++) scale.fill(seen[i], i * 3, i * 3 + 3);
+        tracks.push(new THREE.VectorKeyframeTrack(`${node.name}.scale`, times, scale, THREE.InterpolateDiscrete));
+        lifetimes.push({ node: node.name, from_s: times[first], to_s: times[seen.lastIndexOf(1)] });
+      }
+    }
+
+    const actors = await stage.playerActors(take, times, job.t0);
+    const actorWrap = new THREE.Group();
+    actorWrap.name = unique('player');
+    actorWrap.quaternion.copy(TO_YUP);
+    actorWrap.add(actors.root);
+    scene.add(actorWrap);
+    tracks.push(...actors.tracks);
+
+    const lights = view.getShotLights(), display = view.getDisplay(), flashlight = view.getFlashlight();
+    const look = structuredClone(job.look ?? take.meta.edits?.look ?? take.meta.look);
+    scene.name = 'player_take';
+    scene.userData = {
+      generator: 'm0clip-ts', mode: 'player', terrain: take.meta.terrain, recorded: take.meta.created,
+      localMap: take.meta.localMap && { ...take.meta.localMap }, range_s: [job.t0, job.t1], key_fps: job.fps,
+      look, recordedLook: structuredClone(take.meta.look), display, recordedDisplay: structuredClone(take.meta.display),
+      flashlight, lights, recordedLights: structuredClone(take.meta.lights), sceneLayouts: take.epochs.length,
+      robots: take.entityLifetimes().map(span => ({ id: span.id, robot: span.robot, from_s: take.t[span.from] - job.t0, to_s: take.t[span.to] - job.t0 })),
+      partLifetimes: lifetimes,
+      limitations: [
+        'glTF has no visibility animation: parts outside their lifetime are scaled to zero with step keys.',
+        'Native Source lightmaps, tone mapping, browser wireframe and custom shader effects are not reproduced by glTF materials. Camera flashlight state is metadata only, not an exported light.',
+        ...actors.limitations,
+      ],
+    };
+    return await finishGlb({ scene, world, view, job, display, lights, times, tracks, unique, detailCleanup: [] });
+  } finally {
+    restoreHighlights?.();
+    await stage.restore();
+  }
 }

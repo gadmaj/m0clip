@@ -3,15 +3,17 @@
  * with lanes, top to bottom —
  *
  *   ruler     scrub; the In / Out flags of the export range sit here and drag
- *   inputs    one diamond per user input (FSM state, policy, move, reset, hoist, clip)
- *   command   the commanded vx / vy / wz
- *   curves    joint angles (the most active joints, or a limb group), or the base position
+ *   inputs    one diamond per user input (Robot: state, policy, move, reset, hoist, clip;
+ *             Player: tool, view, spawn, remove, hit, ragdoll, grab, scene rebuilds)
+ *   command   Robot: the commanded vx / vy / wz. Player: the forward / side input
+ *   curves    Robot: joint angles or the base position. Player: position, speed, view or duck
  *
  * Wheel zooms at the cursor, shift-wheel or a sideways swipe pans, alt- / middle-drag pans, the
  * bottom bar scrolls, double-click fits. Keys while the deck is open: Space play, ← → frame,
  * Shift+← → second, ↑ ↓ previous / next input, Home / End, I / O range, X clear range, L loop,
  * F fit, Esc close. */
-import type { Take, TakeEvent, TakeEventKind } from "./take";
+import type { RecordedEvent, RecordedEventKind, RecordedTake } from "./take";
+import type { PlayerTake } from "./player-take";
 
 export type ViewMode = "free" | "recorded" | "shot";
 
@@ -26,24 +28,29 @@ export interface TimelineHost {
   rangeChanged(): void;
 }
 
-export const KIND_COLOR: Record<TakeEventKind, string> = {
+export const KIND_COLOR: Record<RecordedEventKind, string> = {
   state: "#e0a23c", policy: "#a98bf0", move: "#5fbf6b", reset: "#e0685c", hoist: "#5b92f0", clip: "#4fb3bf",
-  noclip: "#4fb3bf",
+  noclip: "#4fb3bf", scene: "#9aa3ad", tool: "#a98bf0", view: "#5b92f0", spawn: "#5fbf6b", remove: "#d19a66",
+  hit: "#e0685c", ragdoll: "#e0a23c", grab: "#4fb3bf", release: "#4fb3bf",
 };
-export const KIND_LABEL: Record<TakeEventKind, string> = {
+export const KIND_LABEL: Record<RecordedEventKind, string> = {
   state: "State", policy: "Policy", move: "Move", reset: "Reset", hoist: "Hoist", clip: "Clip",
-  noclip: "Noclip",
+  noclip: "Noclip", scene: "Scene", tool: "Tool", view: "View", spawn: "Spawn", remove: "Remove",
+  hit: "Hit", ragdoll: "Ragdoll", grab: "Grab", release: "Release",
 };
 const CURVE_COLORS = ["#e0a23c", "#5b92f0", "#5fbf6b", "#e0685c", "#a98bf0", "#4fb3bf", "#d19a66", "#9aa3ad"];
 const CMD_COLORS = ["#e0a23c", "#5b92f0", "#5fbf6b"];
 
-type CurveSet = "active" | "legs" | "arms" | "torso" | "base";
+type CurveSet = "active" | "legs" | "arms" | "torso" | "base" | "position" | "speed" | "view" | "duck";
 const CURVE_SETS: [CurveSet, string, RegExp | null][] = [
   ["active", "Most active joints", null],
   ["legs", "Legs", /hip|knee|ankle|thigh|calf/],
   ["arms", "Arms", /shoulder|elbow|wrist|hand/],
   ["torso", "Waist & head", /waist|torso|head|neck/],
   ["base", "Base position", null],
+];
+const PLAYER_CURVE_SETS: [CurveSet, string][] = [
+  ["position", "Position (in)"], ["speed", "Speed (in/s)"], ["view", "View angles (°)"], ["duck", "Duck"],
 ];
 
 const LANE = { ruler: 18, events: 24, cmd: 30 };
@@ -93,7 +100,7 @@ function tbtn(label: string, title: string, onclick: () => void, cls = "tb",
 interface Channel { name: string; color: string; get(i: number): number }
 
 export class Timeline {
-  take: Take | null = null;
+  take: RecordedTake | null = null;
   time = 0;
   playing = false;
   loop = true;
@@ -119,9 +126,11 @@ export class Timeline {
   private view = { t0: 0, t1: 1 };
   private W = 1; private H = 1;
   private drag: null | { mode: "scrub" | "pan" | "scroll" | "in" | "out"; x0: number; t0: number; t1: number } = null;
-  private hover: TakeEvent | null = null;
+  private hover: RecordedEvent | null = null;
   private curves: Channel[] = [];
   private curveRange: [number, number] = [0, 1];
+  private commands: Channel[] = [];
+  private commandLabel = "cmd";
   private cmdScale = 1;
   private scrollRect: { y: number; x0: number; x1: number; full0: number; span: number } | null = null;
   private colors = { bg: "#0b0d10", lane: "#14171a", line: "#252a30", lineHi: "#343b43", text: "#9aa3ad",
@@ -221,7 +230,7 @@ export class Timeline {
   }
 
 
-  open(take: Take, title: string) {
+  open(take: RecordedTake, title: string) {
     this.take = take;
     this.root.hidden = false;
     this.rangeIn = take.range?.[0] ?? 0;
@@ -230,10 +239,21 @@ export class Timeline {
     this.hover = null;
     this.root.setAttribute("aria-label", `Take timeline: ${title}`);
     this.curveSel.replaceChildren();
-    for (const [k, label, re] of CURVE_SETS)
-      if (!re || take.meta.hinges.some((j) => re.test(j.name))) this.curveSel.add(new Option(label, k));
+    if (take.mode === "player") {
+      for (const [k, label] of PLAYER_CURVE_SETS) this.curveSel.add(new Option(label, k));
+      const input = take.tracks.input;
+      this.commandLabel = "input";
+      this.commands = [{ name: "fwd", color: CMD_COLORS[0], get: (i) => input[4 * i] },
+                       { name: "side", color: CMD_COLORS[1], get: (i) => input[4 * i + 1] }];
+    } else {
+      for (const [k, label, re] of CURVE_SETS)
+        if (!re || take.meta.hinges.some((j) => re.test(j.name))) this.curveSel.add(new Option(label, k));
+      const cmd = take.cmd;
+      this.commandLabel = "cmd";
+      this.commands = ["vx", "vy", "wz"].map((name, k) => ({ name, color: CMD_COLORS[k], get: (i: number) => cmd[3 * i + k] }));
+    }
     this.cmdScale = 0.1;
-    for (const v of take.cmd) this.cmdScale = Math.max(this.cmdScale, Math.abs(v));
+    for (const c of this.commands) for (let i = 0; i < take.n; i++) this.cmdScale = Math.max(this.cmdScale, Math.abs(c.get(i)));
     this.buildCurves();
     this.setMode(this.mode);
     this.setPlaying(false);
@@ -307,7 +327,7 @@ export class Timeline {
   }
 
   private jumpEvent(dir: 1 | -1) {
-    const ev = this.take?.events ?? [];
+    const ev: readonly RecordedEvent[] = this.take?.events ?? [];
     const e = dir > 0 ? ev.find((x) => x.t > this.time + 1e-4) : [...ev].reverse().find((x) => x.t < this.time - 1e-4);
     this.seek(e ? e.t : dir > 0 ? this.rangeOut : this.rangeIn);
   }
@@ -378,13 +398,15 @@ export class Timeline {
     this.curves = [];
     if (!take) return;
     const set = (this.curveSel.value || "active") as CurveSet;
-    const nq = take.meta.nq, Q = take.qpos;
-    if (set === "base") {
+    if (take.mode === "player") this.buildPlayerCurves(take, set);
+    else if (set === "base") {
+      const nq = take.meta.nq, Q = take.qpos;
       const bq = take.meta.baseQadr;
       if (bq >= 0)
         ["x", "y", "z"].forEach((ax, k) => this.curves.push({
           name: `base ${ax}`, color: CURVE_COLORS[k], get: (i) => Q[i * nq + bq + k] }));
     } else {
+      const nq = take.meta.nq, Q = take.qpos;
       let joints = take.meta.hinges;
       const re = CURVE_SETS.find((c) => c[0] === set)?.[2];
       if (re) joints = joints.filter((j) => re.test(j.name));
@@ -404,6 +426,19 @@ export class Timeline {
     if (!(hi > lo)) { lo = (Number.isFinite(lo) ? lo : 0) - 1; hi = lo + 2; }
     const pad = (hi - lo) * 0.1;
     this.curveRange = [lo - pad, hi + pad];
+  }
+
+  private buildPlayerCurves(take: PlayerTake, set: CurveSet) {
+    const { motion: M, state: S } = take.tracks, add = (name: string, get: (i: number) => number) =>
+      this.curves.push({ name, color: CURVE_COLORS[this.curves.length % CURVE_COLORS.length], get });
+    if (set === "speed") {
+      add("horizontal", (i) => Math.hypot(M[i * 6 + 3], M[i * 6 + 4]));
+      add("vertical", (i) => M[i * 6 + 5]);
+    } else if (set === "view") {
+      add("yaw", (i) => S[i * 10]);
+      add("pitch", (i) => S[i * 10 + 1]);
+    } else if (set === "duck") add("duck", (i) => S[i * 10 + 2]);
+    else ["x", "y", "z"].forEach((ax, k) => add(`origin ${ax}`, (i) => M[i * 6 + k]));
   }
 
   // ---- painting -------------------------------------------------------------
@@ -458,11 +493,11 @@ export class Timeline {
       g.stroke();
     };
     g.lineWidth = 1.3;
-    for (let k = 0; k < 3; k++) {
-      g.strokeStyle = CMD_COLORS[k];
-      visible((i) => take.cmd[3 * i + k], (v) => cy - (v / this.cmdScale) * ch);
+    for (const c of this.commands) {
+      g.strokeStyle = c.color;
+      visible(c.get, (v) => cy - (v / this.cmdScale) * ch);
     }
-    this.legend([["cmd", C.text3], ["vx", CMD_COLORS[0]], ["vy", CMD_COLORS[1]], ["wz", CMD_COLORS[2]]], L.cmd + 2);
+    this.legend([[this.commandLabel, C.text3], ...this.commands.map((c): [string, string] => [c.name, c.color])], L.cmd + 2);
 
     // curves lane
     if (this.curves.length && L.curvesH > 16) {
@@ -477,7 +512,7 @@ export class Timeline {
 
     // input events: diamonds; inputs closer than a few px share one label ("Clip · Hoist on"),
     // labelled while there is room before the next group
-    const evs = take.events, ey = L.events + LANE.events / 2;
+    const evs: readonly RecordedEvent[] = take.events, ey = L.events + LANE.events / 2;
     for (let k = 0; k < evs.length;) {
       const x = this.tX(evs[k].t);
       let j = k + 1;
@@ -566,10 +601,10 @@ export class Timeline {
   }
 
   // ---- pointer --------------------------------------------------------------
-  private eventAt(x: number, y: number): TakeEvent | null {
+  private eventAt(x: number, y: number): RecordedEvent | null {
     const L = this.lanes();
     if (!this.take || y < L.events || y > L.events + LANE.events) return null;
-    let best: TakeEvent | null = null, bd = 7;
+    let best: RecordedEvent | null = null, bd = 7;
     for (const e of this.take.events) { const dd = Math.abs(this.tX(e.t) - x); if (dd < bd) { bd = dd; best = e; } }
     return best;
   }
@@ -645,7 +680,7 @@ export class Timeline {
     }, { passive: false });
   }
 
-  private showTip(e: TakeEvent | null, x: number) {
+  private showTip(e: RecordedEvent | null, x: number) {
     if (!e) { this.tip.style.display = "none"; return; }
     this.tip.replaceChildren(h("b", "", KIND_LABEL[e.kind]), document.createTextNode(` ${e.label}`),
                              h("span", "", `${fmtTime(e.t, 3)} s`));
@@ -674,7 +709,7 @@ export class Timeline {
 }
 
 /** The take's inputs as a clickable list (the inspector column shows it while reviewing). */
-export function eventList(take: Take, title: string, onSeek: (t: number) => void): HTMLElement {
+export function eventList(take: RecordedTake, title: string, onSeek: (t: number) => void): HTMLElement {
   const box = h("div", "take-sum");
   const kv = h("dl", "ins-kv");
   const row = (k: string, v: string) => { kv.append(h("dt", "", k), h("dd", "", v)); };
@@ -682,14 +717,20 @@ export function eventList(take: Take, title: string, onSeek: (t: number) => void
   row("length", `${fmtTime(take.duration)} s · ${take.n} frames`);
   row("rate", `${(1 / take.dt).toFixed(0)} Hz`);
   row("terrain", take.meta.terrain);
-  row("policy", take.meta.policy);
+  if (take.mode === "player") {
+    const robots = new Set(take.entityLifetimes().map((span) => span.id)).size;
+    row("robots", String(robots));
+    row("scene", `${take.epochs.length} ${take.epochs.length === 1 ? "layout" : "layouts"}`);
+  } else row("policy", take.meta.policy);
   box.append(kv);
+  const events: readonly RecordedEvent[] = take.events;
   const head = h("div", "ins-sec", "Inputs");
-  head.append(h("span", "", `${take.events.length}`));
+  head.append(h("span", "", `${events.length}`));
   box.append(head);
-  if (!take.events.length) box.append(h("span", "ins-empty", "No discrete inputs — only the command curve."));
+  if (!events.length) box.append(h("span", "ins-empty", take.mode === "player"
+    ? "No tool, view or robot changes — only movement." : "No discrete inputs — only the command curve."));
   const list = h("div", "take-evs");
-  for (const e of take.events) {
+  for (const e of events) {
     const b = h("button", "take-ev");
     b.type = "button";
     const dot = h("i");

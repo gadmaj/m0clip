@@ -11,7 +11,7 @@
  */
 import { clip, concatF32, matFromWxyz, matTVec, rot6d } from "../math";
 import type { Command, EvalConfig, G1SpeedModes, RemoteActionGroup, RobotSpec } from "../types";
-import type { Engine } from "../../sim/engine";
+import type { EngineScope } from "../../sim/engine";
 import { OnnxPolicy, OnnxSession } from "../policy";
 import { BaseDriver } from "./base";
 
@@ -110,7 +110,7 @@ export class G1LocoDriver extends BaseDriver {
   constructor(
     cfg: EvalConfig,
     spec: RobotSpec,
-    eng: Engine,
+    eng: EngineScope,
     readonly sess: OnnxSession | OnnxPolicy,
     readonly aux: Record<string, OnnxSession> = {},
   ) {
@@ -244,7 +244,7 @@ export class G1LocoDriver extends BaseDriver {
     const spawn = this.maneuver ? this.initPose : this.default;
     const isManeuver = this.maneuver || !!this.groundStartMode;
     const drop = isManeuver
-      ? Array.from({ length: this.eng.model.nbody }, (_, i) => i).filter((i) => i !== 0)
+      ? this.eng.allBodyIds()
       : this.feet;
 
     const dropClearance = this.groundStartMode ? 0.02 : 0.002;
@@ -513,7 +513,7 @@ export class G1MimicDriver extends BaseDriver {
   constructor(
     cfg: EvalConfig,
     spec: RobotSpec,
-    eng: Engine,
+    eng: EngineScope,
     readonly sess: OnnxSession,
     readonly clipData: Float32Array,
     readonly nCols: number,

@@ -55,7 +55,7 @@ function frame(pos: ArrayLike<number>, quat: ArrayLike<number>, i: number) {
 /** Requires reconstructible body frames and the selected family's actual sole surfaces. */
 export function characterCompatible(model: RenderModel, physics: CharacterPhysics): boolean {
   const profile = PHYSICS[physics], b = model.bodyFrames, g = model.geomFrames, n = model.bodyNames.length;
-  if (!profile || (physics === 'r1' ? !model.robot.startsWith('r1') : model.robot !== physics)
+  if (!profile || (physics === 'r1' ? !model.robot?.startsWith('r1') : model.robot !== physics)
       || !b || !g || b.parent.length !== n || b.pos.length !== n*3 ||
       b.quat.length !== n*4 || g.pos.length !== model.ngeom*3 || g.quat.length !== model.ngeom*4 ||
       model.bodyid.length !== model.ngeom) return false;

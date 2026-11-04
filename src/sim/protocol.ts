@@ -13,10 +13,12 @@ import type { TerrainName } from "./terrain";
 import type { FrameGeometryLayout } from './geometry-frames';
 import type { StartupAssetCatalogue, WorkerAssetPlan } from '../loading/asset-plan';
 import type { LocalMapPayload } from '../maps/source';
+import type { SceneEntity } from './entities';
+import type { PlayerInputFrame, PlayerKnifeTiming, PlayerSimFrame, PlayerTool, SceneMode, SourceFrame } from '../player/types';
 
 // ---- main -> worker --------------------------------------------------
 export type ToWorker =
-  | { t: "init"; robot?: string; robotExplicit?: boolean; terrain?: TerrainName; localMap?: LocalMapPayload; policy?: string; loadingId?: number; catalogue?: StartupAssetCatalogue }
+  | { t: "init"; mode?: SceneMode; robot?: string; robotExplicit?: boolean; terrain?: TerrainName; localMap?: LocalMapPayload; policy?: string; loadingId?: number; catalogue?: StartupAssetCatalogue; playerTools?: PlayerTool[]; knifeTiming?: PlayerKnifeTiming }
   | { t: 'loadingProceed'; generation: number; token: string }
   | { t: "loadingFinished"; generation: number }
   | { t: "policy"; name: string }
@@ -27,6 +29,13 @@ export type ToWorker =
   | { t: "terrain"; terrain: TerrainName; request:number; commit:true }
   | { t: 'cancelTerrain' }
   | { t: "command"; cmd: Command }
+  | { t: 'playerInput'; input: PlayerInputFrame }
+  | { t: 'playerTool'; tool: PlayerTool }
+  | { t: 'playerInspect' }
+  | { t: 'playerWheel'; direction: number }   // signed wheel clicks: wheel up (positive) pushes a held object farther
+  | { t: 'playerSpawnRobot'; robot: string }
+  | { t: 'playerUndo' }
+  | { t: 'playerStop' }
   | { t: "reset" }
   | { t: "noclip"; on: boolean }
   | { t: "noclipStep"; delta: [number, number, number] } // render-frame displacement in metres
@@ -52,8 +61,11 @@ export type ToWorker =
 /** Everything the renderer needs to build the scene, copied out of the model
  * (typed arrays are structured-clone copies, not wasm views). */
 export interface RenderModel {
+  mode: SceneMode;
   terrain?: TerrainName;
-  robot: string;           // active robot (r1* / go2 → paint palette, else model rgba)
+  robot: string | null;    // null in a genuine Player world, never an inactive dummy robot
+  entities?: readonly SceneEntity[];
+  sourceFrame?: SourceFrame;
   ngeom: number;
   type: Int32Array;        // ngeom
   size: Float64Array;      // 3*ngeom
@@ -78,7 +90,7 @@ export interface RenderModel {
   hinges: { name: string; qadr: number }[];   // every hinge joint, model order
 }
 /** The actual compiled compatibility boundary, available before replacing an active engine. */
-export type SceneIdentity = Pick<RenderModel,'robot'|'terrain'|'ngeom'|'nq'|'baseQadr'|'hinges'>;
+export type SceneIdentity = Pick<RenderModel,'mode'|'robot'|'terrain'|'ngeom'|'nq'|'baseQadr'|'hinges'|'entities'|'sourceFrame'>;
 
 export interface PolicyInfo {
   name: string; family: string; dof: number; group: string;
@@ -142,7 +154,12 @@ export type FromWorker =
   /** Geom rows are ascending original IDs excluding `model.geometry.fixedIds`; qpos is complete.
    * `clock` advances by each posted simulation step, preserving recorded time under load. */
   | { t: "frame"; xpos: Float32Array; xmat: Float32Array; baseX: number; baseY: number;
-      hoistAnchor?: [number, number, number] | null; clock: number; qpos: Float64Array }
+      hoistAnchor?: [number, number, number] | null; clock: number; qpos: Float64Array; player?: PlayerSimFrame }
+  | { t: 'playerStatus'; tool: PlayerTool; availableTools: PlayerTool[]; spawnRobot: string; robotCount: number; maxRobots: number;
+      /** Robot variants an imported policy pack can actually run; only these are offered to spawn. */
+      spawnRobots: string[];
+      /** Cumulative simulated seconds the real-time accumulator dropped because the worker fell behind. */
+      lostTime?: number }
   | StatusMsg
   | InspectMsg
   | { t: "busy"; msg: string }

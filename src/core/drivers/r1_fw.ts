@@ -42,7 +42,7 @@
  */
 import { clip, matFromWxyz, matTVec } from "../math";
 import type { Command, EvalConfig, RobotSpec } from "../types";
-import type { Engine } from "../../sim/engine";
+import type { EngineScope } from "../../sim/engine";
 import { OnnxSession } from "../policy";
 import { loadTraj } from "../assets";
 import { selectedDriverAssets } from '../driver-assets';
@@ -93,7 +93,7 @@ abstract class R1FwBase extends BaseDriver {
   /** set by a switch combo: the worker hands over to it (like the firmware's state change) */
   nextPolicy?: string;
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine) {
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope) {
     super(cfg, spec, eng);
     this.r = r1fw(cfg);
     this.map = Int32Array.from(this.r.joint_names.map((n) => {
@@ -165,7 +165,7 @@ export class R1AmpLocoDriver extends R1FwBase {
   private readonly nAct: number;
   model = "default";
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine, readonly net: OnnxSession,
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope, readonly net: OnnxSession,
               readonly aux: Record<string, OnnxSession>) {
     super(cfg, spec, eng);
     const r = this.r as R1FwCfg & { action_idx: number[]; default_joint_pos: number[]; action_scale: number[];
@@ -330,7 +330,7 @@ export class R1AmpMotionDriver extends R1FwBase {
   private walkModel = false;
   private highProfile = false;
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine, readonly net: OnnxSession,
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope, readonly net: OnnxSession,
               readonly aux: Record<string, OnnxSession>) {
     super(cfg, spec, eng);
     const r = this.r as R1FwCfg & { dof_activated_idx: number[]; default_dof_pos: number[]; action_scale: number | number[];
@@ -482,7 +482,7 @@ export class R1GaitDriver extends R1FwBase {
   private armFrom!: Float32Array; private armTo!: Float32Array; private armLast!: Float32Array;
   private rng = 1;
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine, readonly net: OnnxSession) {
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope, readonly net: OnnxSession) {
     super(cfg, spec, eng);
     const r = this.r as R1FwCfg & { action_joint_idx?: number[]; default_dof_pos: number[]; action_scale: number;
       kp: number[]; kd: number[]; vel_range: number[]; default_vx_forward_limit: number; angular_coupling_strength: number;
@@ -675,7 +675,7 @@ export class R1TrackDriver extends R1FwBase {
   private upzFail = 0;
   private motions: Record<string, { data: Float32Array; nRows: number; nCols: number }>;
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine, readonly net: OnnxSession,
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope, readonly net: OnnxSession,
               readonly aux: Record<string, OnnxSession>,
               motions: Record<string, { data: Float32Array; nRows: number; nCols: number }>) {
     super(cfg, spec, eng);
@@ -752,7 +752,7 @@ export class R1TrackDriver extends R1FwBase {
       // get-up packs start lying (face-down / face-up), joints at the default pose
       this.groundStart = true;
       const s = Math.SQRT1_2, quat = pose === "facedown" ? [s, 0, s, 0] : [s, 0, -s, 0];
-      const all = Array.from({ length: this.eng.model.nbody }, (_, i) => i).filter((i) => i !== 0);
+      const all = this.eng.allBodyIds();
       this.seat(this.default, quat, all, 0.02);
     } else super.reset();
     this.last.fill(0); this.damped = false; this.upzFail = 0;
@@ -879,7 +879,7 @@ export class R1MimicDriver extends R1FwBase {
   private queue: number[] = [];
   private pending: string[] = [];
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine, readonly net: OnnxSession,
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope, readonly net: OnnxSession,
               readonly aux: Record<string, OnnxSession>,
               files: Record<string, { data: Float32Array; nRows: number; nCols: number }>) {
     super(cfg, spec, eng);
@@ -1090,7 +1090,7 @@ export class R1SimpleDriver extends R1FwBase {
   private k = 0;
   private readonly sc: { ang: number; dq: number; act: number; lo: number; hi: number; mem: number };
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine, readonly net: OnnxSession,
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope, readonly net: OnnxSession,
               files: Record<string, { data: Float32Array; nRows: number; nCols: number }>) {
     super(cfg, spec, eng);
     const r = this.r as R1FwCfg & { default_dof_pos: number[]; kp: number[]; kd: number[]; ang_vel_scale: number;
@@ -1155,7 +1155,7 @@ function yawQ(q: number[]): number[] {
 function quatMat(q: number[]): number[] { return Array.from(matFromWxyz(q)); }
 
 /** Driver factory for packs with an `r1:` block and `firmware: true` (called from makeDriver). */
-export async function makeR1FwDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine): Promise<BaseDriver> {
+export async function makeR1FwDriver(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope): Promise<BaseDriver> {
   const r = r1fw(cfg);
   const assets = selectedDriverAssets(cfg);
   const net = await OnnxSession.load(assets.policy);

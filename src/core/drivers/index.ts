@@ -4,7 +4,7 @@
  * the g1*.ts drivers picked by `g1.obs_scheme`. */
 import { OnnxPolicy, OnnxSession, withPolicySessions } from "../policy";
 import type { EvalConfig, RobotSpec } from "../types";
-import type { Engine } from "../../sim/engine";
+import type { EngineScope } from "../../sim/engine";
 import { loadTraj } from "../assets";
 import { selectedDriverAssets } from '../driver-assets';
 import { BaseDriver } from "./base";
@@ -20,7 +20,7 @@ import { makeGo2FwDriver } from "./go2_fw";
 
 export type { BaseDriver };
 
-export async function makeDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine):
+export async function makeDriver(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope):
     Promise<BaseDriver> {
   return withPolicySessions(async () => {
     const driver = await createDriver(cfg, spec, eng);
@@ -32,7 +32,7 @@ export async function makeDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine):
   });
 }
 
-async function createDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine):
+async function createDriver(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope):
     Promise<BaseDriver> {
   const fam = cfg.family;
   const assets = selectedDriverAssets(cfg), policyUrl = assets.policy;
