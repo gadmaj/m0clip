@@ -187,8 +187,9 @@ class App {
    * saved view that needs the current robot leaves it null and the choice is refused. */
   private mapRobotChoice:'now'|'later'|null=null;
   private deferredRobot:string|null=null;
-  /** The latest robot sent to the worker; earlier rebuilds' statuses must not show an older choice. */
+  /** The robot of the latest robot command, until the worker acknowledges that exact command. */
   private requestedRobot:string|null=null;
+  private robotRequest=0;
   /** Modal surfaces own keyboard, pointer and gamepad input. */
   private get inputBlocked() { return launch.active || this.mapPreparing || !!this.pendingMap || !!document.querySelector('dialog[data-local-map][open]') || !!this.help?.isOpen || !!this.shotLibrary?.isOpen || VisualPicker.active; }
   /** Flight and the live Player camera own the viewport camera; orbit controls stay off. */
@@ -824,11 +825,12 @@ class App {
   private chooseRobot(robot:string){
     if(this.timeline.isOpen||this.exporting)return;
     const apply=()=>{
+      if(this.timeline.isOpen||this.exporting){if(this.status)this.panel.setRobots(this.status.robots,this.deferredRobot??this.status.robot);return;}
       if(!this.mapPreparing||this.mapRobotChoice==='now'){
         if(this.noclip)this.setNoclip(false);this.heldView=false;
+        const request=++this.robotRequest;this.requestedRobot=robot;
         // `send` holds live controls during a map change; this rebuild precedes the map's worker job.
-        this.requestedRobot=robot;
-        if(this.mapPreparing)this.worker.postMessage({t:'robot',robot});else this.send({t:'robot',robot});
+        if(this.mapPreparing)this.worker.postMessage({t:'robot',robot,request});else this.send({t:'robot',robot,request});
       }else if(this.mapRobotChoice==='later')this.deferredRobot=robot;
       else if(this.status)this.panel.setRobots(this.status.robots,this.status.robot);
     };
@@ -2542,12 +2544,17 @@ class App {
       case 'robotPlacementFailed':
         if (this.placingRobot) { this.placementPending = false; document.getElementById('flight-hint')!.textContent = m.msg; }
         return;
+      case 'robotSettled':
+        // Only the latest robot command retires the shown choice; its status (or a failure) came first.
+        if (m.request === this.robotRequest && this.requestedRobot !== null) {
+          this.requestedRobot = null;
+          if (this.status) this.panel.setRobots(this.status.robots, this.deferredRobot ?? this.status.robot);
+        }
+        return;
       case "policyFinished": return this.panel.showPolicyFinished(m.policy,m.active);
       case "notice": return this.showOverlay(m.msg, "notice");
       case "error":
         this.workerBusy = false; this.syncPolicyActions();
-        // A failed rebuild leaves the running robot authoritative again.
-        if (this.requestedRobot !== null) { this.requestedRobot = null; if (this.status) this.panel.setRobots(this.status.robots, this.deferredRobot ?? this.status.robot); }
         // A Player world keeps running after a failed spawn, remove or map change; only the request failed.
         if (this.player && !launch.active) {
           const pending = this.pendingMap;
@@ -2590,8 +2597,7 @@ class App {
       if (!s.playback) this.statusInput("state", s.state);
       if (s.hoist !== undefined) this.statusInput("hoist", s.hoist);
     }
-    // A choice queued behind a map change stays shown until it is applied.
-    if (this.requestedRobot === s.robot) this.requestedRobot = null;
+    // A queued choice, or the latest unacknowledged robot command, stays shown over earlier rebuilds.
     if (!prev || prev.robots.join() !== s.robots.join() || prev.robot !== s.robot)
       this.panel.setRobots(s.robots, this.deferredRobot ?? this.requestedRobot ?? s.robot);
     let policyOptionsChanged = !prev || prev.policies.length !== s.policies.length;

@@ -721,8 +721,10 @@ class SimWorker {
         this.fsm.enter(m.state);
         return this.sendStatus();
       case "robot":
-        await this.setRobot(m.robot);
-        return this.reenter();
+        try {
+          await this.setRobot(m.robot);
+          return await this.reenter();
+        } finally { if (m.request !== undefined) post({ t: 'robotSettled', request: m.request }); }
       case "terrain": {
         this.busy = true;
         const previous={terrain:this.terrain,source:this.activeMap,robot:this.robot,policies:this.policies,polIdx:this.polIdx,playback:this.playback};
