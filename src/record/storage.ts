@@ -254,14 +254,21 @@ export function collectScene(tx: IDBTransaction, request: RequestReceiver, scene
   };
   next(0);
 }
-/** Add Player epoch scenes and their mesh bodies unless already stored. */
+/** Add Player epoch scenes and their mesh bodies unless already stored. Epochs can share a body that
+ * is not stored yet; its existence check and insert are queued once, because IndexedDB answers every
+ * queued check before any insert a callback adds, and a second add of one key aborts the transaction. */
 export function putPlayerScenes(tx: IDBTransaction, request: RequestReceiver, list: { id: string; terrain: string; packed: PackedScene }[]): void {
   const sceneStore = tx.objectStore('scenes'), meshes = tx.objectStore('meshes');
+  const admitted = new Set<string>();
   for (const { id, terrain, packed } of list) {
     request(sceneStore.getKey(id), key => {
       if (key !== undefined) return;
       sceneStore.add({ id, terrain, model: packed.model, meshIds: packed.bodies.map(b => b.id) } satisfies PackedSceneRecord);
-      for (const body of packed.bodies) request(meshes.getKey(body.id), have => { if (have === undefined) meshes.add(body satisfies MeshBody); });
+      for (const body of packed.bodies) {
+        if (admitted.has(body.id)) continue;
+        admitted.add(body.id);
+        request(meshes.getKey(body.id), have => { if (have === undefined) meshes.add(body satisfies MeshBody); });
+      }
     });
   }
 }
