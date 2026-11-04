@@ -1,8 +1,8 @@
 /** Camera banking survives interpolation and .take files; legacy tracks keep their layout. */
-import assert from 'node:assert/strict';import{build}from'esbuild';import{mkdir,rm}from'node:fs/promises';import{resolve}from'node:path';import * as THREE from'three';import{unzipSync,zipSync}from'fflate';
+import assert from 'node:assert/strict';import buildFixture from'./build-fixture.cjs';import{mkdir,rm,writeFile}from'node:fs/promises';import{resolve}from'node:path';import * as THREE from'three';import{unzipSync,zipSync}from'fflate';
 const dir=resolve('node_modules/.cache'),file=resolve(dir,'camera-recording-test.mjs');await mkdir(dir,{recursive:true});
 try{
- await build({stdin:{contents:"export * from './src/core/geometry';export * from './src/record/take';export * from './src/record/shot';",resolveDir:process.cwd()},bundle:true,packages:'external',format:'esm',platform:'node',outfile:file});
+ await writeFile(file,(await buildFixture({root:process.cwd(),source:"export * from './src/core/geometry';export * from './src/record/take';export * from './src/record/shot';",platform:'node',format:'es',externalPackages:true})).code);
  const{denseGeometryPartition,Take,TakeRecorder,ShotPath,defaultShot,saveTake,loadTake,CAM_STRIDE}=await import(file);
  const meta={robot:'r1',terrain:'flat',policy:'test',created:new Date(0).toISOString(),ngeom:1,nq:7,baseQadr:0,hinges:[]};
  const camera=new THREE.PerspectiveCamera();camera.up.set(0,0,1);camera.position.set(2,-2,1);camera.lookAt(0,0,1);const level=camera.quaternion.clone();

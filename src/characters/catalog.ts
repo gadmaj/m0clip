@@ -2,20 +2,30 @@
 import { KIT_LABELS, KIT_STYLES, type KitStyle } from '../render/robot-kit-data';
 import type { CharacterAttribution, CharacterDefinition, CharacterPhysics } from '../render/characters/types';
 import { decodePmodelId, type PmodelId } from './pmodels';
-import gingerbreadNotice from '../../public/assets/characters/gingerbread-man/attribution.json';
-import wrappedNotice from '../../public/assets/characters/the-wrapped/attribution.json';
-import wrappedRig from '../../public/assets/characters/the-wrapped/rig.json';
-import skeletonNotice from '../../public/assets/characters/psx-low-poly-skeleton/attribution.json';
-import skeletonRig from '../../public/assets/characters/psx-low-poly-skeleton/rig.json';
-import ralph from '../../public/assets/characters/ralph/definition.json';
-import dragon from '../../public/assets/characters/dragon-wyvern/definition.json';
-import solus from '../../public/assets/characters/solus/definition.json';
-import psxCharacters from '../../public/assets/characters/characters-psx/catalog.json';
-import horror from '../../public/assets/characters/psx-horror-entity/definition.json';
-import bot02 from '../../public/assets/characters/bot-02/definition.json';
-import ronin01 from '../../public/assets/characters/ronin-01/definition.json';
-import malePsx from '../../public/assets/characters/male-psx-yugg0/definition.json';
-import psxDog from '../../public/assets/characters/psx-dog/definition.json';
+const generated = import.meta.glob<unknown>([
+  '../../public/assets/characters/{gingerbread-man,the-wrapped,psx-low-poly-skeleton}/attribution.json',
+  '../../public/assets/characters/{the-wrapped,psx-low-poly-skeleton}/rig.json',
+  '../../public/assets/characters/{ralph,dragon-wyvern,solus,psx-horror-entity,bot-02,ronin-01,male-psx-yugg0,psx-dog}/definition.json',
+  '../../public/assets/characters/characters-psx/catalog.json',
+], { eager: true, import: 'default' });
+
+function metadata<T>(path: string): T | undefined {
+  return generated[`../../public/assets/characters/${path}`] as T | undefined;
+}
+const gingerbreadNotice = metadata<ConvertedNotice>('gingerbread-man/attribution.json');
+const wrappedNotice = metadata<ConvertedNotice>('the-wrapped/attribution.json');
+const wrappedRig = metadata<CharacterDefinition['rig']>('the-wrapped/rig.json');
+const skeletonNotice = metadata<ConvertedNotice>('psx-low-poly-skeleton/attribution.json');
+const skeletonRig = metadata<CharacterDefinition['rig']>('psx-low-poly-skeleton/rig.json');
+const ralph = metadata<CharacterDefinition>('ralph/definition.json');
+const dragon = metadata<CharacterDefinition>('dragon-wyvern/definition.json');
+const solus = metadata<CharacterDefinition>('solus/definition.json');
+const psxCharacters = metadata<Record<string, CharacterDefinition>>('characters-psx/catalog.json');
+const horror = metadata<CharacterDefinition>('psx-horror-entity/definition.json');
+const bot02 = metadata<CharacterDefinition>('bot-02/definition.json');
+const ronin01 = metadata<CharacterDefinition>('ronin-01/definition.json');
+const malePsx = metadata<CharacterDefinition>('male-psx-yugg0/definition.json');
+const psxDog = metadata<CharacterDefinition>('psx-dog/definition.json');
 
 interface ConvertedNotice {
   name: string; creator: string; sourceUrl: string; license: string; licenseUrl: string;
@@ -27,8 +37,10 @@ function notice(value: ConvertedNotice): CharacterAttribution {
     modifications: typeof value.modifications === 'string' ? [value.modifications] : value.modifications };
 }
 
-export const AUTHORED_CHARACTERS = {
-  'gingerbread-man': {
+export const AUTHORED_CHARACTERS: Record<string, CharacterDefinition> = {};
+
+if (gingerbreadNotice) {
+  AUTHORED_CHARACTERS['gingerbread-man'] = {
     id: 'gingerbread-man', label: 'Gingerbread Man',
     url: '/assets/characters/gingerbread-man/gingerbread-man-512.glb',
     preview: '/assets/characters/gingerbread-man/preview.min.png',
@@ -51,28 +63,32 @@ export const AUTHORED_CHARACTERS = {
       },
       feet: ['foot.L', 'foot.R'],
     },
-  },
-  'the-wrapped': {
+  };
+}
+if (wrappedNotice && wrappedRig) {
+  AUTHORED_CHARACTERS['the-wrapped'] = {
     id: 'the-wrapped', label: 'The Wrapped', url: '/assets/characters/the-wrapped/the-wrapped-512.glb',
     preview: '/assets/characters/the-wrapped/preview.min.png', attribution: notice(wrappedNotice),
     rig: wrappedRig,
-  },
-  'psx-low-poly-skeleton': {
+  };
+}
+if (skeletonNotice && skeletonRig) {
+  AUTHORED_CHARACTERS['psx-low-poly-skeleton'] = {
     id: 'psx-low-poly-skeleton', label: 'Skeleton',
     url: '/assets/characters/psx-low-poly-skeleton/psx-low-poly-skeleton-512.glb',
     preview: '/assets/characters/psx-low-poly-skeleton/preview.min.png', attribution: notice(skeletonNotice),
     rig: skeletonRig,
-  },
-  ralph,
-  'dragon-wyvern': dragon,
-  solus,
-  'psx-horror-entity': horror,
-  'bot-02': bot02,
-  'ronin-01': ronin01,
-  'male-psx-yugg0': malePsx,
-  'psx-dog': { ...psxDog, physics: 'go2' },
-  ...psxCharacters,
-} satisfies Record<string, CharacterDefinition>;
+  };
+}
+if (ralph) AUTHORED_CHARACTERS.ralph = ralph;
+if (dragon) AUTHORED_CHARACTERS['dragon-wyvern'] = dragon;
+if (solus) AUTHORED_CHARACTERS.solus = solus;
+if (horror) AUTHORED_CHARACTERS['psx-horror-entity'] = horror;
+if (bot02) AUTHORED_CHARACTERS['bot-02'] = bot02;
+if (ronin01) AUTHORED_CHARACTERS['ronin-01'] = ronin01;
+if (malePsx) AUTHORED_CHARACTERS['male-psx-yugg0'] = malePsx;
+if (psxDog) AUTHORED_CHARACTERS['psx-dog'] = { ...psxDog, physics: 'go2' };
+if (psxCharacters) Object.assign(AUTHORED_CHARACTERS, psxCharacters);
 
 export type AuthoredCharacterId = keyof typeof AUTHORED_CHARACTERS;
 export type BodyVisual = 'stock' | 'dog' | AuthoredCharacterId | PmodelId;

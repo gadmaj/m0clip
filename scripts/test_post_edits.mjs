@@ -1,8 +1,8 @@
 /** Real recorded tracks survive non-destructive edits, zip persistence and punctual-light export. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { build } from 'esbuild';
-import { mkdir, rm } from 'node:fs/promises';
+import buildFixture from './build-fixture.cjs';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { unzipSync, zipSync } from 'fflate';
 import * as THREE from 'three';
@@ -11,7 +11,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 const file = resolve('node_modules/.cache/post-edits-test.mjs');
 await mkdir(resolve('node_modules/.cache'), { recursive: true });
 try {
-  await build({ stdin: { contents: "export * from './src/core/geometry';export * from './src/record/take';export * from './src/record/post';export * from './src/render/display';export {validMeta} from './src/record/storage';export {ShotPath} from './src/record/shot';export {shotLightObjects} from './src/render/shot-lights';export {exportGlb} from './src/record/export-blender';", resolveDir: process.cwd() }, bundle: true, packages: 'external', platform: 'node', format: 'esm', outfile: file });
+  await writeFile(file, (await buildFixture({ root: process.cwd(), source: "export * from './src/core/geometry';export * from './src/record/take';export * from './src/record/post';export * from './src/render/display';export {validMeta} from './src/record/storage';export {ShotPath} from './src/record/shot';export {shotLightObjects} from './src/render/shot-lights';export {exportGlb} from './src/record/export-blender';", platform: 'node', format: 'es', externalPackages: true })).code);
   const { GeometryTrack, denseGeometryPartition, Take, TakeRecorder, saveTake, loadTake, motionCsv, validTakeRange, ShotPath, validLook, validShotLight, validShotLights, validShotEdits, MAX_SHOT_LIGHTS, shotLightObjects, DEFAULT_DISPLAY, validDisplay, normalizeDisplay, effectiveVisualState, validMeta, exportGlb } = await import(file);
   const lighting = { sunAzimuth: 27, sunElevation: 61, sunIntensity: 1.5, sunColor: 0xffffff, ambient: .8, skyColor: 0xdfeaf5, groundColor: 0x1a2028, fill: .7, reflections: .55, exposure: 1, shadows: false, background: 0x0b0e12 };
   const meta = { robot: 'r1', terrain: 'flat', policy: 'recorded', created: new Date(0).toISOString(), ngeom: 1, nq: 8, baseQadr: 0, hinges: [{ name: 'elbow', qadr: 7 }], sourceHead: 'ghost', appearance: { colorway: 'product', parts: {}, sourceBody: 'stock' }, look: { preset: 'studio', custom: lighting, antialiasing: 'fxaa' } };

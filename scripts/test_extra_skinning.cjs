@@ -6,12 +6,12 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { build } = require('esbuild');
+const buildFixture = require('./build-fixture.cjs');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
 (async () => {
-  const bundle = await build({
-    stdin: { resolveDir: path.resolve(__dirname, '..'), sourcefile: 'extra-skin-fixture.ts', contents: `
+  const bundle = await buildFixture({
+    root: path.resolve(__dirname, '..'), source: `
       import * as THREE from 'three';
       import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
       import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
@@ -165,8 +165,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       check(rowIndex===weightSnapshot.length && maxWeightError<2e-6,'Gingerbread GLB roundtrip changed weights');
       result.gingerbread={overFour,maximum,vertices,maxInputWeightError,maxWeightError};
       renderer.dispose(); window.results=result; window.done=true;
-    ` },
-    bundle: true, format: 'esm', platform: 'browser', write: false,
+    `,
+    platform: 'browser', format: 'es',
   });
   const browser = await chromium.launch({ executablePath: process.env.CHROME_BIN || '/usr/bin/google-chrome', headless: true,
     args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
@@ -175,7 +175,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     page.on('pageerror', error => errors.push(error.stack??error.message));
     page.on('console', message => { if (['error', 'warning'].includes(message.type())) diagnostics.push(message.text()); });
     await page.route('http://m0clip.test/', route => route.fulfill({contentType:'text/html',body:'<!doctype html><script type="module" src="/fixture.js"></script>'}));
-    await page.route('http://m0clip.test/fixture.js', route => route.fulfill({contentType:'text/javascript',body:bundle.outputFiles[0].text}));
+    await page.route('http://m0clip.test/fixture.js', route => route.fulfill({contentType:'text/javascript',body:bundle.code}));
     await page.route('http://m0clip.test/gingerbread.glb', route => route.fulfill({contentType:'model/gltf-binary',body:fs.readFileSync(path.resolve(__dirname,'../public/assets/characters/gingerbread-man/gingerbread-man-512.glb'))}));
     await page.route('http://m0clip.test/assets/source/flashlight.png', route => route.fulfill({contentType:'image/png',body:fs.readFileSync(path.resolve(__dirname,'../public/assets/source/flashlight.png'))}));
     await page.goto('http://m0clip.test/');

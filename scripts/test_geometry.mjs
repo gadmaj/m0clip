@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { build } from 'esbuild';
+import buildFixture from './build-fixture.cjs';
 import { zipSync, unzipSync } from 'fflate';
 const file = resolve('node_modules/.cache/geometry-test.mjs');
 await mkdir(resolve('node_modules/.cache'), { recursive: true });
 try {
-  await build({ stdin: { contents: "export * from './src/core/geometry';export * from './src/record/take';", resolveDir: process.cwd() }, bundle: true, packages: 'external', platform: 'node', format: 'esm', outfile: file });
+  await writeFile(file, (await buildFixture({ root: process.cwd(), source: "export * from './src/core/geometry';export * from './src/record/take';", platform: 'node', format: 'es', externalPackages: true })).code);
   const { GeometryTrack, Take, TakeRecorder, denseGeometryPartition, validGeometryPartition, validGeometryData, saveTake, loadTake } = await import(file);
   const meta = { robot: 'unknown-legacy', model: 'Display label', terrain: 'flat', policy: 'test', created: '2026-01-01', ngeom: 4, nq: 0, baseQadr: -1, hinges: [] };
   const row = x => [x, x + 1, x + 2, 1, 0, 0, 0];

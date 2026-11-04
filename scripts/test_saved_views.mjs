@@ -1,7 +1,7 @@
 /** Shareable views preserve visual state while accepting old camera-only bookmarks. */
-import assert from 'node:assert/strict';import{build}from'esbuild';
-const result=await build({stdin:{contents:"export {validView,viewLink,sharedView} from './src/ui/explore';export {STUDIO} from './src/render/scene';",resolveDir:process.cwd()},bundle:true,platform:'node',format:'esm',write:false});
-const{validView,viewLink,sharedView,STUDIO}=await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
+import assert from 'node:assert/strict';import buildFixture from'./build-fixture.cjs';
+const result=await buildFixture({root:process.cwd(),source:"export {validView,viewLink,sharedView} from './src/ui/explore';export {STUDIO} from './src/render/scene';",platform:'node',format:'es'});
+const{validView,viewLink,sharedView,STUDIO}=await import('data:text/javascript;base64,'+Buffer.from(result.code).toString('base64'));
 const legacy={version:1,robot:'r1',terrain:'flat',position:[2,-2,1],target:[0,0,.7],fov:60,display:{textures:true,wireframe:false,map:true,robot:true},flashlight:false,look:{preset:'auto',custom:STUDIO}};
 assert.ok(validView(legacy));assert.deepEqual(sharedView(new URL(viewLink(legacy,'https://example.test/')).hash),legacy);
 for(const wireframe of [false,true])for(const characterWireframe of [false,true]) {

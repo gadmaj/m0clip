@@ -1,6 +1,6 @@
 /** Actual Chrome IndexedDB, isolated origin/profile. Run: node scripts/test_shot_library.cjs */
 const assert = require('node:assert/strict');
-const { build } = require('esbuild');
+const buildFixture = require('./build-fixture.cjs');
 const { createServer } = require('node:http');
 const { once } = require('node:events');
 const { mkdtemp, rm } = require('node:fs/promises');
@@ -12,11 +12,11 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   const profile = await mkdtemp(join(tmpdir(), 'm0clip-shot-idb-'));
   let context, server;
   try {
-    const built = await build({ stdin: { contents: "import {ShotLibrary} from './src/record/library';import {Take,TakeRecorder,saveTake,loadTake,motionCsv,validTakeRange} from './src/record/take';import {ShotPath} from './src/record/shot';import {Timeline} from './src/record/timeline';import {GeometryTrack} from './src/core/geometry';globalThis.fixture={ShotLibrary,Take,TakeRecorder,saveTake,loadTake,motionCsv,validTakeRange,ShotPath,Timeline,GeometryTrack};", resolveDir: process.cwd() }, bundle: true, platform: 'browser', format: 'iife', write: false });
+    const built = await buildFixture({ root: process.cwd(), source: "import {ShotLibrary} from './src/record/library';import {Take,TakeRecorder,saveTake,loadTake,motionCsv,validTakeRange} from './src/record/take';import {ShotPath} from './src/record/shot';import {Timeline} from './src/record/timeline';import {GeometryTrack} from './src/core/geometry';globalThis.fixture={ShotLibrary,Take,TakeRecorder,saveTake,loadTake,motionCsv,validTakeRange,ShotPath,Timeline,GeometryTrack};", platform: 'browser', format: 'iife' });
     server = createServer((request, response) => {
       response.setHeader('Cache-Control', 'no-store');
       response.setHeader('Content-Type', request.url === '/fixture.js' ? 'text/javascript' : 'text/html');
-      response.end(request.url === '/fixture.js' ? built.outputFiles[0].contents : '<!doctype html><title>Shot library IndexedDB fixture</title><script src="/fixture.js"></script>');
+      response.end(request.url === '/fixture.js' ? built.code : '<!doctype html><title>Shot library IndexedDB fixture</title><script src="/fixture.js"></script>');
     });
     server.listen(0, '127.0.0.1'); await once(server, 'listening');
     const origin = `http://127.0.0.1:${server.address().port}`;

@@ -5,13 +5,13 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { build } = require('esbuild');
+const buildFixture = require('./build-fixture.cjs');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
 (async () => {
   const root = path.resolve(__dirname, '..');
-  const bundle = await build({
-    stdin: { resolveDir: root, sourcefile: 'character-body-fixture.ts', contents: `
+  const bundle = await buildFixture({
+    root, source: `
       import * as THREE from 'three';
       import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
       import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
@@ -150,7 +150,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         results[id]={surfaces:source.length,rigid:rigid.length,skins:skins.length,bones:bonePose.length,triangles:count/3,parts:body.partNames(),nativeClips:loaded.animations.length};
       }
       window.results=results;window.done=true;
-    ` },bundle:true,format:'esm',platform:'browser',write:false,
+    `, platform: 'browser', format: 'es',
   });
   const browser = await chromium.launch({executablePath:process.env.CHROME_BIN || '/usr/bin/google-chrome',headless:true,
     args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
@@ -158,7 +158,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     const page=await browser.newPage(),errors=[];
     page.on('pageerror',e=>errors.push(e.stack??e.message));
     await page.route('http://m0clip.test/',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><script type="module" src="/fixture.js"></script>'}));
-    await page.route('http://m0clip.test/fixture.js',route=>route.fulfill({contentType:'text/javascript',body:bundle.outputFiles[0].text}));
+    await page.route('http://m0clip.test/fixture.js',route=>route.fulfill({contentType:'text/javascript',body:bundle.code}));
     await page.route('http://m0clip.test/assets/characters/**',route=>{
       const file=path.join(root,'public',new URL(route.request().url()).pathname);
       return route.fulfill({contentType:file.endsWith('.glb')?'model/gltf-binary':'application/octet-stream',body:fs.readFileSync(file)});
