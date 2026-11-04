@@ -794,9 +794,7 @@ class App {
       }else this.worker.postMessage({t:'terrain',terrain,robot,request:id,localMap:source?.payload});
       await promise;
     }catch(error){
-      // A failed or cancelled map request ends the worker's busy state without a "ready".
       if(this.pendingMap===pending){this.pendingMap=null;stage?.dispose();this.worker.postMessage({t:'cancelTerrain'});this.overlay.classList.add('hidden');}
-      this.workerBusy=false;
       throw error;
     }finally{signal?.removeEventListener('abort',cancel);}
     }finally{this.mapPreparing=false;this.syncPolicyActions();this.updateCaptureNavigationNotice();}
@@ -2378,6 +2376,8 @@ class App {
       case 'loadingPlan': void this.prepareStartupAssets(m.plan); return;
       case 'loading': return launch.receiveTransfers(m.generation, m.updates);
       case 'terrainPrepared': {
+        // Worker jobs are serialized: a terrain result ends its busy state, which has no "ready".
+        this.workerBusy=false;this.syncPolicyActions();
         const pending=this.pendingMap;
         if(!pending||pending.id!==m.request)return;
         try{
@@ -2392,6 +2392,7 @@ class App {
         return;
       }
       case 'terrainFailed': {
+        this.workerBusy=false;this.syncPolicyActions();
         const pending=this.pendingMap;if(!pending||pending.id!==m.request)return;
         this.pendingMap=null;pending.stage?.dispose();pending.reject(new Error(m.msg));
         this.overlay.classList.add('hidden');this.panel.setTerrain(this.model?.terrain??'flat');return;
