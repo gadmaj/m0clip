@@ -206,7 +206,11 @@ assert.equal(assetName('https://scene.test/assets/models/r1/scene%20a.xml?x=1'),
 assert.equal(detailText('Failed [https://user:secret@cdn.test/model.glb?sig=private]'), 'Failed [cdn.test/model.glb]',
   'A bracketed absolute URL loses credentials and query');
 assert.equal(detailText('Failed (https://user:secret@cdn.test/a/model.glb#frag) then x=https://cdn.test/b.zip?sig=1.'),
-  'Failed (cdn.test/a/model.glb) then x=cdn.test/b.zip', 'An absolute URL is sanitized after any character');
+  'Failed (cdn.test/a/model.glb) then x=cdn.test/b.zip.', 'An absolute URL is sanitized after any character');
+assert.equal(detailText('Failed http://[::1]/model.glb?token=private'), 'Failed [::1]/model.glb',
+  'An IPv6 host keeps its brackets inside the URL and the query is still removed');
+assert.equal(detailText('Failed [https://u:p(a)ss@cdn.test/a(1)/m.glb?t=(x)]'), 'Failed [cdn.test/a(1)/m.glb]',
+  'Parentheses inside a URL do not end it; only the unmatched wrapper bracket does');
 assert.equal(detailText('Model [/assets/models/r1/scene.xml?x=1] failed'), 'Model [/assets/models/r1/scene.xml] failed');
 assert.equal(detailText('loading amp_locomotion/amp_locomotion… (policy amp_locomotion/amp_locomotion…)'),
   'loading amp_locomotion/amp_locomotion… (policy amp_locomotion/amp_locomotion…)', 'Policy ids keep their exact text');

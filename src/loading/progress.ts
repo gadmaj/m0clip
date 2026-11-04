@@ -264,11 +264,26 @@ export function assetName(value: string): string {
   } catch { return 'Asset'; }
 }
 
+/** Trailing punctuation that belongs to the surrounding message, not the URL: sentence marks, and a
+ * closing bracket only when the token itself has no matching opener (so IPv6 hosts and paths keep theirs). */
+function splitWrapper(token: string): [string, string] {
+  let end = token.length;
+  for (;;) {
+    const last = token[end - 1], core = token.slice(0, end);
+    if (last && '.,;:!?'.includes(last)) { end--; continue; }
+    if (last === ')' && core.split('(').length < core.split(')').length) { end--; continue; }
+    if (last === ']' && core.split('[').length < core.split(']').length) { end--; continue; }
+    return [token.slice(0, end), token.slice(end)];
+  }
+}
 /** Details text: every absolute HTTP(S) URL and each bare /path starting a word is shortened to its
- * asset name; any other word, such as the policy id in "loading amp_locomotion/amp_locomotion…",
- * keeps its exact text. Closing brackets stay outside the token. */
+ * asset name (never credentials, query or fragment); any other word, such as the policy id in
+ * "loading amp_locomotion/amp_locomotion…", keeps its exact text. */
 export function detailText(message: string): string {
-  return message.trim().replace(/https?:\/\/[^\s<>"'\])]+|(?<=^|[\s"'([])\/[^\s<>"'\])]+/g, assetName);
+  return message.trim().replace(/https?:\/\/[^\s<>"']+|(?<=^|[\s"'([])\/[^\s<>"']+/g, token => {
+    const [url, wrapper] = splitWrapper(token);
+    return assetName(url) + wrapper;
+  });
 }
 
 export function downloadTime(seconds: number): string {
