@@ -387,6 +387,15 @@ export class Panel {
   /** Recorded tracks cannot be re-simulated by changing live controls. */
   setReviewScope(reviewing: boolean): void {
     this.reviewing = reviewing;
+    this.applyLiveScope();
+    this.robotPicker.sync(); this.terrainPicker.sync(); this.policyPicker.sync(); this.syncRunAgain();
+    this.flashlightBtn.title = reviewing ? 'SHOT · Camera flashlight' : 'LIVE · Camera flashlight (F)';
+    this.flashlightKey.hidden = reviewing;
+  }
+
+  /** Scope labels and review locks for live sections; rebuilt sections reuse it without touching the pictured pickers. */
+  private applyLiveScope(): void {
+    const reviewing = this.reviewing;
     const reason = reviewing ? 'LIVE · Recorded motion is fixed. Close timeline to change live settings.' : 'LIVE';
     this.reviewScope.textContent = reason;
     this.reviewScope.hidden = !reviewing;
@@ -419,9 +428,6 @@ export class Panel {
         control.removeAttribute('aria-description');
       }
     }
-    this.robotPicker.sync(); this.terrainPicker.sync(); this.policyPicker.sync(); this.syncRunAgain();
-    this.flashlightBtn.title = reviewing ? 'SHOT · Camera flashlight' : 'LIVE · Camera flashlight (F)';
-    this.flashlightKey.hidden = reviewing;
   }
 
   /** Buttons for the active policy's remote actions, grouped and named (status.actions); each shows
@@ -445,7 +451,9 @@ export class Panel {
       }
       this.remoteEl.append(el("div.mv-group", null, el("h3", null, g.group), grid));
     }
-    this.setReviewScope(this.reviewing);
+    // Only the rebuilt buttons need the current review lock; an automatic policy handover changes these
+    // groups while a gallery may be open, so the pictured pickers are not re-synced (and closed) here.
+    this.applyLiveScope();
   }
 
   /** Modal note shown when a policy that needs special control is selected. */

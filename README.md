@@ -26,8 +26,9 @@ the walking policies.
 1. **Choose.** Pick a map (Ghost is the default) and a character, then press
    **Load scene**. The galleries show previews; models and policies download
    only after you load.
-2. **Load.** The loader shows megabytes and time remaining. Press **Enter scene**
-   when it finishes.
+2. **Load.** The loader shows megabytes, the current step and, while files
+   download, the time left. **Details** lists each file and any error. Press
+   **Enter scene** when it finishes.
 3. **Record.** Drive with W A S D and Q / E, or a gamepad. Press **N** to fly the
    camera instead. Press **V** to start recording and **V** again to stop.
    **? Help** lists every key.

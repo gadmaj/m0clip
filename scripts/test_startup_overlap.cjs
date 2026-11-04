@@ -467,9 +467,10 @@ async function main() {
           if (name === 'original-primary') await waitFor(() => run.resources.some(resource => resource.expectedFailure && /\/source-robots\/.*\.glb$/.test(resource.path)), 'Late optional-native failure must really challenge the early primary map failure');
           await delay(3000); result.lateError = await snapshot(page);
           assert.equal(result.lateError.status, result.firstError.status, 'Later worker messages must preserve canonical error');
+          assert.equal(result.lateError.cause, result.firstError.cause, 'Later worker messages must preserve the canonical cause in Details');
           assert.equal(result.lateError.ready, false, 'Failure must not unlock Enter');
-          assert.match(result.firstError.status, /503|failed|could not load/i);
-          if (name === 'both-failure') assert.ok(!/selected policy unavailable|^failed to load/i.test(result.firstError.status), 'Engine/model error keeps precedence over policy error');
+          assert.match(result.firstError.cause, /503|failed|could not load/i);
+          if (name === 'both-failure') assert.ok(!/selected policy unavailable|^failed to load/i.test(result.firstError.cause), 'Engine/model error keeps precedence over policy error');
           if (['config-failure', 'both-failure'].includes(name)) {
             const failedZip = run.resources.find(resource => isZip(resource.path)), engine = run.resources.find(resource => resource.path === wasm);
             assert.ok(failedZip?.expectedFailure, 'Actual selected policy ZIP must fail before Engine is available');
@@ -494,8 +495,10 @@ async function main() {
           await page.waitForFunction(() => document.querySelector('#status')?.dataset.k);
           result.physicsAtReady = await page.locator('#status').evaluate(status => Object.fromEntries(JSON.parse(status.dataset.k).map(([key, value]) => [key, value])));
           result.resourceTiming = await page.evaluate(() => performance.getEntriesByType('resource').map(entry => ({ name: new URL(entry.name).pathname, startTime: entry.startTime, responseEnd: entry.responseEnd, transferSize: entry.transferSize, decodedBodySize: entry.decodedBodySize })));
-          assert.equal(result.ready.value, 1, 'Only canonical readiness completes progress');
-          for (const sample of samples) if (!sample.ready) assert.notEqual(sample.value, 1, 'No readiness/progress shortcut while assets pending');
+          assert.equal(result.ready.value, 1, 'A ready scene has received its whole selected payload');
+          // The meter counts the fixed selected payload, so it can be full while physics/visuals still
+          // prepare (test_loading_progress); entry must never unlock while selected bytes are pending.
+          for (const sample of samples) if (sample.ready) assert.equal(sample.value, 1, 'No readiness shortcut while assets pending');
           await page.screenshot({ path: path.join(out, `${name}-ready.png`) });
           if (name === 'cold') result.playback = await playback(page, out, name);
           else if (name === 'ownership') result.ownership = await ownership(page, run, out);
@@ -510,7 +513,7 @@ async function main() {
         assert.equal(workerDiagnostics.length, expectedWorkerCount, 'Handled worker failures produce exactly one original caught diagnostic, never an extra unhandled rejection');
         for (const diagnostic of workerDiagnostics) {
           const originalLine = diagnostic.text.split('\n')[0];
-          assert.ok(originalLine && result.firstError?.status.includes(originalLine), 'Original worker diagnostic must remain inside the canonical visible failure');
+          assert.ok(originalLine && result.firstError?.cause.includes(originalLine), 'Original worker diagnostic must remain inside the canonical failure Details');
         }
         const browserDiagnostics = consoleErrors.filter(error => !workerDiagnostics.includes(error));
         assert.ok(browserDiagnostics.every(error => {

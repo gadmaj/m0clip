@@ -7,6 +7,8 @@ export interface TransferUpdate {
   total: number | null;
   state: 'loading' | 'done' | 'failed' | 'cancelled';
   realm?: 'map-verification';
+  /** HTTP status of a failed response, when the browser exposed one. */
+  status?: number;
 }
 
 interface Collector {
@@ -49,11 +51,12 @@ function assetUrl(input: RequestInfo | URL): string | null {
   }
 }
 
-function finishTransfer(transfer: Transfer, state: Exclude<TransferUpdate['state'], 'loading'>) {
+function finishTransfer(transfer: Transfer, state: Exclude<TransferUpdate['state'], 'loading'>, status?: number) {
   const { collector, update } = transfer;
   if (!collector.active || update.state !== 'loading') return;
   transfer.cleanup?.();
   update.state = state;
+  if (status !== undefined) update.status = status;
   if (state === 'done') update.total = update.loaded;
   collector.pending(update);
 }
@@ -117,7 +120,7 @@ function observeResponse(response: Response, transfers: Transfer[], signal?: Abo
   if (!response.ok) {
     // Loaders may reject an HTTP error without reading its body. It is not an
     // indefinitely pending download, even when the application ignores it.
-    for (const transfer of transfers) finishTransfer(transfer, 'failed');
+    for (const transfer of transfers) finishTransfer(transfer, 'failed', response.status);
     return response;
   }
   const source = response.body;
@@ -261,7 +264,12 @@ export function observeTransfers(prefix: string, report: (updates: TransferUpdat
       const entry = candidate as PerformanceResourceTiming;
       if (!['fetch', 'xmlhttprequest', 'script', 'link', 'img', 'image', 'worker', 'other'].includes(entry.initiatorType)) continue;
       const url = assetUrl(entry.name);
-      if (!url || !Number.isSafeInteger(entry.decodedBodySize) || entry.decodedBodySize <= 0) continue;
+      if (!url || !Number.isSafeInteger(entry.decodedBodySize)) continue;
+      // A non-2xx body (an error page, a 503 notice) is not the asset's payload. Chrome
+      // exposes responseStatus; 0 means unknown (opaque or older browsers).
+      const status = (entry as PerformanceResourceTiming & { responseStatus?: number }).responseStatus ?? 0;
+      const failed = status !== 0 && (status < 200 || status >= 300) && status !== 304;
+      if (!failed && entry.decodedBodySize <= 0) continue;
       if (entry.initiatorType === 'fetch') {
         const match = collector.requests.get(url)?.find(request => !request.matched
           && entry.startTime >= request.start - 1 && entry.startTime <= request.end + 1);
@@ -277,6 +285,7 @@ export function observeTransfers(prefix: string, report: (updates: TransferUpdat
       // interval, not URL alone: concurrent/repeated requests are distinct.
       // Never substitute transferSize/encodedBodySize for decoded payload bytes.
       const transfer = startTransfer(collector, url);
+      if (failed) { finishTransfer(transfer, 'failed', status); continue; }
       transfer.update.loaded = entry.decodedBodySize;
       finishTransfer(transfer, 'done');
     }

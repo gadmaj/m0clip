@@ -45,8 +45,11 @@
 .visual-picker-card[aria-pressed="true"]::after { content: "Selected"; font-weight: 600; color: var(--accent); }
 .visual-picker-card:disabled { opacity: .7; cursor: not-allowed; }
 .visual-picker-card small { color: var(--text-2); }
-.visual-picker-trigger-text { display: grid; min-width: 0; overflow-wrap: anywhere; }
-.visual-picker-card small.visual-picker-detail, .visual-picker-trigger small.visual-picker-detail { color: var(--text-2); font-size: 11px; overflow-wrap: anywhere; }
+/* A fixed name line and detail line: the trigger keeps one height across selections at every width. */
+.visual-picker-trigger-text { display: grid; grid-template-columns: minmax(0, 1fr); flex: 1 1 auto; min-width: 0; }
+.visual-picker-trigger-text > * { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.visual-picker-card small.visual-picker-detail { overflow-wrap: anywhere; }
+.visual-picker-card small.visual-picker-detail, .visual-picker-trigger small.visual-picker-detail { color: var(--text-2); font-size: 11px; }
 /* --text-2 falls below 4.5:1 on the hover background. */
 .visual-picker-card:hover:not(:disabled) small, .visual-picker-trigger.btn:hover:not(:disabled) small.visual-picker-detail { color: var(--text); }
 .visual-picker-preview {

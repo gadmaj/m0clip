@@ -5,13 +5,15 @@ import { build } from 'esbuild';
 
 globalThis.location = new URL('https://scene.test/');
 const result = await build({ stdin: { resolveDir: process.cwd(), sourcefile: 'loading-ledger-fixture.ts', contents: `
-  export { SceneProgress } from './src/loading/progress';
+  export { SceneProgress, assetName, detailText, downloadEstimate, loadingPhase } from './src/loading/progress';
+  export { observeTransfers } from './src/loading/transfers';
   export { plannedAssets, priorIntakeAssets } from './src/loading/catalogue';
   export { inspectLocalMap, localMapIntakeState } from './src/ui/local-map';
 ` }, bundle: true, platform: 'node', format: 'cjs', write: false });
 const module = { exports: {} };
 new Function('module', 'require', result.outputFiles[0].text)(module, createRequire(import.meta.url));
-const { SceneProgress, plannedAssets, priorIntakeAssets, inspectLocalMap, localMapIntakeState } = module.exports;
+const { SceneProgress, assetName, detailText, downloadEstimate, loadingPhase, observeTransfers, plannedAssets, priorIntakeAssets,
+  inspectLocalMap, localMapIntakeState } = module.exports;
 const transfer = (id, url, loaded, total, state = 'loading') => ({ id, url, loaded, total, state });
 const progress = new SceneProgress();
 const first = progress.begin(0);
@@ -113,6 +115,141 @@ progress.freeze(fifth, [{ url: '/required.bin', bytes: 1000 }], 16001);
 progress.update(fifth, [transfer('required:empty', '/required.bin', 0, 0, 'done')], 16500);
 assert.equal(progress.hasCatalogueMismatch, true, 'An empty successful planned asset must not hide a real declared-size mismatch');
 assert.equal(progress.snapshot(16500).knownTotal, 1000);
+
+// Cold load: an open reader with its whole body already credited cannot time unrequested files.
+const stagedLedger = new SceneProgress(), stagedGeneration = stagedLedger.begin(0);
+assert.equal(downloadEstimate(stagedLedger.snapshot(0)), 'Planning downloads…', 'Planning has no download estimate');
+stagedLedger.freeze(stagedGeneration, [{ url: '/active.bin', bytes: 100 }, { url: '/queued.bin', bytes: 900 }], 0);
+value = stagedLedger.snapshot(0);
+assert.deepEqual([value.activeBytes, value.queuedBytes, value.stoppedBytes, value.remaining], [0, 1000, 0, 1000]);
+assert.equal(downloadEstimate(value), 'Download queued', 'Waiting on cache reads or compilation is not a transfer');
+stagedLedger.update(stagedGeneration, [transfer('active', '/active.bin', 20, 100)], 1500);
+value = stagedLedger.snapshot(1500);
+assert.deepEqual([value.activeBytes, value.queuedBytes, value.stoppedBytes], [80, 900, 0]);
+assert.equal(value.etaSeconds, null, 'Queued payload has no open transfer whose completion can be timed');
+assert.equal(downloadEstimate(value), 'Downloading · more queued');
+stagedLedger.update(stagedGeneration, [transfer('active', '/active.bin', 100, 100)], 2000);
+value = stagedLedger.snapshot(2000);
+assert.deepEqual([value.activeBytes, value.queuedBytes, value.stoppedBytes, value.remaining], [0, 900, 0, 900]);
+assert.equal(value.etaSeconds, null, 'A fully credited open reader cannot supply an ETA for queued bytes');
+stagedLedger.update(stagedGeneration, [transfer('active', '/active.bin', 100, 100, 'done'),
+  transfer('optional:probe', '/optional-probe.json', 0, null)], 2200);
+value = stagedLedger.snapshot(2200);
+assert.equal(value.active, 1);
+assert.equal(value.activeBytes, 0, 'An unplanned zero-byte probe has no selected payload left');
+assert.equal(value.queuedBytes, 900);
+assert.equal(value.etaSeconds, null);
+assert.equal(value.stalled, false, 'An unplanned probe cannot report a stalled scene download');
+stagedLedger.update(stagedGeneration, [transfer('queued', '/queued.bin', 300, null)], 3000);
+value = stagedLedger.snapshot(3000);
+assert.deepEqual([value.activeBytes, value.queuedBytes, value.stoppedBytes], [600, 0, 0]);
+assert.equal(value.etaSeconds, null, 'A request is timed only after a second of its own transfer');
+assert.equal(downloadEstimate(value), 'Measuring speed…');
+stagedLedger.update(stagedGeneration, [transfer('queued', '/queued.bin', 600, null)], 4000);
+value = stagedLedger.snapshot(4000);
+assert.equal(value.etaSeconds, 1, '300 B in its own second; 300 B of 900 left');
+assert.match(downloadEstimate(value), /^Download ETA ~\d+s$/);
+assert.equal(value.knownTotal, 1000, 'Starting queued work cannot change the frozen maximum');
+value = stagedLedger.snapshot(7600);
+assert.equal(value.stalled, true);
+assert.equal(downloadEstimate(value), 'Waiting for data…', 'A stalled transfer expires its numeric estimate');
+stagedLedger.update(stagedGeneration, [transfer('queued', '/queued.bin', 600, null, 'failed')], 7800);
+value = stagedLedger.snapshot(7800);
+assert.deepEqual([value.activeBytes, value.queuedBytes, value.stoppedBytes, value.remaining], [0, 0, 300, 300]);
+assert.equal(value.etaSeconds, null, 'Stopped payload is not a queued retry or an active transfer');
+assert.equal(downloadEstimate(value), 'Download stopped');
+
+// Warm cache: a completed cache read in the rate window cannot shorten the network estimate.
+const warmLedger = new SceneProgress(), warmGeneration = warmLedger.begin(0);
+warmLedger.freeze(warmGeneration, [{ url: '/cached.bin', bytes: 10_000_000 }, { url: '/network.bin', bytes: 1_000_000 }], 0);
+warmLedger.update(warmGeneration, [transfer('cached', '/cached.bin', 10_000_000, 10_000_000, 'done'),
+  transfer('network', '/network.bin', 10_000, 1_000_000)], 200);
+warmLedger.update(warmGeneration, [transfer('network', '/network.bin', 100_000, 1_000_000)], 2000);
+value = warmLedger.snapshot(2000);
+assert.equal(value.activeBytes, 900_000);
+assert.equal(value.etaSeconds, 18, 'Only bytes of the still-open request set the rate (100 kB in 2 s)');
+assert.equal(downloadEstimate(value), 'Download ETA ~18s');
+warmLedger.update(warmGeneration, [transfer('network', '/network.bin', 1_000_000, 1_000_000, 'done')], 2500);
+value = warmLedger.snapshot(2500);
+assert.equal(value.etaSeconds, null, 'Compilation and readiness after the last byte have no download ETA');
+assert.equal(downloadEstimate(value), 'Download complete');
+
+// Sequential requests: a later request is timed from its own start, not from the window start.
+const sequential = new SceneProgress(), sequentialGeneration = sequential.begin(0);
+sequential.freeze(sequentialGeneration, [{ url: '/a.bin', bytes: 1000 }, { url: '/b.bin', bytes: 10_000 }], 0);
+sequential.update(sequentialGeneration, [transfer('a', '/a.bin', 0, 1000)], 0);
+sequential.update(sequentialGeneration, [transfer('a', '/a.bin', 1000, 1000, 'done'), transfer('b', '/b.bin', 0, 10_000)], 2000);
+assert.equal(sequential.snapshot(2500).etaSeconds, null, 'A request open for under a second is still being measured');
+assert.equal(downloadEstimate(sequential.snapshot(2500)), 'Measuring speed…');
+sequential.update(sequentialGeneration, [transfer('b', '/b.bin', 1000, 10_000)], 4000);
+assert.equal(sequential.snapshot(4000).etaSeconds, 18, 'B downloaded 1000 B in its own 2 s: 9000 B left at 500 B/s');
+
+// The primary line is one short phase; the detailed message belongs in Details.
+for (const [message, label] of [
+  ['Verifying local map files…', 'Verifying map…'], ['Starting renderer and physics…', 'Starting scene…'],
+  ['loading imported policy packs…', 'Loading policy…'], ['Preparing the default R1 policy catalog…', 'Loading policy…'],
+  ['loading Planar walk v2…', 'Loading policy…'], ['Planning selected scene assets…', 'Planning scene…'],
+  ['Planning the Player world…', 'Planning scene…'], ['compiling MuJoCo model (wasm)…', 'Compiling physics…'],
+  ['compiling MuJoCo model (wasm, G1 Air 23-DOF)…', 'Compiling physics…'], ['Preparing map physics…', 'Preparing physics…'],
+  ['Preparing robot and map visuals…', 'Preparing visuals…'], ['Preparing player and map visuals…', 'Preparing visuals…'],
+  ['Some future worker step…', 'Loading scene…'],
+]) assert.equal(loadingPhase(message), label, message);
+
+// Details keep worker text exactly; only whole URLs and absolute paths become asset names.
+assert.equal(detailText('loading amp_locomotion/amp_locomotion…'), 'loading amp_locomotion/amp_locomotion…');
+assert.equal(detailText('fetch for "/assets/characters/a%20b.glb?token=1" responded with 503'),
+  'fetch for "/assets/characters/a b.glb" responded with 503');
+assert.equal(detailText('Asset download: https://user:secret@cdn.test/packs/r1.zip?sig=x#y (HTTP 503)'),
+  'Asset download: cdn.test/packs/r1.zip (HTTP 503)');
+assert.equal(detailText('loading /assets/packs/walk…'), 'loading /assets/packs/walk…', 'A path keeps its trailing ellipsis unencoded');
+assert.equal(assetName('https://scene.test/assets/models/r1/scene%20a.xml?x=1'), '/assets/models/r1/scene a.xml');
+assert.equal(detailText('Failed [https://user:secret@cdn.test/model.glb?sig=private]'), 'Failed [cdn.test/model.glb]',
+  'A bracketed absolute URL loses credentials and query');
+assert.equal(detailText('Failed (https://user:secret@cdn.test/a/model.glb#frag) then x=https://cdn.test/b.zip?sig=1.'),
+  'Failed (cdn.test/a/model.glb) then x=cdn.test/b.zip.', 'An absolute URL is sanitized after any character');
+assert.equal(detailText('Failed http://[::1]/model.glb?token=private'), 'Failed [::1]/model.glb',
+  'An IPv6 host keeps its brackets inside the URL and the query is still removed');
+assert.equal(detailText('Failed [https://u:p(a)ss@cdn.test/a(1)/m.glb?t=(x)]'), 'Failed [cdn.test/a(1)/m.glb]',
+  'Parentheses inside a URL do not end it; only the unmatched wrapper bracket does');
+assert.equal(detailText('Model [/assets/models/r1/scene.xml?x=1] failed'), 'Model [/assets/models/r1/scene.xml] failed');
+assert.equal(detailText('loading amp_locomotion/amp_locomotion… (policy amp_locomotion/amp_locomotion…)'),
+  'loading amp_locomotion/amp_locomotion… (policy amp_locomotion/amp_locomotion…)', 'Policy ids keep their exact text');
+
+// An HTTP error body is a failed request, not the asset's payload: a 503 notice read by a
+// synchronous XHR fallback (seen only through ResourceTiming) cannot become a catalogue mismatch.
+let timing;
+const realObserver = globalThis.PerformanceObserver;
+globalThis.PerformanceObserver = class { constructor(callback) { timing = callback; } observe() {} disconnect() {} takeRecords() { return []; } };
+const observed = [];
+const stopObserving = observeTransfers('timing', updates => observed.push(...updates), 0);
+const entry = (name, decodedBodySize, responseStatus) => ({ entryType: 'resource', initiatorType: 'xmlhttprequest',
+  name: `https://scene.test${name}`, startTime: 10, decodedBodySize, responseStatus });
+timing({ getEntries: () => [entry('/wasm/mujoco.wasm', 14, 503), entry('/wasm/other.wasm', 14, 0), entry('/assets/ok.bin', 700, 200)] });
+stopObserving();
+globalThis.PerformanceObserver = realObserver;
+const finalUpdate = path => observed.filter(update => update.url.endsWith(path)).at(-1);
+assert.deepEqual([finalUpdate('/wasm/mujoco.wasm').state, finalUpdate('/wasm/mujoco.wasm').loaded, finalUpdate('/wasm/mujoco.wasm').status], ['failed', 0, 503]);
+assert.equal(finalUpdate('/wasm/other.wasm').state, 'done', 'Unknown status (0) keeps the existing completion fallback');
+assert.deepEqual([finalUpdate('/assets/ok.bin').state, finalUpdate('/assets/ok.bin').loaded], ['done', 700]);
+const httpLedger = new SceneProgress(), httpGeneration = httpLedger.begin(0);
+httpLedger.freeze(httpGeneration, [{ url: '/wasm/mujoco.wasm', bytes: 8_607_662 }, { url: '/assets/ok.bin', bytes: 700 }], 0);
+httpLedger.update(httpGeneration, observed.filter(update => !update.url.endsWith('/wasm/other.wasm')), 100);
+assert.equal(httpLedger.hasCatalogueMismatch, false, 'A failed HTTP response is reported as a failure, not a size mismatch');
+assert.deepEqual(httpLedger.httpFailures(), [{ url: '/wasm/mujoco.wasm', status: 503 }]);
+assert.equal(assetName(httpLedger.httpFailures()[0].url), '/wasm/mujoco.wasm');
+assert.equal(httpLedger.snapshot(100).stoppedBytes, 8_607_662);
+httpLedger.update(httpGeneration, [transfer('short', '/wasm/mujoco.wasm', 14, 14, 'done')], 200);
+assert.equal(httpLedger.hasCatalogueMismatch, true, 'A genuine short successful body is still a catalogue mismatch');
+
+// A tolerated pre-plan probe (a missing optional metadata .json, 404) joins the accounting budget
+// with 0 bytes but is not a cause; the later required 503 is.
+const probeLedger = new SceneProgress(), probeGeneration = probeLedger.begin(0);
+probeLedger.update(probeGeneration, [{ ...transfer('meta', '/assets/pmodels/x/model.json', 0, null, 'failed'), status: 404 }], 100);
+assert.deepEqual(probeLedger.httpFailures(), [], 'Before the plan is fixed, no failure is known to be required');
+probeLedger.freeze(probeGeneration, [{ url: '/assets/pmodels/x/model.mdl', bytes: 5000 }], 200);
+assert.equal(probeLedger.snapshot(200).knownTotal, 5000, 'Accounting still includes the terminal probe (0 bytes)');
+probeLedger.update(probeGeneration, [{ ...transfer('mdl', '/assets/pmodels/x/model.mdl', 0, null, 'failed'), status: 503 }], 300);
+assert.deepEqual(probeLedger.httpFailures(), [{ url: '/assets/pmodels/x/model.mdl', status: 503 }], 'Only the required failure is the cause');
 
 // Validation failure does not unload a successful import; later imports cannot
 // rewrite the pre-Load snapshot or turn local ZIP bytes into HTTP receipts.
@@ -260,4 +397,5 @@ assert.equal(partialRoot.snapshot(4).remaining, 0);
 assert.equal(partialRoot.snapshot(4).active, 0, 'Migrated request activity ends on its actual terminal update');
 assert.equal(partialRoot.hasCatalogueMismatch, false);
 console.log(JSON.stringify({ fixedMaximum: true, uniqueEntities: true, retainedPreflight: true,
-  retryIsolation: true, generationIsolation: true, realRate: true, stalledEstimate: true, catalogueMismatch: true }));
+  retryIsolation: true, generationIsolation: true, realRate: true, stalledEstimate: true, catalogueMismatch: true,
+  activeOnlyEta: true, phaseLabels: true, detailText: true, httpFailureCause: true }));
