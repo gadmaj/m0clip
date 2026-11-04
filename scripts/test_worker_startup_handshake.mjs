@@ -22,14 +22,14 @@ const controlled = {
       return metadata.downloadUrl ? parsePack(new Uint8Array(await (await fetchAsset(metadata.downloadUrl)).arrayBuffer())) : fixture.locals[id];
     }
   `,
-  defaults: `export async function installDefaultPacks(packs,progress,fetchMetadata){
+  defaults: `export async function installDefaultPacks(family,packs,progress,fetchMetadata){
     fixture.installCalls++;
     if(fixture.installMetadata) await (await fetchMetadata('/default-catalogue.json')).json();
     return packs;
   }`,
   engine: `
     import {Engine as ActualEngine} from ${enginePath};
-    export {MissingBundleError,GEOM_MESH} from ${enginePath};
+    export {MissingBundleError,GEOM_BOX,GEOM_CYLINDER,GEOM_HFIELD,GEOM_MESH,GEOM_PLANE} from ${enginePath};
     export class Engine {
       static prepare(...args){fixture.prepares++;return ActualEngine.prepare(...args);}
       static async create(...args){fixture.compiles.push(args);throw new Error('Selected compiler reached');}
