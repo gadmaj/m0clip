@@ -43,7 +43,7 @@ try {
   assert.equal(validGeometryData({fixedIds:new Uint32Array([0,2]),values:new Float32Array(41)},4,2),false);
   for (const patch of [{ 'geom-fixed.u32': new Uint8Array(new Uint32Array([2,0]).buffer) }, { 'geom-fixed.u32': new Uint8Array(1) }, { 'geom.f32': new Uint8Array(4) }]) await assert.rejects(loadTake(zipSync({...files,...patch}).buffer), /geometry/);
   const missing = {...files}; delete missing['geom-fixed.u32']; await assert.rejects(loadTake(zipSync(missing).buffer), /geometry/);
-  await assert.rejects(loadTake(zipSync({...files,'take.json':new TextEncoder().encode(JSON.stringify({...header,version:3}))}).buffer), /unsupported version/);
+  await assert.rejects(loadTake(zipSync({...files,'take.json':new TextEncoder().encode(JSON.stringify({...header,version:4}))}).buffer), /unsupported version/);
   // Legacy dense rows are retained even when unknown world geometry changes only later.
   const denseValues = new Float32Array([...row(1),...row(2),...row(3),...row(4),...row(101),...row(2),...row(303),...row(4)]);
   const legacyFiles = {...files,'take.json':new TextEncoder().encode(JSON.stringify({...header,version:1})),'geom.f32':new Uint8Array(denseValues.buffer)};
