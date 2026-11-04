@@ -34,6 +34,18 @@ const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=requ
  await page.getByRole('button',{name:'Rename Conveyor / 台 / سقف',exact:true}).click();editor=page.getByLabel('New name for Conveyor / 台 / سقف',{exact:true});await editor.fill('Quota rename');await editor.press('Enter');assert.equal(await editor.inputValue(),'Quota rename');
  await page.getByRole('button',{name:'Cancel',exact:true}).click();await page.evaluate(()=>{Storage.prototype.setItem=window.__setItem});
  await name.fill('Keyboard saved view');await name.press('Enter');assert.ok(await page.getByRole('button',{name:'Keyboard saved view',exact:true}).count());
+ // The name is optional: a blank Enter saves under the next free “View N” without changing the captured view.
+ assert.equal(await name.getAttribute('placeholder'),'Name (optional)');await name.fill('');await name.press('Enter');assert.ok(await page.getByRole('button',{name:'View 1',exact:true}).count());
+ assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('ume-saved-views-v1')).at(-1).name),'View 1');
+ // C follows the robot outside Flight; Flight takes C for moving down, so the hint names N first.
+ assert.ok(await page.getByText(/Press C to follow the robot again\./).count());
+ await page.evaluate(()=>window.__app.setNoclip(true));assert.ok(await page.getByText(/Press N to leave Flight, then C to follow the robot\./).count());assert.equal(await page.getByText(/Press C to follow/).count(),0);
+ await page.evaluate(()=>window.__app.setNoclip(false));assert.ok(await page.getByText(/Press C to follow the robot again\./).count());
+ // One visible line explains the LIVE-only lock; locked controls reference it instead of repeating it.
+ const liveLock=await page.evaluate(()=>{const e=window.__app.explore;e.setReadOnly(true);const scope=document.getElementById('saved-view-scope'),locked=[...document.querySelectorAll('#saved-view-list .saved-view-restore'),...[...document.querySelectorAll('button')].filter(b=>['Save view','Share current view'].includes(b.textContent))];
+  const state={text:scope.textContent,locked:locked.every(b=>b.disabled&&b.getAttribute('aria-describedby').split(' ').includes('saved-view-scope')&&!b.hasAttribute('aria-description')),shareBookmarkEnabled:!document.querySelector('#saved-view-list .saved-view-actions .btn').disabled};
+  e.setReadOnly(false);return{...state,restored:scope.textContent==='LIVE'&&locked.every(b=>!b.disabled&&!b.getAttribute('aria-describedby')?.includes('saved-view-scope'))}});
+ assert.deepEqual(liveLock,{text:'Save, restore and Share current view need LIVE. Wait for the export to finish.',locked:true,shareBookmarkEnabled:true,restored:true});
  // Rename and Undo only change library metadata. Restoring still uses the full legacy view.
  await page.getByRole('button',{name:'Roof entrance / 入口 / مدخل',exact:true}).click();await page.waitForFunction(()=>!window.__app.pendingViewRestore);
  const restoredPosition=await page.evaluate(()=>window.__app.view.camera.position.toArray());restoredPosition.forEach((value,i)=>assert.ok(Math.abs(value-original[1].view.position[i])<1e-8));
@@ -58,5 +70,5 @@ const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=requ
   e.bookmarks=original;e.search.value='';e.renderBookmarks();return{size:500,matches,renderMs:built-start,searchMs:filtered-built};
  });assert.equal(largeLibrary.matches,1);
  await page.reload().then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await ready();{const expandScene=page.getByRole('button',{name:'Expand Scene panel',exact:true});if(await expandScene.isVisible())await expandScene.click();}await page.getByText('Saved views',{exact:true}).click();assert.ok(await page.getByRole('button',{name:'Conveyor / 台 / سقف',exact:true}).count());assert.ok(await page.getByRole('button',{name:'Keyboard saved view',exact:true}).count());assert.equal(await page.getByRole('button',{name:'Partial restore',exact:true}).count(),0);
- assert.deepEqual(errors,[]);console.log(JSON.stringify({search:true,filenames:true,rename:true,cancel:true,undo:true,legacy:true,storageFailure:true,keyboardSave:true,restore:true,share:true,partialRestoreGuard:true,persistence:true,layout,largeLibrary,errors}));
+ assert.deepEqual(errors,[]);console.log(JSON.stringify({search:true,filenames:true,rename:true,cancel:true,undo:true,legacy:true,storageFailure:true,keyboardSave:true,blankName:true,followHint:true,liveLock:true,restore:true,share:true,partialRestoreGuard:true,persistence:true,layout,largeLibrary,errors}));
 }finally{await browser.close()}})().catch(e=>{console.error(e);process.exitCode=1});
