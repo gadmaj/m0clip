@@ -495,8 +495,10 @@ async function main() {
           await page.waitForFunction(() => document.querySelector('#status')?.dataset.k);
           result.physicsAtReady = await page.locator('#status').evaluate(status => Object.fromEntries(JSON.parse(status.dataset.k).map(([key, value]) => [key, value])));
           result.resourceTiming = await page.evaluate(() => performance.getEntriesByType('resource').map(entry => ({ name: new URL(entry.name).pathname, startTime: entry.startTime, responseEnd: entry.responseEnd, transferSize: entry.transferSize, decodedBodySize: entry.decodedBodySize })));
-          assert.equal(result.ready.value, 1, 'Only canonical readiness completes progress');
-          for (const sample of samples) if (!sample.ready) assert.notEqual(sample.value, 1, 'No readiness/progress shortcut while assets pending');
+          assert.equal(result.ready.value, 1, 'A ready scene has received its whole selected payload');
+          // The meter counts the fixed selected payload, so it can be full while physics/visuals still
+          // prepare (test_loading_progress); entry must never unlock while selected bytes are pending.
+          for (const sample of samples) if (sample.ready) assert.equal(sample.value, 1, 'No readiness shortcut while assets pending');
           await page.screenshot({ path: path.join(out, `${name}-ready.png`) });
           if (name === 'cold') result.playback = await playback(page, out, name);
           else if (name === 'ownership') result.ownership = await ownership(page, run, out);

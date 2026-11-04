@@ -35,7 +35,10 @@ async function createProxy(upstream) {
       record.failed = true; res.writeHead(503, { 'content-type': 'text/plain', 'cache-control': 'no-store' }); res.end('Real-network QA: optional head unavailable'); return;
     }
     const lateImage = mode === 'failure' && pathname === '/assets/source/flashlight.png';
-    const target = pathname === wasm || lateImage || (mode === 'concurrent' && /\/meshes\//.test(pathname));
+    // The ONNX runtime is requested after compilation, when nothing else is queued: streaming it
+    // too gives the #55 contract a real interval in which every remaining request is open.
+    const lastRequest = ['cold', 'unknown', 'compressed', 'stall'].includes(mode) && /\/assets\/ort-[^/]*\.wasm$/.test(pathname);
+    const target = pathname === wasm || lateImage || lastRequest || (mode === 'concurrent' && /\/meshes\//.test(pathname));
     const request = (origin.protocol === 'https:' ? https : http).request(new URL(req.url, origin), {
       method: req.method, headers: { ...req.headers, host: origin.host, 'accept-encoding': 'identity' },
     }, upstreamResponse => {
@@ -136,6 +139,30 @@ const etaSeconds = text => {
   const matches = [...text.matchAll(/(\d+(?:\.\d+)?)\s*(seconds?|secs?|s\b|minutes?|mins?|m\b|hours?|h\b)/gi)];
   return matches.length ? matches.reduce((sum, match) => sum + Number(match[1]) * (/^h/i.test(match[2]) ? 3600 : /^m/i.test(match[2]) ? 60 : 1), 0) : null;
 };
+
+/** #55 ETA contract on the real proxy timeline (the same wall clock as page samples). */
+function etaContract(run, samples, loadStartedAt, readyAt) {
+  const firstStart = new Map();
+  let lastStart = 0, lastEnd = 0;
+  for (const resource of run.resources) {
+    if (resource.started < loadStartedAt || resource.started > readyAt || resource.failed || /\/previews\//.test(resource.path)) continue;
+    firstStart.set(resource.path, Math.min(firstStart.get(resource.path) ?? Infinity, resource.started));
+    lastStart = Math.max(lastStart, resource.started);
+    lastEnd = Math.max(lastEnd, resource.ended ?? readyAt);
+  }
+  // A selected scene asset first requested after a sample was still queued at that sample (500 ms request slack).
+  const sceneStarts = [...firstStart].filter(([pathname]) => isSceneAsset(pathname)).map(([, at]) => at);
+  const violations = samples.filter(sample => numericEta(sample.eta) && sceneStarts.some(at => at > sample.at + 500))
+    .map(({ at, eta, status }) => ({ at, eta, status }));
+  // Every request has started and run for a second of its own, the load is past its first 1.5 s
+  // (+750 ms batching/render/sampling slack), bytes are still arriving and no response is paused.
+  const opens = Math.max(lastStart + 1000, loadStartedAt + 1500) + 750;
+  const stalls = run.resources.filter(resource => resource.stalledAt)
+    .map(resource => [resource.stalledAt + 3000, (resource.resumedAt ?? Infinity) + 1000]);
+  const window = samples.filter(sample => sample.state === 'loading' && !sample.error && !sample.ready
+    && sample.at >= opens && sample.at <= lastEnd - 600 && !stalls.some(([from, to]) => sample.at >= from && sample.at <= to));
+  return { violations, window, exercised: window.length >= 2, lastStart, lastEnd };
+}
 
 async function raf(page, frames = 12) {
   return page.evaluate(frames => new Promise(resolve => {
@@ -385,17 +412,25 @@ async function runSuite() {
           const transfer = run.resources.find(resource => resource.path === wasm);
           const during = active.filter(sample => sample.at >= transfer.chunks[0].at + 250 && sample.at <= transfer.ended - 250);
           assert.ok(during.length >= 3, 'Unknown/compressed response must remain genuinely streaming across observations');
-          assert.ok(during.some(sample => numericEta(sample.eta)), 'The fixed exact selected payload supports real-rate ETA independently of chunked/compressed response headers');
         }
-        if (name === 'cold' || name === 'stall') assert.ok(active.some(sample => numericEta(sample.eta)), 'Known streaming downloads must yield a current-download estimate after real rate samples');
+        if (!['interrupt', 'failure', 'original'].includes(name)) {
+          // #55: a numeric ETA times only open requests. None while a selected asset is still unrequested;
+          // one once every remaining request has run for a second of its own (also without length headers).
+          const contract = result.etaContract = etaContract(run, samples, result.loadStartedAt, result.ready.at);
+          assert.deepEqual(contract.violations, [], 'A numeric download ETA must not appear while a selected asset is still queued');
+          if (['cold', 'stall', 'unknown', 'compressed'].includes(name)) {
+            assert.ok(contract.exercised, 'The streamed last request must give a real interval with every remaining request open');
+            assert.ok(contract.window.some(sample => numericEta(sample.eta)), 'Once every remaining selected request is open and measured, the ETA must be numeric');
+          }
+        }
         const maxima = samples.filter(sample => sample.maximum !== null && sample.loadingVisible).map(sample => sample.maximum);
         assert.ok(maxima.length, 'The selected scene must declare its exact payload maximum');
         assert.equal(new Set(maxima).size, 1, 'The payload maximum cannot grow or shrink across discovery, streaming, failures or preparation');
         if (name === 'cold') {
           const transfer = run.resources.find(resource => resource.path === wasm);
-          const stable = active.filter(sample => sample.at > transfer.chunks[0].at + 2000 && sample.at < transfer.ended - 600 && numericEta(sample.eta));
-          result.etaEvidence = stable.map(sample => ({ displayed: etaSeconds(sample.eta), actualRemaining: (transfer.ended - sample.at) / 1000 }));
-          assert.ok(result.etaEvidence.some(({ displayed, actualRemaining }) => Math.abs(displayed - actualRemaining) <= Math.max(2, actualRemaining * .6)), 'Current-download ETA must correspond to observed response completion, not an invented scene countdown');
+          const timed = result.etaContract.window.filter(sample => numericEta(sample.eta));
+          result.etaEvidence = timed.map(sample => ({ displayed: etaSeconds(sample.eta), actualRemaining: (result.etaContract.lastEnd - sample.at) / 1000 }));
+          if (timed.length) assert.ok(result.etaEvidence.some(({ displayed, actualRemaining }) => Math.abs(displayed - actualRemaining) <= Math.max(2, actualRemaining * .6)), 'Current-download ETA must correspond to observed response completion, not an invented scene countdown');
           const during = active.filter(sample => sample.at >= transfer.chunks[0].at && sample.at <= transfer.ended);
           const values = during.map(sample => loadedMB(sample.bytes)).filter(value => value !== null);
           assert.ok(values.length >= 3 && values.at(-1) > values[0] + 1, 'Actual decoded MB must advance visibly while the response streams');

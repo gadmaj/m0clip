@@ -10,7 +10,7 @@ import { Pong } from './pong';
 import { VisualPicker } from './visual-picker';
 import { previewImage, staticPreviewOptions, characterOptions, characterDescription, sourceModelCatalog } from './preview-catalog';
 import { previewMedia } from './preview-media';
-import { SceneProgress, downloadEstimate, loadingPhase, type LoadingSnapshot } from '../loading/progress';
+import { SceneProgress, assetName, detailText, downloadEstimate, loadingPhase, type LoadingSnapshot } from '../loading/progress';
 import { observeTransfers, type TransferUpdate } from '../loading/transfers';
 import type { PlannedAsset, PriorModuleIntake } from '../loading/asset-plan';
 import { registerPreviewAsset } from '../loading/preview-assets';
@@ -69,14 +69,6 @@ function rememberedCharacter(appearance: unknown): CharacterId | null {
   return styles.every(style => style === styles[0]) && Object.hasOwn(characters, styles[0]) ? styles[0] as CharacterId : null;
 }
 
-/** Keep useful asset paths, never URL credentials, search parameters or fragments. */
-function transferName(value: string): string {
-  try {
-    const url = new URL(value, location.href);
-    return url.protocol === 'http:' || url.protocol === 'https:'
-      ? `${url.origin === location.origin ? '' : url.host}${url.pathname}` : 'Asset';
-  } catch { return 'Asset'; }
-}
 const transferStates: Record<TransferUpdate['state'], string> = { loading: 'Active', done: 'Completed', failed: 'Failed', cancelled: 'Cancelled' };
 
 class LaunchController {
@@ -586,7 +578,7 @@ class LaunchController {
     // No resource iteration, URL parsing or detail DOM updates while collapsed.
     if (!this.details.open || !this.detailsDirty) return;
     this.detailsDirty = false;
-    const message = this.detailMessage();
+    const message = detailText(this.phaseMessage);
     if (this.detailStatus.textContent !== message) this.detailStatus.textContent = message;
     if (this.mapStatus.textContent !== this.mapMessage) this.mapStatus.textContent = this.mapMessage;
     if (this.localStatus.textContent !== this.localMessage) this.localStatus.textContent = this.localMessage;
@@ -603,14 +595,15 @@ class LaunchController {
       if (!elements) {
         const row = document.createElement('li');
         const name = document.createElement('span'); name.className = 'launch-detail-name';
-        name.textContent = transferName(transfer.url); name.title = name.textContent;
+        name.textContent = assetName(transfer.url); name.title = name.textContent;
         const state = document.createElement('span');
         const bytes = document.createElement('span'); bytes.className = 'launch-detail-size';
         row.append(name, state, bytes); this.detailTransfers.append(row);
         elements = { row, state, bytes }; this.detailRows.set(transfer.id, elements);
       }
       if (elements.row.dataset.state !== transfer.state) elements.row.dataset.state = transfer.state;
-      if (elements.state.textContent !== transferStates[transfer.state]) elements.state.textContent = transferStates[transfer.state];
+      const state = transfer.status === undefined ? transferStates[transfer.state] : `${transferStates[transfer.state]} · HTTP ${transfer.status}`;
+      if (elements.state.textContent !== state) elements.state.textContent = state;
       const amount = `${transfer.loaded} B received${transfer.total === null ? ' · response size unadvertised' : ` / ${transfer.total} B known`}`;
       if (elements.bytes.textContent !== amount) elements.bytes.textContent = amount;
     }
@@ -674,10 +667,6 @@ class LaunchController {
     this.mapMessage = message;
     this.detailsDirty = true;
   }
-  /** Detailed step or cause with asset URLs reduced to paths (no credentials or query tokens). */
-  private detailMessage() {
-    return this.phaseMessage.trim().replace(/(?:https?:\/\/|\/)[^\s<>"']+/g, transferName);
-  }
   fail(error: unknown, recover?: () => Promise<void>) {
     // Keep the first primary error; only a primary failure can replace a cosmetic one.
     if (!this.showing || !this.status || (this.failed && (!this.failed.recover || recover))) return;
@@ -691,8 +680,12 @@ class LaunchController {
     // The primary line says what to do; the actual cause stays in Details. Write it once
     // now, even collapsed, so it is present the moment Details opens.
     const fallback = this.selection.mode === 'player' ? 'Picardia' : 'Original robot';
-    this.phaseMessage = error instanceof Error ? error.message : String(error);
-    this.detailStatus.textContent = this.detailMessage();
+    // An HTTP error on a selected asset is the actual cause; a loader's later symptom
+    // (an invalid WebAssembly body, a missing model) follows it.
+    const http = this.progress.httpFailures().map(({ url, status }) => `${assetName(url)} returned HTTP ${status}.`).join(' ');
+    const cause = error instanceof Error ? error.message : String(error);
+    this.phaseMessage = http ? `${http} ${cause}` : cause;
+    this.detailStatus.textContent = detailText(this.phaseMessage);
     this.status.textContent = recover ? `Scene didn’t load. Use ${fallback} or Reload.` : 'Scene didn’t load. Reload to try again.';
     this.status.dataset.kind = 'error';
     this.detailsDirty = true;

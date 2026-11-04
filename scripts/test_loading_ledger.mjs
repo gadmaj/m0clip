@@ -5,13 +5,15 @@ import { build } from 'esbuild';
 
 globalThis.location = new URL('https://scene.test/');
 const result = await build({ stdin: { resolveDir: process.cwd(), sourcefile: 'loading-ledger-fixture.ts', contents: `
-  export { SceneProgress, downloadEstimate, loadingPhase } from './src/loading/progress';
+  export { SceneProgress, assetName, detailText, downloadEstimate, loadingPhase } from './src/loading/progress';
+  export { observeTransfers } from './src/loading/transfers';
   export { plannedAssets, priorIntakeAssets } from './src/loading/catalogue';
   export { inspectLocalMap, localMapIntakeState } from './src/ui/local-map';
 ` }, bundle: true, platform: 'node', format: 'cjs', write: false });
 const module = { exports: {} };
 new Function('module', 'require', result.outputFiles[0].text)(module, createRequire(import.meta.url));
-const { SceneProgress, downloadEstimate, loadingPhase, plannedAssets, priorIntakeAssets, inspectLocalMap, localMapIntakeState } = module.exports;
+const { SceneProgress, assetName, detailText, downloadEstimate, loadingPhase, observeTransfers, plannedAssets, priorIntakeAssets,
+  inspectLocalMap, localMapIntakeState } = module.exports;
 const transfer = (id, url, loaded, total, state = 'loading') => ({ id, url, loaded, total, state });
 const progress = new SceneProgress();
 const first = progress.begin(0);
@@ -193,6 +195,41 @@ for (const [message, label] of [
   ['Some future worker step…', 'Loading scene…'],
 ]) assert.equal(loadingPhase(message), label, message);
 
+// Details keep worker text exactly; only whole URLs and absolute paths become asset names.
+assert.equal(detailText('loading amp_locomotion/amp_locomotion…'), 'loading amp_locomotion/amp_locomotion…');
+assert.equal(detailText('fetch for "/assets/characters/a%20b.glb?token=1" responded with 503'),
+  'fetch for "/assets/characters/a b.glb" responded with 503');
+assert.equal(detailText('Asset download: https://user:secret@cdn.test/packs/r1.zip?sig=x#y (HTTP 503)'),
+  'Asset download: cdn.test/packs/r1.zip (HTTP 503)');
+assert.equal(detailText('loading /assets/packs/walk…'), 'loading /assets/packs/walk…', 'A path keeps its trailing ellipsis unencoded');
+assert.equal(assetName('https://scene.test/assets/models/r1/scene%20a.xml?x=1'), '/assets/models/r1/scene a.xml');
+
+// An HTTP error body is a failed request, not the asset's payload: a 503 notice read by a
+// synchronous XHR fallback (seen only through ResourceTiming) cannot become a catalogue mismatch.
+let timing;
+const realObserver = globalThis.PerformanceObserver;
+globalThis.PerformanceObserver = class { constructor(callback) { timing = callback; } observe() {} disconnect() {} takeRecords() { return []; } };
+const observed = [];
+const stopObserving = observeTransfers('timing', updates => observed.push(...updates), 0);
+const entry = (name, decodedBodySize, responseStatus) => ({ entryType: 'resource', initiatorType: 'xmlhttprequest',
+  name: `https://scene.test${name}`, startTime: 10, decodedBodySize, responseStatus });
+timing({ getEntries: () => [entry('/wasm/mujoco.wasm', 14, 503), entry('/wasm/other.wasm', 14, 0), entry('/assets/ok.bin', 700, 200)] });
+stopObserving();
+globalThis.PerformanceObserver = realObserver;
+const finalUpdate = path => observed.filter(update => update.url.endsWith(path)).at(-1);
+assert.deepEqual([finalUpdate('/wasm/mujoco.wasm').state, finalUpdate('/wasm/mujoco.wasm').loaded, finalUpdate('/wasm/mujoco.wasm').status], ['failed', 0, 503]);
+assert.equal(finalUpdate('/wasm/other.wasm').state, 'done', 'Unknown status (0) keeps the existing completion fallback');
+assert.deepEqual([finalUpdate('/assets/ok.bin').state, finalUpdate('/assets/ok.bin').loaded], ['done', 700]);
+const httpLedger = new SceneProgress(), httpGeneration = httpLedger.begin(0);
+httpLedger.freeze(httpGeneration, [{ url: '/wasm/mujoco.wasm', bytes: 8_607_662 }, { url: '/assets/ok.bin', bytes: 700 }], 0);
+httpLedger.update(httpGeneration, observed.filter(update => !update.url.endsWith('/wasm/other.wasm')), 100);
+assert.equal(httpLedger.hasCatalogueMismatch, false, 'A failed HTTP response is reported as a failure, not a size mismatch');
+assert.deepEqual(httpLedger.httpFailures(), [{ url: '/wasm/mujoco.wasm', status: 503 }]);
+assert.equal(assetName(httpLedger.httpFailures()[0].url), '/wasm/mujoco.wasm');
+assert.equal(httpLedger.snapshot(100).stoppedBytes, 8_607_662);
+httpLedger.update(httpGeneration, [transfer('short', '/wasm/mujoco.wasm', 14, 14, 'done')], 200);
+assert.equal(httpLedger.hasCatalogueMismatch, true, 'A genuine short successful body is still a catalogue mismatch');
+
 // Validation failure does not unload a successful import; later imports cannot
 // rewrite the pre-Load snapshot or turn local ZIP bytes into HTTP receipts.
 const beforeIntake = localMapIntakeState();
@@ -340,4 +377,4 @@ assert.equal(partialRoot.snapshot(4).active, 0, 'Migrated request activity ends 
 assert.equal(partialRoot.hasCatalogueMismatch, false);
 console.log(JSON.stringify({ fixedMaximum: true, uniqueEntities: true, retainedPreflight: true,
   retryIsolation: true, generationIsolation: true, realRate: true, stalledEstimate: true, catalogueMismatch: true,
-  activeOnlyEta: true, phaseLabels: true }));
+  activeOnlyEta: true, phaseLabels: true, detailText: true, httpFailureCause: true }));

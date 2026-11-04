@@ -135,8 +135,9 @@ export class SceneProgress {
       const loaded = Math.max(resource?.loaded ?? 0, request.loaded);
       const done = resource?.state === 'done' || request.state === 'done';
       const state = done ? 'done' : active > 0 ? 'loading' : request.state;
+      const status = state === 'failed' ? request.status ?? resource?.status : undefined;
       this.resources.set(key, { id: key, url, realm, loaded,
-        total: done ? loaded : request.total ?? resource?.total ?? null, state });
+        total: done ? loaded : request.total ?? resource?.total ?? null, state, ...(status === undefined ? {} : { status }) });
       if (state !== 'loading') this.opened.delete(key);
       else if (!this.opened.has(key)) this.opened.set(key, { at: now, loaded });
     }
@@ -161,6 +162,17 @@ export class SceneProgress {
   /** Live records for the optional disclosure; never iterate for collapsed detail DOM. */
   transfers(): IterableIterator<Readonly<TransferUpdate>> {
     return this.resources.values();
+  }
+
+  /** Selected entities whose request ended with an HTTP error status: the actual cause of a failed load. */
+  httpFailures(): Array<{ url: string; status: number }> {
+    const failures: Array<{ url: string; status: number }> = [];
+    for (const [key, resource] of this.resources) {
+      if (resource.state === 'failed' && resource.status !== undefined && (!this.budget || this.budget.has(key))) {
+        failures.push({ url: resource.url, status: resource.status });
+      }
+    }
+    return failures;
   }
 
   snapshot(now: number): LoadingSnapshot {
@@ -234,6 +246,22 @@ const PHASES: ReadonlyArray<readonly [RegExp, string]> = [
 export function loadingPhase(message: string): string {
   for (const [pattern, label] of PHASES) if (pattern.test(message)) return label;
   return 'Loading scene…';
+}
+
+/** Display path for an asset URL: never URL credentials, search parameters or fragments. */
+export function assetName(value: string): string {
+  try {
+    const url = new URL(value, location.href);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'Asset';
+    const name = `${url.origin === location.origin ? '' : url.host}${url.pathname}`;
+    try { return decodeURI(name); } catch { return name; }
+  } catch { return 'Asset'; }
+}
+
+/** Details text: whole URLs and absolute paths are shortened to asset names; any other word,
+ * such as the policy id in "loading amp_locomotion/amp_locomotion…", keeps its exact text. */
+export function detailText(message: string): string {
+  return message.trim().replace(/(?<=^|[\s"'(])(?:https?:\/\/|\/)[^\s<>"']+/g, assetName);
 }
 
 export function downloadTime(seconds: number): string {
