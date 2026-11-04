@@ -51,9 +51,14 @@ export async function encodableCodecs(width: number, height: number, fps: number
   return new Set(all.filter((_, i) => ok[i]));
 }
 
+/** The recorded scene a renderer draws. A Robot take poses one model. A Player take changes its model at
+ * each epoch boundary (PlayerTake.epochAt): `ensureScene` shows that epoch's recorded model before `pose`,
+ * and returns a promise while the view rebuilds and its visuals load. Frames are never drawn before it settles. */
 export interface Stage {
   prepare?(): Promise<void>; // wait for recorded robot and map visuals before rendering frames
   view: SceneView;
+  /** Build the recorded model that applies at take time t; null when it is already shown. */
+  ensureScene?(t: number): Promise<void> | null;
   /** pose the scene at take time t */
   pose(t: number): void;
   /** aim the camera at take time t for a frame of the given aspect */
@@ -79,6 +84,9 @@ export async function renderVideo(job: VideoJob, stage: Stage, onProgress: (p: P
   let lastYield = started;
   const step = async (i: number) => {
     const t = Math.min(job.t1, job.t0 + (i * job.speed) / job.fps);
+    const scene = stage.ensureScene?.(t);
+    if (scene) await scene;
+    if (signal.aborted) throw new DOMException("export cancelled", "AbortError");
     stage.pose(t);
     stage.aim(camera, t, aspect);
     view.renderWith(camera);

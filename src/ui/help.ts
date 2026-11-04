@@ -1,18 +1,32 @@
 import './help.css';
+import type { SceneMode } from '../player/types';
 import type { StorageConsent } from './storage-consent';
 
-export type HelpContext = 'play' | 'flight' | 'timeline';
+export type HelpContext = 'play' | 'flight' | 'timeline' | 'player';
 export interface HelpDialogOptions {
   /** Clear held movement, stop flight and suppress gamepad input while open. */
   onOpen?: () => void;
   onClose?: () => void;
   context?: () => HelpContext;
+  /** Omitted: Player only when the context is 'player'. */
+  mode?: () => SceneMode;
   storageConsent?: StorageConsent;
 }
 
-type HelpSection = { id: string; title: string; intro?: string; rows: [string[], string][] };
+/** Sections without a mode apply to both Robot and Player scenes. */
+type HelpSection = { id: HelpContext | 'capture' | 'gamepad'; title: string; mode?: SceneMode; intro?: string; rows: [string[], string][] };
 const SECTIONS: HelpSection[] = [
-  { id: 'play', title: 'Play', intro: 'Robot controls apply outside Flight and Timeline. Release movement keys to stop.', rows: [
+  { id: 'player', title: 'Player', mode: 'player', intro: 'Click the scene to capture the mouse. Esc releases it and shows the panels.', rows: [
+    [['W / S'], 'Forward / backward'], [['A / D'], 'Left / right'], [['Mouse'], 'Look'],
+    [['Space'], 'Jump'], [['Ctrl'], 'Duck'], [['Shift'], 'Hold to run'],
+    [['Mouse 1', 'Mouse 2'], 'Primary / secondary tool action'],
+    [['1', '2', '3'], 'Knife / Physics gun / Spawn gun, when available'],
+    [['Wheel'], 'Next / previous tool; with a held object, nearer / farther'],
+    [['Wheel ↓'], 'Jump while the knife is out'],
+    [['Q'], 'Choose the robot to spawn'], [['F'], 'Inspect the knife; otherwise toggle the flashlight'],
+    [['X'], 'Hold for third person'], [['Esc'], 'Release the mouse'],
+  ] },
+  { id: 'play', title: 'Play', mode: 'robot', intro: 'Robot controls apply outside Flight and Timeline. Release movement keys to stop.', rows: [
     [['W / S'], 'Forward / backward'], [['A / D'], 'Turn left / right'], [['Q / E'], 'Strafe left / right'],
     [['Shift'], 'Hold with movement for full command speed (normally half speed)'],
     [['Space'], 'Stop robot commands and recalibrate the gamepad neutral'],
@@ -21,7 +35,7 @@ const SECTIONS: HelpSection[] = [
     [['R'], 'Reset'], [['C'], 'Recenter view'], [['H'], 'Toggle hoist'], [['F'], 'Toggle flashlight'],
     [['Tab'], 'Toggle panels when the viewport has focus'],
   ] },
-  { id: 'flight', title: 'Flight', intro: 'N toggles Flight. Arrow or numpad movement keys also enter Flight. Robot movement keys become camera controls.', rows: [
+  { id: 'flight', title: 'Flight', mode: 'robot', intro: 'N toggles Flight. Arrow or numpad movement keys also enter Flight. Robot movement keys become camera controls.', rows: [
     [['W / S', '↑ / ↓', 'Num 8 / 2'], 'Forward / backward'],
     [['A / D', '← / →', 'Num 4 / 6'], 'Left / right'],
     [['Space', 'E', 'Page Up', 'Num 7 / 9'], 'Up'],
@@ -46,7 +60,7 @@ const SECTIONS: HelpSection[] = [
     [['I / O'], 'Set range in / out'], [['X'], 'Clear range'], [['L'], 'Toggle loop'],
     [['F'], 'Fit timeline'], [['Esc'], 'Close Timeline (or close the export dialog first)'],
   ] },
-  { id: 'gamepad', title: 'Gamepad', intro: 'Press a gamepad button to connect. Keep the sticks still for about half a second to calibrate. Standard controller labels; policy remote actions can override these combos.', rows: [
+  { id: 'gamepad', title: 'Gamepad', mode: 'robot', intro: 'Press a gamepad button to connect. Keep the sticks still for about half a second to calibrate. Standard controller labels; policy remote actions can override these combos.', rows: [
     [['Left stick'], 'Forward / backward and strafe'], [['Right stick'], 'Turn'],
     [['LT + ↑'], 'Stance'], [['LT + B'], 'Damping'], [['LT + Y'], 'Zero torque'], [['LT + X'], 'Lock'],
     [['RT + A'], 'Policy'], [['RT + ← / →'], 'Previous / next policy'], [['RT + B'], 'Reset'],
@@ -104,8 +118,12 @@ export class HelpDialog {
   open(opener?: HTMLElement): void {
     if (this.isOpen) return;
     this.opener = opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    // Help needs the cursor; a locked Player pointer cannot reach Close.
+    if (document.pointerLockElement) document.exitPointerLock();
     const context = this.options.context?.() ?? 'play';
-    const ordered = [...SECTIONS].sort((a, b) => Number(b.id === context) - Number(a.id === context));
+    const mode = this.options.mode?.() ?? (context === 'player' ? 'player' : 'robot');
+    const ordered = SECTIONS.filter(section => !section.mode || section.mode === mode)
+      .sort((a, b) => Number(b.id === context) - Number(a.id === context));
     this.content.replaceChildren();
     const note = document.createElement('p');
     note.className = 'help-note';

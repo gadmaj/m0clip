@@ -152,6 +152,8 @@ export class Panel {
     this.mgrToggleBtn = button("", { cls: "ghost", icon: "box", title: "Policy packs: import, list, delete",
                                      onclick: () => this.toggleManager() });
     this.mgrToggleBtn.setAttribute("aria-controls", "policy-manager");
+    // data-robot-only: hidden in Player scenes by player-hud.css; Robot mode is unchanged.
+    this.mgrToggleBtn.dataset.robotOnly = "";
     root.append(el("header.p-head", null,
       el("h1", null, "Play"), this.mgrToggleBtn));
     this.updateMgrToggle();
@@ -160,7 +162,7 @@ export class Panel {
     root.append(this.reviewScope);
 
     // setup: robot → terrain → policy
-    const setup = el("section.blk");
+    const setup = el("section.blk", { "data-robot-only": "" });
     const form = el("div.form");
     const field = (id: string, label: string, opts: string[], onchange: (v: string) => void) => {
       const sel = el("select", { id: `sel-${id}` });
@@ -195,6 +197,7 @@ export class Panel {
 
     // FSM state: segmented control
     const stateBlk = block(root, "State", el("span", null, el("kbd", null, "0"), "–", el("kbd", null, "4")));
+    stateBlk.dataset.robotOnly = "";
     const seg = el("div.seg", { role: "radiogroup", "aria-label": "FSM state" });
     for (const s of STATES) {
       const b = el("button", { type: "button", role: "radio", "aria-checked": "false", title: STATE_UI[s].title },
@@ -229,17 +232,17 @@ export class Panel {
     this.liveControls.push(resetButton, stopButton, recenterButton, this.hoistBtn, this.noclipBtn);
     sim.append(el('div.sub', null, 'LIVE'));
     sim.append(
-      el("div.row", null,
+      el("div.row", { "data-robot-only": "" },
         resetButton,
         recenterButton,
         stopButton),
-      el("div.row", null,
+      el("div.row", { "data-robot-only": "" },
         this.hoistBtn,
         this.noclipBtn),
       el("div.row", null,
         this.flashlightBtn,
         this.screenshotBtn),this.screenshotInfo,
-      el("div.sub.navigation-help", null, "Arrows or numpad start camera flight. Numpad 8/2/4/6 move, 9/3 up/down, 5 stops; +/− change speed. Drag to look; Shift faster, Backslash for precision, X for level flight. N exits."));
+      el("div.sub.navigation-help", { "data-robot-only": "" }, "Arrows or numpad start camera flight. Numpad 8/2/4/6 move, 9/3 up/down, 5 stops; +/− change speed. Drag to look; Shift faster, Backslash for precision, X for level flight. N exits."));
 
     // recording: motion + inputs into a take → timeline → video / Blender export
     const rec = block(root, "Recording", el("kbd", null, "V"));
@@ -269,12 +272,12 @@ export class Panel {
 
     // remote-controller moves of the active policy (505 / 805 fight modes, 801/802 speed levels); hidden
     // when none. Placed below the fixed controls so those never shift when a policy brings moves.
-    this.remoteEl = el("section.blk", { style: "display:none" });
+    this.remoteEl = el("section.blk", { style: "display:none", "data-robot-only": "" });
     root.append(this.remoteEl);
     this.liveSections.push(this.remoteEl);
 
     // kinematic reference clip (mimic)
-    const clip = el("section.blk", { "aria-label": "Reference clip" });
+    const clip = el("section.blk", { "aria-label": "Reference clip", "data-robot-only": "" });
     root.append(clip);
     clip.dataset.workspace = 'capture';
     this.liveSections.push(clip);
@@ -303,14 +306,14 @@ export class Panel {
     st.append(this.statusEl);
 
     // gamepad debug + key reference (collapsed)
-    const dbg = el("details.fold", null, el("summary", null, "Gamepad debug"));
+    const dbg = el("details.fold", { "data-robot-only": "" }, el("summary", null, "Gamepad debug"));
     dbg.dataset.workspace = 'inspector';
     this.padDebugEl = el("div.pad-debug");
     dbg.append(el("div.fold-body", null, this.padDebugEl));
     root.append(dbg);
     this.padDebugOpen = () => dbg.open;
 
-    const keys = el("details.fold", null, el("summary", null, "Live keys and gamepad"));
+    const keys = el("details.fold", { "data-robot-only": "" }, el("summary", null, "Live keys and gamepad"));
     keys.dataset.workspace = 'inspector';
     const k = (...ks: string[]) => {
       const dt = el("dt");
@@ -346,7 +349,7 @@ export class Panel {
     for (const picker of [this.terrainPicker, this.robotPicker]) {
       const label = form.querySelector<HTMLLabelElement>(`label[for="${picker.button.id}"]`)!;
       // Each root includes its original hidden select and all gallery listeners.
-      choices.append(el("div.scene-choice", null, label, picker.root));
+      choices.append(el("div.scene-choice", picker === this.robotPicker ? { "data-robot-only": "" } : null, label, picker.root));
     }
     this.liveSections.push(choices);
     rec.querySelector(".blk-h")!.remove();

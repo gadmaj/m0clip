@@ -2,7 +2,7 @@ import type { SavedShot, SavedShotInfo, ShotLibrary } from '../record/library';
 import type { PhotoLibrary, SavedPhoto, SavedPhotoInfo } from '../record/photos';
 import type { RecordingRecovery } from '../record/recovery';
 import type { RecordingRecoveryInfo } from '../record/storage';
-import { storageErrorMessage } from '../record/storage';
+import { storageErrorMessage, subjectLabel } from '../record/storage';
 import { saveTake } from '../record/take';
 import { download } from '../render/recorder';
 import './shot-library.css';
@@ -71,8 +71,8 @@ export class ShotLibraryDialog {
     const header = document.createElement('header');
     header.append(this.title, button('Close', () => this.close()));
     this.search.type = 'search'; this.search.className = 'shot-library-search';
-    this.search.placeholder = 'Filter name, robot, map or kind…';
-    this.search.setAttribute('aria-label', 'Filter shots by name, robot, map or kind');
+    this.search.placeholder = 'Filter name, robot, Player, map or kind…';
+    this.search.setAttribute('aria-label', 'Filter shots by name, robot, Player, map or kind');
     this.search.addEventListener('input', () => this.filter());
     this.grid.className = 'shot-library-grid';
     this.grid.setAttribute('aria-label', 'Saved shots');
@@ -219,7 +219,7 @@ export class ShotLibraryDialog {
     preview.textContent = entry.kind === 'recovery' ? 'Recording recovery' : info.thumbnail ? 'Preview loading…' : 'Preview unavailable';
     const name = document.createElement('h3'); name.textContent = info.name || 'Untitled shot';
     const scene = document.createElement('p'); scene.className = 'shot-library-scene';
-    scene.textContent = `${info.robot} · ${info.terrain}`;
+    scene.textContent = `${subjectLabel(info)} · ${info.terrain}`;
     const details = document.createElement('p'); details.className = 'shot-library-details';
     const date = document.createElement('time'); date.dateTime = info.created;
     const created = new Date(info.created);
@@ -308,7 +308,7 @@ export class ShotLibraryDialog {
     for (const card of this.cards) {
       const { kind, info } = card.entry;
       const label = kind === 'photo' ? 'photo PNG capture' : kind === 'recovery' ? 'recording recovery' : 'take';
-      card.root.hidden = !`${info.name} ${info.robot} ${info.terrain} ${label}`.toLocaleLowerCase().includes(query);
+      card.root.hidden = !`${info.name} ${subjectLabel(info)} ${info.terrain} ${label}`.toLocaleLowerCase().includes(query);
       if (!card.root.hidden) { ++count; if (!card.loaded) this.observer?.observe(card.root); }
     }
     if (!this.loading && !this.operation && !this.deleting && !this.viewing && this.status.dataset.error !== 'true') {

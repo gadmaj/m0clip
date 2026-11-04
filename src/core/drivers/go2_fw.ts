@@ -22,7 +22,7 @@
  */
 import { clip, matFromWxyz, matTVec } from "../math";
 import type { Command, EvalConfig, RobotSpec } from "../types";
-import type { Engine } from "../../sim/engine";
+import type { EngineScope } from "../../sim/engine";
 import { OnnxSession } from "../policy";
 import { selectedDriverAssets } from '../driver-assets';
 import { HeightMapSampler } from "../lidar";
@@ -167,7 +167,7 @@ export class Go2FwDriver extends BaseDriver {
     return this.sampler ? { nx: this.sampler.nx, ny: this.sampler.ny } : undefined;
   }
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine, readonly nets: Record<string, OnnxSession>) {
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope, readonly nets: Record<string, OnnxSession>) {
     super(cfg, spec, eng);
     this.g = go2fw(cfg);
     this.home = SCHEME_FSM[this.g.scheme] ?? this.g.fsm_id;
@@ -681,7 +681,7 @@ export class Go2FwDriver extends BaseDriver {
     // front / centre (rows < back_index, right_index < col < 20 − right_index)
     let vision = new Float32Array(861), vz = new Float32Array(861);
     if (this.sampler) {
-      vision = Float32Array.from(this.sampler.sample(this.eng, this.bqp));
+      vision = Float32Array.from(this.sampler.sample(this.eng.engine, this.bqp));
       this.lastHmap = vision;
       const back = A.back_index ?? 35, right = A.right_index ?? 4;
       for (let r = 0; r < 41; r++) for (let c = 0; c < 21; c++)
@@ -947,7 +947,7 @@ export class Go2FwDriver extends BaseDriver {
 }
 
 /** Build the driver: the pack's checkpoint is role "main", `go2.aux_models` the other roles. */
-export async function makeGo2FwDriver(cfg: EvalConfig, spec: RobotSpec, eng: Engine): Promise<BaseDriver> {
+export async function makeGo2FwDriver(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope): Promise<BaseDriver> {
   const assets = selectedDriverAssets(cfg);
   const nets: Record<string, OnnxSession> = { main: await OnnxSession.load(assets.policy) };
   for (const [role, url] of Object.entries(assets.models))

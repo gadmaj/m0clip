@@ -12,7 +12,7 @@
  * joints the policy doesn't drive are held at drv.default. `step` is async
  * because onnxruntime-web inference is async.
  */
-import type { Engine } from "../../sim/engine";
+import type { EngineScope } from "../../sim/engine";
 import type { Command, EvalConfig, RobotSpec, RemoteActionGroup } from "../types";
 
 export abstract class BaseDriver {
@@ -58,7 +58,7 @@ export abstract class BaseDriver {
 
   homeXY: [number, number] = [0, 0];
 
-  constructor(readonly cfg: EvalConfig, readonly spec: RobotSpec, readonly eng: Engine) {
+  constructor(readonly cfg: EvalConfig, readonly spec: RobotSpec, readonly eng: EngineScope) {
     this.name = cfg.name;
     this.names = spec.joint_names;
     this.n = this.names.length;
@@ -128,7 +128,7 @@ export abstract class BaseDriver {
     eng.forward();
     const zmin = eng.minGeomZ(dropBodies);
     eng.qpos[this.bqp + 2] += dropClearance - zmin;
-    eng.qvel.fill(0);
+    eng.clearVelocity();
     eng.forward();
   }
 

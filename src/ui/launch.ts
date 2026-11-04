@@ -3,11 +3,13 @@ import { isTerrain, TERRAINS } from '../sim/terrain';
 import type { MapEntry, TerrainName } from '../sim/terrain';
 import { KIT_LABELS, KIT_REGIONS } from '../render/robot-kit-data';
 import { CHARACTER_CHOICES, characterPhysics, compatibleBody, isBodyVisual, isCharacter, type CharacterId } from '../characters/catalog';
-import { decodePmodelId } from '../characters/pmodels';
+import { decodePmodelId, pmodelRecord } from '../characters/pmodels';
+import type { SceneMode } from '../player/types';
 import { sharedView } from './explore';
 import { Pong } from './pong';
 import { VisualPicker } from './visual-picker';
 import { previewImage, staticPreviewOptions, characterOptions, characterDescription, sourceModelCatalog } from './preview-catalog';
+import { previewMedia } from './preview-media';
 import { SceneProgress, downloadTime, type LoadingSnapshot } from '../loading/progress';
 import { observeTransfers, type TransferUpdate } from '../loading/transfers';
 import type { PlannedAsset, PriorModuleIntake } from '../loading/asset-plan';
@@ -23,12 +25,30 @@ export interface LaunchSelection {
   localFile?: File;
   localIndex?: MapBundleIndex;
   localSource?: MapSource;
+  mode: SceneMode;
+  /** Robot mode physics; Player mode keeps it remembered and unused. */
   robot: string;
   /** null means preserve linked / remembered paint, not "apply Original". */
   character: CharacterId | null;
+  /** Player model ID, independent of the Robot character. */
+  playerBody: string;
   preserveView: boolean;
   robotChanged: boolean;
 }
+/** Verified Player model supplied by Main (for example local Studio content). */
+export interface PlayerBodyOption {
+  value: string;
+  label: string;
+  /** Real thumbnail URL for the gallery. */
+  preview: string;
+  /** Gallery heading, for example the game it came from. */
+  group: string;
+  description?: string;
+}
+export const PICARDIA_PLAYER = 'pmodels:hl:picardia_v1sc';
+/** Mode and Player model only; Robot prefs stay in ume-prefs / ume-appearance. */
+const PLAYER_PREFS = 'ume-player';
+const DEFAULT_MODE: SceneMode = 'robot';
 const robots = ['r1', 'r1_air', 'r1_air_edu', 'g1', 'g1_air', 'go2'];
 const labels: Record<string, string> = { flat: 'Flat ground', rough: 'Rough ground', slope: 'Slope', stairs: 'Stairs', park: 'Park' };
 const characters = KIT_LABELS;
@@ -79,6 +99,14 @@ class LaunchController {
   private mapPicker!: VisualPicker;
   private robotPicker!: VisualPicker;
   private characterPicker?: VisualPicker;
+  private playerPicker?: VisualPicker;
+  private playerBodies: readonly PlayerBodyOption[] = [];
+  /** A remembered non-Source model, restored only once Main lists it again. */
+  private pendingPlayerBody: string | null = null;
+  private playerBodyChosen = false;
+  private modeChosen = false;
+  private linkedRobot: boolean;
+  private addGameContent?: () => void;
   private progress = new SceneProgress();
   private loadGeneration = 0;
   private preloadedLocalMap?: PriorModuleIntake;
@@ -110,7 +138,14 @@ class LaunchController {
       ?? (isTerrain(prefs.terrain) && !prefs.terrain.startsWith('map:local-') ? prefs.terrain : 'map:nt_ghost_ctg');
     const rememberedRobot = typeof prefs.robot === 'string' && robots.includes(prefs.robot) ? prefs.robot : 'r1';
     const robot = this.shared?.robot ?? (isBodyVisual(body) && !compatibleBody(body, rememberedRobot) ? characterPhysics(body)! : rememberedRobot);
-    this.selection = { terrain, robot, character: null, preserveView: !!this.shared, robotChanged: false };
+    // A shared view or ?body= link is an explicit Robot workflow; it never opens in Player mode.
+    this.linkedRobot = !!this.shared || isBodyVisual(body);
+    const { mode: savedMode, body: savedBody } = stored(PLAYER_PREFS);
+    const mode: SceneMode = this.linkedRobot ? 'robot' : savedMode === 'player' || savedMode === 'robot' ? savedMode : DEFAULT_MODE;
+    const rememberedBody = typeof savedBody === 'string' ? savedBody : null;
+    const playerBody = rememberedBody && decodePmodelId(rememberedBody) ? rememberedBody : PICARDIA_PLAYER;
+    if (rememberedBody && rememberedBody !== playerBody) this.pendingPlayerBody = rememberedBody;
+    this.selection = { terrain, mode, robot, character: null, playerBody, preserveView: !!this.shared, robotChanged: false };
     this.initialAppearance = this.shared?.appearance ?? stored('ume-appearance')[robot];
     if (!this.shared?.appearance && isBodyVisual(body) && compatibleBody(body, robot)) {
       this.initialAppearance = { ...(this.initialAppearance && typeof this.initialAppearance === 'object' ? this.initialAppearance : {}), sourceBody: body };
@@ -142,6 +177,20 @@ class LaunchController {
   onEnter(callback: () => void) { this.callbacks.push(callback); }
   onFailure(callback: () => void) { this.failureCallbacks.push(callback); }
   ownsKey(code: string) { return this.heldKeys.has(code); }
+  /** Main lists only Player models it has verified locally; the boot shell parses nothing. */
+  setPlayerBodies(options: readonly PlayerBodyOption[]) {
+    this.playerBodies = options;
+    const pending = this.pendingPlayerBody;
+    if (pending && !this.playerBodyChosen && options.some(option => option.value === pending)) {
+      this.selection.playerBody = pending; this.pendingPlayerBody = null;
+    }
+    if (this.root && this.showing) this.renderPlayerBodies();
+  }
+  /** Shows Add game content; the callback runs inside the trusted click. */
+  onAddGameContent(callback: () => void) {
+    this.addGameContent = callback;
+    if (this.root) this.root.querySelector<HTMLButtonElement>('#launch-add-content')!.hidden = false;
+  }
 
   mount(load: () => Promise<unknown>) {
     this.root = document.createElement('section'); this.root.id = 'launch-screen';
@@ -155,8 +204,17 @@ class LaunchController {
           <div class="launch-actions"><button id="launch-next" class="btn primary" type="button">Choose character</button></div>
         </section>
         <section id="launch-character-step" aria-labelledby="launch-character-title" hidden><h2 id="launch-character-title">Pick a character</h2>
-          <label for="launch-character-trigger">Character</label><select id="launch-character"></select>
-          <p id="launch-appearance-note"></p><label for="launch-robot-trigger">Robot physics</label><select id="launch-robot"></select>
+          <div id="launch-mode" class="seg launch-mode" role="radiogroup" aria-label="Play as">
+            <button id="launch-mode-robot" type="button" role="radio" data-mode="robot">Robot</button><button id="launch-mode-player" type="button" role="radio" data-mode="player">Player</button>
+          </div>
+          <div id="launch-robot-choices">
+            <label for="launch-character-trigger">Character</label><select id="launch-character"></select>
+            <p id="launch-appearance-note"></p><label for="launch-robot-trigger">Robot physics</label><select id="launch-robot"></select>
+          </div>
+          <div id="launch-player-choices">
+            <label for="launch-player-body-trigger">Player model</label><select id="launch-player-body"></select>
+            <button id="launch-add-content" class="btn launch-add-content" type="button" hidden>Add game content…</button>
+          </div>
           <div class="launch-actions"><button id="launch-back" class="btn" type="button">Back</button><button id="launch-load" class="btn primary" type="button">Load scene</button></div>
         </section>
         <section id="launch-loading-step" aria-labelledby="launch-loading-title" hidden><h2 id="launch-loading-title">Loading</h2>
@@ -230,12 +288,29 @@ class LaunchController {
       this.renderCharacters();
     };
     this.robotPicker = new VisualPicker(robot,{id:'launch-robot',label:'Robot physics',preview:value=>previewImage('robot',value)});
-    this.renderCharacters(); this.renderMaps();
+    this.renderCharacters(); this.renderMaps(); this.renderPlayerBodies();
+    const addContent = this.root.querySelector<HTMLButtonElement>('#launch-add-content')!;
+    addContent.hidden = !this.addGameContent;
+    addContent.onclick = () => this.addGameContent?.();
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>('#launch-mode [role="radio"]')) {
+      const mode = button.dataset.mode as SceneMode, other: SceneMode = mode === 'robot' ? 'player' : 'robot';
+      button.onclick = () => this.chooseMode(mode);
+      // Two radios: every arrow key moves to the other choice and selects it.
+      button.onkeydown = event => {
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+        event.preventDefault(); this.chooseMode(other);
+        this.root.querySelector<HTMLButtonElement>(`#launch-mode-${other}`)!.focus();
+      };
+    }
+    this.renderMode();
     const step = (name: string) => { for (const id of ['map', 'character', 'loading']) this.root.querySelector<HTMLElement>(`#launch-${id}-step`)!.hidden = id !== name; };
-    this.root.querySelector<HTMLButtonElement>('#launch-next')!.onclick = () => { step('character'); this.characterPicker!.button.focus(); };
+    this.root.querySelector<HTMLButtonElement>('#launch-next')!.onclick = () => {
+      step('character'); (this.selection.mode === 'player' ? this.playerPicker : this.characterPicker)!.button.focus();
+    };
     this.root.querySelector<HTMLButtonElement>('#launch-back')!.onclick = () => { step('map'); this.mapPicker.button.focus(); };
     this.root.querySelector<HTMLButtonElement>('#launch-load')!.onclick = async () => {
       if (this.loading) return;
+      this.rememberMode();
       this.loading = true; this.root.dataset.loading = 'true'; step('loading'); this.context.textContent = this.describe();
       this.context.title = this.context.textContent;
       this.startProgress();
@@ -267,7 +342,7 @@ class LaunchController {
       this.details.open = false; this.details.hidden = true;
       this.stopTransfers?.(); this.stopTransfers = undefined;
       window.clearInterval(this.progressTimer); this.progressTimer = undefined;
-      this.mapPicker.dispose(); this.robotPicker.dispose(); this.characterPicker?.dispose();
+      this.mapPicker.dispose(); this.robotPicker.dispose(); this.characterPicker?.dispose(); this.playerPicker?.dispose();
       document.getElementById('app')!.inert = false;
       for (const callback of this.callbacks) callback();
       document.querySelector<HTMLCanvasElement>('#viewport canvas')?.focus({ preventScroll: true });
@@ -281,7 +356,74 @@ class LaunchController {
     const terrain = this.selection.terrain;
     const map = terrain.startsWith('map:local-') && this.selection.localIndex ? this.selection.localIndex.name
       : terrain.startsWith('map:') ? this.maps.find(entry => `map:${entry.id}` === terrain)?.name ?? terrain.slice(4) : labels[terrain];
+    if (this.selection.mode === 'player') {
+      const body = this.root.querySelector<HTMLSelectElement>('#launch-player-body')!.selectedOptions[0]?.label ?? this.selection.playerBody;
+      return `${map} · Player · ${body}`;
+    }
     return `${map} · ${this.selection.robot.toUpperCase()} · ${this.selection.character ? CHARACTER_CHOICES.find(choice=>choice.id===this.selection.character)?.label ?? decodePmodelId(this.selection.character)?.name ?? this.selection.character : this.keptAppearanceLabel}`;
+  }
+
+  private chooseMode(mode: SceneMode) {
+    this.modeChosen = true;
+    if (mode === this.selection.mode) return;
+    this.selection.mode = mode; this.renderMode();
+  }
+
+  private renderMode() {
+    const mode = this.selection.mode;
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>('#launch-mode [role="radio"]')) {
+      const active = button.dataset.mode === mode;
+      button.classList.toggle('active', active); button.setAttribute('aria-checked', String(active)); button.tabIndex = active ? 0 : -1;
+    }
+    this.root.querySelector<HTMLElement>('#launch-robot-choices')!.hidden = mode !== 'robot';
+    this.root.querySelector<HTMLElement>('#launch-player-choices')!.hidden = mode !== 'player';
+  }
+
+  /** Player models with a real gallery thumbnail; Robot-only retarget characters are not listed. */
+  private renderPlayerBodies() {
+    const select = this.root.querySelector<HTMLSelectElement>('#launch-player-body')!;
+    const groups = new Map<string, HTMLOptGroupElement>();
+    const add = (group: string, value: string, label: string, preview: string, title = '') => {
+      let parent = groups.get(group);
+      if (!parent) { parent = document.createElement('optgroup'); parent.label = group; groups.set(group, parent); select.append(parent); }
+      const option = new Option(label, value); option.dataset.preview = preview; option.title = title; parent.append(option);
+    };
+    select.replaceChildren();
+    add('Half-Life', PICARDIA_PLAYER, 'Picardia', pmodelRecord(decodePmodelId(PICARDIA_PLAYER)!).thumbnail);
+    for (const body of this.playerBodies) if (body.value !== PICARDIA_PLAYER) add(body.group, body.value, body.label, body.preview, body.description);
+    if (!Array.from(select.options).some(option => option.value === this.selection.playerBody)) {
+      const remote = decodePmodelId(this.selection.playerBody);
+      if (remote) add(remote.game === 'hl' ? 'Half-Life' : 'Sven Co-op', this.selection.playerBody, remote.name, pmodelRecord(remote).thumbnail);
+      else {
+        // Main no longer lists this local model; keep it remembered for a later listing.
+        this.pendingPlayerBody = this.selection.playerBody; this.selection.playerBody = PICARDIA_PLAYER;
+      }
+    }
+    select.value = this.selection.playerBody;
+    if (this.playerPicker) { this.playerPicker.sync(true); return; }
+    select.onchange = () => {
+      this.selection.playerBody = select.value; this.playerBodyChosen = true; this.pendingPlayerBody = null;
+      this.renderPlayerBodies();
+    };
+    const goldsrc = sourceModelCatalog(true);
+    this.playerPicker = new VisualPicker(select, { id: 'launch-player-body', label: 'Player model', title: 'Choose a Player model',
+      preview: value => {
+        const still = Array.from(select.options).find(option => option.value === value)?.dataset.preview;
+        if (!still) throw new Error('Preview unavailable');
+        return previewMedia({ still });
+      },
+      catalog: { label: goldsrc.label, load: async (query, offset, signal) => {
+        const page = await goldsrc.load(query, offset, signal);
+        for (const option of page.options) option.description = 'GoldSrc player model';
+        return page;
+      } } });
+  }
+
+  /** Robot prefs are untouched; a linked Robot view keeps the remembered mode unless the user switched. */
+  private rememberMode() {
+    const mode = this.linkedRobot && !this.modeChosen ? stored(PLAYER_PREFS).mode : this.selection.mode;
+    const body = this.pendingPlayerBody ?? this.selection.playerBody;
+    try { localStorage.setItem(PLAYER_PREFS, JSON.stringify({ mode, body })); } catch { /* This load still uses the choice. */ }
   }
 
   private async loadCatalog() {

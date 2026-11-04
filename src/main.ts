@@ -6,10 +6,11 @@ import { NoclipFlight, isCameraKey, isCameraMovementKey } from "./input/noclip";
 import type { Command } from "./core/types";
 import { GamepadInput, type ComboAction } from "./input/gamepad";
 import { ExportDialog, loadPrefs as loadExportPrefs } from "./record/export-dialog";
-import { exportGlb } from "./record/export-blender";
+import { exportGlb, exportPlayerGlb, type PlayerGlbStage } from "./record/export-blender";
 import type { Stage } from "./record/export-video";
 import { applyStaticShot, grabShotView, defaultShot, ShotPath, type Shot } from "./record/shot";
-import { loadTake, motionCsv, saveTake, Take, TakeRecorder } from "./record/take";
+import { loadTake, saveTake, TakeRecorder, type RecordedTake } from "./record/take";
+import { PlayerTakeRecorder, contentRequirements, verifyPlayerContent, type PlayerTake, type PlayerTakeMeta } from './record/player-take';
 import { eventList, fmtTime, Timeline, type ViewMode } from "./record/timeline";
 import { download, capturePng, stamp } from "./render/recorder";
 import { SceneView, type Appearance, type HeadVisual } from "./render/scene";
@@ -24,7 +25,18 @@ import { ExplorePanel, sharedView, viewLink, type SavedView } from "./ui/explore
 import { policyPresentation } from './ui/policy-names';
 import { FloatingWorkspace } from './ui/floating-workspace';
 import './ui/floating-workspace.css';
-import { launch } from './ui/launch';
+import { launch, PICARDIA_PLAYER } from './ui/launch';
+import { PlayerHud, type PlayerHudState } from './ui/player-hud';
+import { PlayerInputController } from './player/input';
+import { INCH, sourceToAppPoint } from './player/source-frame';
+import { GMOD_MOVE_PROFILE } from './player/movement';
+import { PLAYER_BUTTON, type PlayerInputFrame, type PlayerSimFrame, type PlayerTool, type SceneMode } from './player/types';
+import { playerGameContent, studioBodyPath } from './player/content-session';
+import type { LocalGameContent } from './player/assets/local-content';
+import type { PlayerBodySource, PlayerView } from './render/player';
+import { decodeGoldSrcScene, type GoldSrcSource } from './render/characters/goldsrc';
+import { decodePmodelId, loadPmodel, pmodelId, type PmodelRef } from './characters/pmodels';
+import { SPECS } from './robots';
 import { HelpDialog } from './ui/help';
 import { StorageConsent } from './ui/storage-consent';
 import { VisualPicker } from './ui/visual-picker';
@@ -39,7 +51,7 @@ import { effectiveVisualState, type ShotLight } from './record/post';
 import { loadStartupCatalogue, plannedAssets, priorIntakeAssets } from './loading/catalogue';
 import { OptionalVisualAssetError, planVisualAssets } from './loading/visual-plan';
 import { resolveLaunchVisualSelection, type ResolvedLaunchVisualSelection } from './loading/visual-selection';
-import type { StartupAssetCatalogue, VisualAssetPlan, WorkerAssetPlan } from './loading/asset-plan';
+import type { PlannedAsset, StartupAssetCatalogue, VisualAssetPlan, WorkerAssetPlan } from './loading/asset-plan';
 import { discardPreparedPmodelCharacters } from './characters/prepared-pmodel';
 import { mapSource, validLocalMap, type MapSource, type LocalMapIdentity } from './maps/source';
 import { openLocalMap } from './ui/local-map';
@@ -76,7 +88,21 @@ const slug = (x: string) => x.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$
 const LIVE_ONLY_MESSAGES: Partial<Record<ToWorker['t'], true>> = {
   robot: true, terrain: true, policy: true, cycle: true, state: true, reset: true, hoist: true,
   remote: true, playback: true, stopPlayback: true, deletePack: true, deleteAllPacks: true, recenter: true,
+  playerInput: true, playerTool: true, playerInspect: true, playerWheel: true, playerSpawnRobot: true, playerUndo: true,
 };
+/** Spawn gun choices: every robot variant the app simulates, labelled as on the launch screen. */
+const SPAWN_ROBOTS = Object.keys(SPECS).map(value => ({ value, label: value.replace(/_/g, ' ').toUpperCase() }));
+/** View models for the Player tools, used only when the person's own game content has them: Garry's Mod's
+ * physics gun and tool gun, whose v_ models carry their hands. Without one, nothing is drawn for that tool. */
+const PLAYER_VIEW_MODELS: Partial<Record<PlayerTool, string>> = { physgun: 'models/weapons/v_physics.mdl', spawn: 'models/weapons/v_toolgun.mdl' };
+const NO_TOOLS: readonly PlayerTool[] = [];
+const PLAYER_TOOL_SLOTS: readonly PlayerTool[] = ['knife', 'physgun', 'spawn'];
+/** Tools the Player runtime provides. The Knife needs the Butterfly Knife view model, its animations and
+ * its attack timing verified from the person's own Counter-Strike: Global Offensive files; nothing reads
+ * that timing yet, so the Knife is not offered (and no knifeTiming is sent) rather than imitated. */
+const PLAYER_RUNTIME_TOOLS: PlayerTool[] = ['physgun', 'spawn'];
+/** Player look-at height for follow and orbit shots: the standing eye height of the Player movement profile. */
+const PLAYER_FOLLOW_Z = GMOD_MOVE_PROFILE.standEye * INCH;
 
 const esc = (x: string) => x.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 const sgn = (x: number, d = 2) => (x >= 0 ? "+" : "-") + Math.abs(x).toFixed(d);
@@ -147,15 +173,19 @@ interface WorkspaceCamera {
   held: boolean;
   mode: ViewMode;
 }
+/** A Player body (pmodel id or canonical Source path) and per-tool view model paths, read from `content`. */
+interface PlayerActors { body: string | null; content: LocalGameContent | null; views: Partial<Record<PlayerTool, string>> }
 class App {
   private sessionMaps=new Map<string,{identity:LocalMapIdentity;source:WeakRef<MapSource>}>();
   private liveMapSource:MapSource|null=null;
-  private takeSources=new WeakMap<Take,MapSource>();
+  private takeSources=new WeakMap<RecordedTake,MapSource>();
   private mapRequest=0;
   private mapPreparing=false;
   private pendingMap:{id:number;terrain:TerrainName;source:MapSource|null;stage:PreparedTerrainVisual|null;resolve:()=>void;reject:(error:unknown)=>void;committing:boolean;onCommit?:()=>void;validate?:(scene:SceneIdentity)=>void}|null=null;
   /** Modal surfaces own keyboard, pointer and gamepad input. */
   private get inputBlocked() { return launch.active || this.mapPreparing || !!this.pendingMap || !!document.querySelector('dialog[data-local-map][open]') || !!this.help?.isOpen || !!this.shotLibrary?.isOpen || VisualPicker.active; }
+  /** Flight and the live Player camera own the viewport camera; orbit controls stay off. */
+  private get cameraOwned() { return this.noclip || this.mode === 'player'; }
   private help!: HelpDialog;
   private modalKeys = new Set<string>();
   private initialViewRestore: Promise<void> = Promise.resolve();
@@ -196,6 +226,36 @@ class App {
   private explore!: ExplorePanel;
   private status: StatusMsg | null = null;
 
+  // ---- Player mode (fixed for the session: the worker compiles one mode) ----
+  private readonly mode: SceneMode = launch.selection.mode;
+  private player: { input: PlayerInputController; hud: PlayerHud } | null = null;
+  private playerStatus: Extract<FromWorker, { t: 'playerStatus' }> | null = null;
+  private playerSpawnLabel: string | null = null;
+  private playerFrame: PlayerSimFrame | null = null;
+  private playerClock: number | null = null;
+  /** The new world's spawn angles become the look angles once its first frame arrives. */
+  private playerLookPending = true;
+  private playerEyeZ = 0;
+  private readonly playerFeet = new Float64Array(3);
+  /** Copy of the last input sent, recorded with each frame (the controller lends its frame). */
+  private readonly playerSentInput: PlayerInputFrame = { sequence: 0, yaw: 0, pitch: 0, forward: 0, side: 0, held: 0, pressed: 0, wheelJump: false, thirdPerson: false };
+  private playerInputSent = false;
+  /** A tool the person chose that the worker has not yet confirmed; older statuses must not undo it. */
+  private playerToolPending: PlayerTool | null = null;
+  private readonly playerAim = new THREE.Vector3();
+  /** Why a tool's view model could not load; told to the person when they equip that tool. */
+  private readonly playerViewModelErrors = new Map<PlayerTool, string>();
+  private readonly playerHudState: PlayerHudState = { enabled: false, locked: false, tool: 'none', tools: NO_TOOLS, holding: false, spawnLabel: null };
+  /** What the shared PlayerView should show (live or the reviewed take) and what it was last given. */
+  private playerWanted: PlayerActors | null = null;
+  private playerShown: { view: PlayerView; actors: PlayerActors } | null = null;
+  private playerLiveActors: PlayerActors | null = null;
+  private playerActorsReady: Promise<void> = Promise.resolve();
+  private readonly goldSrcSources = new Map<string, Promise<{ source: GoldSrcSource; planned: PlannedAsset[] }>>();
+  /** Reattached local game content, and the actors, of reviewed Player takes. */
+  private readonly takeContent = new WeakMap<PlayerTake, LocalGameContent | null>();
+  private readonly takeActors = new WeakMap<PlayerTake, PlayerActors>();
+
   private overlay = document.getElementById("overlay")!;
   private overlayMsg = document.getElementById("overlay-msg")!;
   private inspectorBody = document.getElementById("inspector-body")!;
@@ -213,6 +273,8 @@ class App {
   private viewBuildGeneration=0;
   private viewModel: RenderModel | null = null;   // the model the scene currently shows
   private rec: TakeRecorder | null = null;
+  /** A Player take: it keeps recording across spawn and remove rebuilds (new layout epochs). */
+  private playerRec: PlayerTakeRecorder | null = null;
   private recCheckpoint:RecordingCheckpointWriter|null=null;
   private recordStarting = false;
   private screenshotPending=false;
@@ -220,7 +282,7 @@ class App {
   private screenshotAbort:AbortController|null=null;
   private screenshotIsCurrent:(()=>boolean)|null=null;
   private liveReview: { model: RenderModel | null; appearance: Appearance; head: HeadVisual; look: LookState; display: SceneDisplay; flashlight: boolean; shot: Shot; camera: WorkspaceCamera } | null = null;
-  private reviewOriginal: { take: Take; appearance: Appearance; head: HeadVisual; look: LookState; display: SceneDisplay; flashlight: boolean; lights: ShotLight[] } | null = null;
+  private reviewOriginal: { take: RecordedTake; appearance: Appearance; head: HeadVisual; look: LookState; display: SceneDisplay; flashlight: boolean; lights: ShotLight[] } | null = null;
   /** last value logged per input: a change the user makes is logged when they make it (at the frame
    * they were looking at), and the status that confirms it later is not logged again */
   private logged: { state?: FsmState; policy?: string; hoist?: boolean } = {};
@@ -229,13 +291,13 @@ class App {
    * them for seconds) */
   private pending: Partial<Record<keyof App["logged"], { v: unknown; stale: number }>> = {};
   private recModel: RenderModel | null = null;
-  private take: Take | null = null;
+  private take: RecordedTake | null = null;
   private takeModel: RenderModel | null = null;
   private readonly shotStore=new ShotLibrary();
   private readonly photoStore=new PhotoLibrary();
   private readonly recordingRecovery=new RecordingRecovery(this.shotStore);
   private shotLibrary!:ShotLibraryDialog;
-  private readonly storedTakes=new WeakMap<Take,StoredTakeState>();
+  private readonly storedTakes=new WeakMap<RecordedTake,StoredTakeState>();
   private readonly shotWrites=new Set<Promise<void>>();
   private readonly warnPendingSave=(event:BeforeUnloadEvent)=>{
     if(!this.screenshotPending&&!this.shotWrites.size)return;
@@ -335,7 +397,7 @@ class App {
       onOpenShots:()=>{void this.openShots();},
       onLoadTake: (file) => void this.openTakeFile(file),
       onLocalMap: async file=>{
-        if(this.rec||this.recordStarting||this.timeline.isOpen||this.exporting||(this.mapPreparing&&!this.viewRestoreAbort))throw new Error('Finish the current recording, review or export before loading a map.');
+        if(this.rec||this.playerRec||this.recordStarting||this.timeline.isOpen||this.exporting||(this.mapPreparing&&!this.viewRestoreAbort))throw new Error('Finish the current recording, review or export before loading a map.');
         await this.cancelViewRestore();
         try{await openLocalMap(file,undefined,(source,signal,onCommit)=>this.changeTerrain(`map:${source.id}`,source,{signal,onCommit}));}
         catch(error){if(!(error instanceof DOMException&&error.name==='AbortError'))throw error;}
@@ -376,10 +438,11 @@ class App {
       path: () => this.timeline.isOpen ? this.shotPath : null,
       stage: () => this.stage(),
       setExporting: (on) => this.setExporting(on),
-      glb: (fps, camera, floor) => exportGlb(this.take!, this.view, this.takeModel!, {
-        fps, t0: this.timeline.rangeIn, t1: this.timeline.rangeOut, floor, look: this.look.getState(),
-        camera: camera ? { path: this.shotPath!, shot: this.shot, aspect: this.dialog.aspect } : null }),
-      csv: (fps) => motionCsv(this.take!, fps, this.timeline.rangeIn, this.timeline.rangeOut),
+      glb: (fps, camera, floor) => {
+        const take = this.take!, job = { fps, t0: this.timeline.rangeIn, t1: this.timeline.rangeOut, floor, look: this.look.getState(),
+          camera: camera ? { path: this.shotPath!, shot: this.shot, aspect: this.dialog.aspect } : null };
+        return take.mode === 'player' ? exportPlayerGlb(take, this.playerGlbStage(take), job) : exportGlb(take, this.view, this.takeModel!, job);
+      },
       saveTake: () => this.saveTakeFile(),
       save: (blob, ext) => download(blob, `${this.fileStem()}.${ext}`),
       onClose: () => {
@@ -413,7 +476,8 @@ class App {
     const storageConsent = new StorageConsent(document.getElementById('viewport')!, () => this.stopAndRearm());
     this.help = new HelpDialog({
       storageConsent,
-      context: () => this.timeline.isOpen ? 'timeline' : this.noclip ? 'flight' : 'play',
+      context: () => this.timeline.isOpen ? 'timeline' : this.noclip ? 'flight' : this.player ? 'player' : 'play',
+      mode: () => this.mode,
       onOpen: () => {
         controlsBeforeHelp = this.view.controls.enabled;
         this.stopAndRearm();
@@ -480,17 +544,21 @@ class App {
     window.addEventListener("blur", () => {
       this.modalKeys.clear();
       if (this.keysHeld.size) { this.keysHeld.clear(); this.applyKeys(false); }
+      if (this.player) this.send({ t: 'playerStop' });
     });
     document.addEventListener('visibilitychange',()=>{if(document.hidden)this.recCheckpoint?.checkpoint();});
     window.addEventListener('pagehide',()=>this.recCheckpoint?.checkpoint());
     this.wireLeash();
+    if (this.mode === 'player') this.wirePlayer();
     // restore the previous session's robot / terrain / policy
     this.pad.scale = [...this.cmdMax] as Command;
     launch.onEnter(() => {
-      this.keysHeld.clear(); this.flight.stop(); this.pad.rearm(); this.view.controls.enabled = !this.noclip;
+      this.keysHeld.clear(); this.flight.stop(); this.pad.rearm(); this.view.controls.enabled = !this.cameraOwned;
       this.send({ t: 'loadingFinished', generation: launch.loadingId });
       discardPreparedPmodelCharacters();
       storageConsent.sceneEntered();
+      // Enter scene is the trusted gesture that may capture the mouse.
+      if (this.player) { this.player.input.setEnabled(true); this.player.input.requestLock(); }
     });
     launch.onFailure(() => {
       this.send({ t: 'loadingFinished', generation: launch.loadingId });
@@ -531,6 +599,11 @@ class App {
       void this.initialViewRestore.catch(error => this.failLaunchVisuals(`Shared view could not load: ${error instanceof Error ? error.message : error}`));
     }
     const catalogue = this.startupCatalogue = await loadStartupCatalogue();
+    if (this.mode === 'player') {
+      this.send({ t: 'init', mode: 'player', terrain: selection.terrain, localMap: mapSource(selection.terrain)?.payload, loadingId: launch.loadingId, catalogue,
+        playerTools: PLAYER_RUNTIME_TOOLS });
+      return;
+    }
     this.send({ t: "init", robot: selection.robot, terrain: selection.terrain, localMap:mapSource(selection.terrain)?.payload, loadingId: launch.loadingId, catalogue,
       robotExplicit:selection.robotChanged||selection.preserveView,
       policy: selection.robotChanged || selection.robot !== prefs.robot ? undefined : prefs.policy });
@@ -538,8 +611,91 @@ class App {
     this.send({ t: "inspect", on: true });   // left column always streams
   }
 
+  /** Player startup plan: the map and flashlight visuals, plus the chosen body's exact fetched files. */
+  private async preparePlayerStartupAssets(plan: WorkerAssetPlan) {
+    if (!launch.active || plan.generation !== launch.loadingId || this.launchPlanToken !== null) return;
+    this.launchPlanToken = plan.token;
+    const prepare = async (bodyId: string) => {
+      const catalogue = this.startupCatalogue, selection = launch.selection;
+      selection.playerBody = bodyId;
+      const [visuals, body] = await Promise.all([
+        planVisualAssets({ terrain: selection.terrain, robot: plan.robot, body: 'stock', head: 'stock' }, catalogue),
+        this.playerBodySource(bodyId, playerGameContent.content)]);
+      if (!launch.active || plan.generation !== launch.loadingId || this.launchPlanToken !== plan.token) return;
+      const content = playerGameContent.content, views: Partial<Record<PlayerTool, string>> = {};
+      for (const [tool, path] of Object.entries(PLAYER_VIEW_MODELS) as [PlayerTool, string][]) if (content?.has(path)) views[tool] = path;
+      this.playerLiveActors = { body: studioBodyPath(bodyId) ?? bodyId, content, views };
+      const prepared = [...plan.prepared, ...visuals.prepared, ...body.planned];
+      const priorPageAssets = priorIntakeAssets(catalogue, launch.priorLocalMapIntake,
+        performance.getEntriesByType('resource') as PerformanceResourceTiming[]);
+      const assets = [
+        ...plannedAssets(catalogue, catalogue.runtime.page, [], priorPageAssets),
+        ...plannedAssets(catalogue, [...plan.urls, ...visuals.urls, ...prepared.map(asset => asset.url)], prepared),
+        ...(launch.usesLocalMapVerification
+          ? plannedAssets(catalogue, catalogue.runtime.localMapVerification, []).map(asset => ({ ...asset, realm: 'map-verification' as const }))
+          : []),
+      ];
+      launch.freezeAssets(plan.generation, assets, prepared);
+      this.send({ t: 'loadingProceed', generation: plan.generation, token: plan.token });
+      this.prepareMapVisual(selection.terrain);
+    };
+    const chosen = launch.selection.playerBody;
+    try { await prepare(chosen); }
+    catch (error) {
+      const message = `Scene assets could not be planned: ${error instanceof Error ? error.message : error}`;
+      // Like Original for robot characters: another body can replace the chosen one, never the map.
+      if (chosen !== PICARDIA_PLAYER) launch.fail(message, () => prepare(PICARDIA_PLAYER));
+      else this.showOverlay(message, 'error');
+    }
+  }
+
+  /** A Player body as the renderer takes it, with the exact network files it needed (none for local content). */
+  private async playerBodySource(id: string, content: LocalGameContent | null): Promise<{ source: PlayerBodySource; planned: PlannedAsset[] }> {
+    const studio = studioBodyPath(id);
+    if (studio) {
+      if (!content) throw new Error(`${studio} comes from game content that isn't attached in this tab. Add it again, or choose another Player model.`);
+      return { source: { kind: 'studio', content, path: studio }, planned: [] };
+    }
+    const ref = decodePmodelId(id);
+    if (!ref) throw new Error(`Unknown Player model: ${id}`);
+    const key = pmodelId(ref);
+    let pending = this.goldSrcSources.get(key);
+    if (!pending) {
+      pending = this.loadGoldSrcBody(ref);
+      this.goldSrcSources.set(key, pending);
+      pending.catch(() => { if (this.goldSrcSources.get(key) === pending) this.goldSrcSources.delete(key); });
+    }
+    const { source, planned } = await pending;
+    return { source: { kind: 'goldsrc', id: key, source }, planned };
+  }
+
+  /** Fetch a GoldSrc model once. Decoding it here resolves every texture and sequence-group file the
+   * decoder asks for, so the planned bytes are complete; the renderer later decodes from the same
+   * retained bytes without fetching. */
+  private async loadGoldSrcBody(ref: PmodelRef): Promise<{ source: GoldSrcSource; planned: PlannedAsset[] }> {
+    const planned: PlannedAsset[] = [];
+    const fetched = await loadPmodel(ref, undefined, asset => planned.push(asset));
+    const dependencies = new Map<string, Promise<ArrayBuffer>>(), load = fetched.loadDependency;
+    const source: GoldSrcSource = { ...fetched, loadDependency: name => {
+      let bytes = dependencies.get(name);
+      if (!bytes) { bytes = load(name); dependencies.set(name, bytes); }
+      return bytes.then(buffer => buffer.slice(0));
+    } };
+    const { scene } = await decodeGoldSrcScene(source);
+    scene.traverse(object => {
+      if (!(object instanceof THREE.Mesh)) return;
+      object.geometry.dispose();
+      for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+        for (const value of Object.values(material)) if (value instanceof THREE.Texture) value.dispose();
+        material.dispose();
+      }
+    });
+    return { source, planned };
+  }
+
   /** The worker's actual model/policy selection owns the one startup payload plan. */
   private async prepareStartupAssets(plan: WorkerAssetPlan) {
+    if (this.mode === 'player') return this.preparePlayerStartupAssets(plan);
     if (!launch.active || plan.generation !== launch.loadingId || this.launchPlanToken !== null) return;
     this.launchPlanToken = plan.token;
     let optionalFailure = false;
@@ -622,11 +778,18 @@ class App {
       ?null:await this.view.stageTerrainVisual(source);
     if(signal?.aborted){stage?.dispose();signal.throwIfAborted();}
     const {promise,resolve,reject}=Promise.withResolvers<void>();
-    const pending=this.pendingMap={id,terrain,source,stage,resolve,reject,committing:false,onCommit,validate};
+    const pending={id,terrain,source,stage,resolve,reject,committing:false as boolean,onCommit,validate};
+    this.pendingMap=pending;
     const cancel=()=>{if(this.pendingMap!==pending||pending.committing)return;this.pendingMap=null;stage?.dispose();this.worker.postMessage({t:'cancelTerrain'});this.overlay.classList.add('hidden');reject(new DOMException('Map loading cancelled.','AbortError'));};
     signal?.addEventListener('abort',cancel,{once:true});
     try{
-      this.worker.postMessage({t:'terrain',terrain,robot,request:id,localMap:source?.payload});
+      if(this.mode==='player'){
+        // A Player world changes maps by compiling a new world; the worker keeps the old one until it
+        // succeeds, so once sent the change cannot be withdrawn. A recording ends with its map.
+        if(this.playerRec)this.stopRecording('Stopped when the map changed.');
+        pending.committing=true;onCommit?.();this.playerLookPending=true;
+        this.worker.postMessage({t:'init',mode:'player',terrain,localMap:source?.payload,playerTools:PLAYER_RUNTIME_TOOLS});
+      }else this.worker.postMessage({t:'terrain',terrain,robot,request:id,localMap:source?.payload});
       await promise;
     }catch(error){
       if(this.pendingMap===pending){this.pendingMap=null;stage?.dispose();this.worker.postMessage({t:'cancelTerrain'});this.overlay.classList.add('hidden');}
@@ -653,7 +816,7 @@ class App {
     }
   }
 
-  private async attachTakeMap(take:Take,signal?:AbortSignal):Promise<void> {
+  private async attachTakeMap(take:RecordedTake,signal?:AbortSignal):Promise<void> {
     const meta=take.meta;
     if(!meta.terrain.startsWith('map:local-'))return;
     if(!validLocalMap(meta.localMap,meta.terrain))throw new Error('This take has no valid local map identity. Re-record it with its original map.');
@@ -722,6 +885,115 @@ class App {
     dom.addEventListener("pointercancel", release);
   }
 
+  /** Player input and HUD. The controller owns keys, mouse look, wheel and pointer lock; App's keyboard
+   * gate routes to it, and Robot driving, Flight and the gamepad stay out of a Player world. */
+  private wirePlayer() {
+    const hud = new PlayerHud(document.getElementById('viewport')!, {
+      requestLock: () => this.player?.input.requestLock(),
+      spawnRobot: robot => this.send({ t: 'playerSpawnRobot', robot }),
+    });
+    const input = new PlayerInputController(this.view.renderer.domElement, {
+      blocked: () => this.inputBlocked || this.timeline.isOpen || this.exporting || this.dialog.isOpen
+        || this.model?.mode !== 'player' || !!document.getElementById('policy-notice'),
+      input: frame => {
+        Object.assign(this.playerSentInput, frame);
+        this.playerInputSent = true;
+        if (frame.pressed & PLAYER_BUTTON.attack) this.view.player?.trigger('attack');
+        if (frame.pressed & PLAYER_BUTTON.attack2) this.view.player?.trigger('attack2');
+        this.send({ t: 'playerInput', input: frame });
+      },
+      tool: tool => {
+        this.playerToolPending = tool;
+        this.view.player?.trigger('draw');
+        this.send({ t: 'playerTool', tool });
+        const failed = this.playerViewModelErrors.get(tool);
+        if (failed) hud.showNotice(`View model unavailable · ${failed}`);
+      },
+      unavailable: tool => hud.unavailable(tool),
+      inspect: () => {
+        this.view.player?.trigger('inspect');
+        this.send({ t: 'playerInspect' });
+      },
+      spawnMenu: () => hud.openSpawnMenu(),
+      holdDistance: direction => this.send({ t: 'playerWheel', direction }),
+      locked: locked => { if (!locked) this.send({ t: 'playerStop' }); },
+      // The held view is part of every input frame; the camera reads the controller directly.
+      thirdPerson: () => {},
+      lockError: error => hud.showNotice(`Mouse capture unavailable: ${error instanceof Error ? error.message : String(error)}`),
+    });
+    hud.setMode('player');
+    hud.setSpawnRobots(SPAWN_ROBOTS, null);
+    this.player = { input, hud };
+  }
+
+  /** Change-driven HUD state; nothing is allocated per frame. */
+  private updatePlayerHud(player: { input: PlayerInputController; hud: PlayerHud }) {
+    const state = this.playerHudState, input = player.input;
+    state.enabled = input.active && !this.timeline.isOpen && !this.exporting && this.model?.mode === 'player';
+    state.locked = input.locked;
+    state.tool = input.tool;
+    state.tools = this.playerStatus?.availableTools ?? NO_TOOLS;
+    state.holding = !!this.playerFrame?.grab;
+    state.spawnLabel = this.playerSpawnLabel;
+    player.hud.update(state);
+  }
+
+  /** First person at the eye, or Source's third-person camera while X is held. */
+  private updatePlayerCamera(dt: number) {
+    const view = this.view.player, frame = this.playerFrame, input = this.player?.input;
+    if (!view || !frame || !input || this.viewModel !== this.model) return;
+    const camera = this.view.camera;
+    view.updateCamera(camera, frame, input, input.thirdPerson, dt);
+    // Orbit target just ahead of the eye: review and output setup open framing what the player sees.
+    camera.getWorldDirection(this.playerAim);
+    this.view.controls.target.copy(camera.position).add(this.playerAim);
+  }
+
+  /** One worker tick batch: position, look sync, presentation and the Player take frame. */
+  private playerFrameArrived(m: Extract<FromWorker, { t: 'frame' }>) {
+    const frame = m.player, sourceFrame = this.model!.sourceFrame, geometry = this.liveGeometry!;
+    if (!frame || !sourceFrame) throw new Error('A Player frame arrived without its player state or map frame.');
+    this.playerFrame = frame;
+    const feet = sourceToAppPoint(sourceFrame, frame.origin, this.playerFeet);
+    this.baseXY[0] = feet[0]; this.baseXY[1] = feet[1]; this.baseZ = feet[2];
+    this.playerEyeZ = feet[2] + frame.eyeHeight * INCH;
+    const input = this.player?.input;
+    if (input) {
+      if (this.playerLookPending) { input.setLook(frame.yaw, frame.pitch); this.playerLookPending = false; }
+      input.setHoldingObject(frame.grab !== null);
+    }
+    const view = this.view.player;
+    if (!view) return;
+    // Animation advances by simulated time only, so review and export replay the same poses.
+    const delta = this.playerClock === null ? 0 : m.clock - this.playerClock;
+    this.playerClock = m.clock;
+    // Output setup previews a static shot camera, which must not carry the player's view model.
+    view.showViewModel = !this.dialog.isOpen || this.shot.mode === 'viewport';
+    const presentation = view.present(frame, m.clock, delta);
+    const rec = this.playerRec;
+    if (!rec) return;
+    m.xpos = geometry.xpos; m.xmat = geometry.xmat;
+    try { rec.push(m, this.playerInputSent ? this.playerSentInput : null, this.camPose(), presentation); }
+    catch (error) { this.stopRecording(`Stopped: ${error instanceof Error ? error.message : error}`); return; }
+    this.recCheckpoint?.changed(); this.updateRecordingInfo();
+    if (rec.elapsed >= MAX_TAKE_S) this.stopRecording(`Stopped at the ${MAX_TAKE_S / 60} min limit.`);
+  }
+
+  private applyPlayerStatus(s: Extract<FromWorker, { t: 'playerStatus' }>) {
+    const previous = this.playerStatus;
+    this.playerStatus = s;
+    const player = this.player;
+    if (!player) return;
+    player.input.setAvailableTools(s.availableTools);
+    // Adopt the worker's tool unless a newer choice is still on its way to it.
+    if (this.playerToolPending === s.tool) this.playerToolPending = null;
+    if (this.playerToolPending === null && s.tool !== player.input.tool) player.input.selectTool(s.tool);
+    if (!previous || previous.spawnRobot !== s.spawnRobot) {
+      this.playerSpawnLabel = SPAWN_ROBOTS.find(option => option.value === s.spawnRobot)?.label ?? null;
+      player.hud.setSpawnRobots(SPAWN_ROBOTS, this.playerSpawnLabel === null ? null : s.spawnRobot);
+    }
+  }
+
   private showOverlay(msg: string, kind: "busy" | "notice" | "error" = "busy") {
     if (launch.active) {
       if (kind === 'error' || kind === 'notice') launch.fail(msg);
@@ -783,8 +1055,10 @@ class App {
   }
 
   /** Space / Stop: zero the command AND re-sample the pad's rest position, so
-   * a drifting or mis-neutraled pad can always be recovered hands-off. */
+   * a drifting or mis-neutraled pad can always be recovered hands-off.
+   * Player: release held input and the physics gun's grab; momentum is kept. */
   private stopAndRearm() {
+    if (this.player) { this.player.input.reset(); this.send({ t: 'playerStop' }); return; }
     this.keysHeld.clear();
     this.flight?.stop();
     this.send({ t: "noclipMove", velocity: [0, 0, 0] });
@@ -957,6 +1231,7 @@ class App {
 
   private captureView(): SavedView {
     if(this.pendingViewRestore||this.viewRestoreAbort)throw new Error('Wait for the view to finish restoring before saving or sharing it.');
+    if(this.mode==='player')throw new Error('Saved views keep a robot scene. Record a take or take a screenshot of a Player scene instead.');
     const p = this.view.camera.position, t = this.view.controls.target, appearance = this.view.getAppearance();
     return { version: 1, robot: this.viewModel?.robot ?? this.model?.robot ?? this.status?.robot ?? 'r1', terrain: this.viewModel?.terrain ?? this.panel.terrain,
       localMap:this.sourceForTerrain(this.viewModel?.terrain??this.panel.terrain)?.identity,
@@ -967,7 +1242,8 @@ class App {
   }
 
   private restoreView(view:SavedView,navigate=true):Promise<void> {
-    if(this.rec||this.recordStarting)return Promise.reject(new Error('Stop recording before restoring a view.'));
+    if(this.mode==='player')return Promise.reject(new Error('Saved views open robot scenes. Reload and choose Robot to open this view.'));
+    if(this.rec||this.playerRec||this.recordStarting)return Promise.reject(new Error('Stop recording before restoring a view.'));
     if(this.exporting)return Promise.reject(new Error('Wait for the export to finish before restoring a view.'));
     if(this.timeline.isOpen)return Promise.reject(new Error('Close the timeline before restoring a view.'));
     if(this.mapPreparing&&!this.viewRestoreAbort)return Promise.reject(new Error('Wait for the map to finish loading.'));
@@ -1000,7 +1276,7 @@ class App {
       if(source&&!source.isLocal)navigation.searchParams.set('map',source.id);
       else navigation.searchParams.delete('map');
       const href=viewLink(restored,navigation.href);
-      if(this.rec||this.recordStarting||this.exporting||this.timeline.isOpen)throw new Error('Finish the current recording, review or export before restoring a view.');
+      if(this.rec||this.playerRec||this.recordStarting||this.exporting||this.timeline.isOpen)throw new Error('Finish the current recording, review or export before restoring a view.');
       this.cancelScreenshot();
       const completion=Promise.withResolvers<void>();
       void completion.promise.catch(()=>{});
@@ -1015,7 +1291,7 @@ class App {
           const robot=this.model?.robot!==restored.robot||this.viewModel?.robot!==restored.robot?restored.robot:undefined;
           await this.changeTerrain(restored.terrain,source,{signal:controller.signal,robot,validate:scene=>{
             controller.signal.throwIfAborted();
-            if(scene.terrain!==restored.terrain||scene.robot.split('_')[0]!==restored.robot.split('_')[0])
+            if(scene.terrain!==restored.terrain||scene.robot?.split('_')[0]!==restored.robot.split('_')[0])
               throw new Error('The requested robot or map could not be prepared.');
           }});
         }
@@ -1033,7 +1309,7 @@ class App {
     }finally{
       if(this.viewRestoreAbort===controller){
         this.viewRestoreAbort=null;
-        if(!complete){this.heldView=heldBefore;this.view.controls.enabled=!this.noclip;}
+        if(!complete){this.heldView=heldBefore;this.view.controls.enabled=!this.cameraOwned;}
       }
       this.updateCaptureNavigationNotice();
     }
@@ -1045,7 +1321,7 @@ class App {
     const error=new DOMException('View restore canceled: the robot or map was changed.','AbortError');
     this.viewRestoreAbort?.abort(error);
     if(request){this.heldView=request.heldBefore;request.reject(error);}
-    this.view.controls.enabled=!this.noclip;
+    this.view.controls.enabled=!this.cameraOwned;
     return work?work.catch(()=>{}):Promise.resolve();
   }
 
@@ -1066,7 +1342,7 @@ class App {
       const view=request.view,family=(robot:string)=>robot.split('_')[0],model=this.viewModel;
       if(!model||message.terrain!==view.terrain||model.terrain!==view.terrain||family(message.robot)!==family(view.robot))throw new Error('The requested robot or map did not load.');
       if(view.appearance){
-        this.look.restoreAppearance(model.robot,view.appearance,view.sourceHead);
+        this.look.restoreAppearance(model.robot!,view.appearance,view.sourceHead);
         if(model.robot!==view.robot)this.look.restoreAppearance(view.robot,view.appearance,view.sourceHead);
       }
       if(view.sourceHead!==undefined)await this.view.setSourceHead(view.sourceHead);
@@ -1079,7 +1355,7 @@ class App {
       this.look.refreshHead();this.pendingViewRestore=null;request.resolve();
     }catch(error){
       if(this.pendingViewRestore!==request)return;
-      this.pendingViewRestore=null;this.view.controls.enabled=!this.noclip;
+      this.pendingViewRestore=null;this.view.controls.enabled=!this.cameraOwned;
       request.reject(error instanceof Error?error:new Error(String(error)));
     }
   }
@@ -1137,20 +1413,20 @@ class App {
 
   // ---- recording -------------------------------------------------------
   private toggleRecording() {
-    if (this.rec) this.stopRecording();
+    if (this.rec || this.playerRec) this.stopRecording();
     else this.startRecording();
   }
 
   private startRecording() {
     if(this.updateCaptureNavigationNotice(true))return;
-    if (this.recordStarting || this.rec || !this.model || this.exporting) return;
+    if (this.recordStarting || this.rec || this.playerRec || !this.model || this.exporting) return;
     if (this.timeline.isOpen) this.closeReview();
     if (this.dialog.isOpen) this.dialog.close();
     this.recordStarting = true;
     const generation=this.viewBuildGeneration,model=this.model;
     this.look.setHeadLocked(true);
     this.panel.setRecordInfo('Preparing scene visuals…');
-    void Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]).then(() => {
+    void this.sceneVisuals().then(() => {
       if(generation!==this.viewBuildGeneration||this.model!==model||(model.terrain??this.panel.terrain)!==this.panel.terrain){
         this.panel.setRecordInfo('The scene changed. Press Record again when it has loaded.');return;
       }
@@ -1161,7 +1437,7 @@ class App {
       this.panel.setRecordInfo(`Recording could not start: ${error instanceof Error ? error.message : error}`);
     }).finally(() => {
       this.recordStarting = false;
-      if (!this.rec && !this.timeline.isOpen) this.look.setHeadLocked(false);
+      if (!this.rec && !this.playerRec && !this.timeline.isOpen) this.look.setHeadLocked(false);
     });
   }
 
@@ -1169,10 +1445,11 @@ class App {
     const m = this.model;
     if (!m || !this.liveGeometry || this.exporting) return;
     if (this.timeline.isOpen) this.closeReview();
+    if (m.mode === 'player') { this.beginPlayerRecording(m, this.liveGeometry); return; }
     const s = this.status;
     this.recModel = m;
     this.rec = new TakeRecorder({
-      robot: m.robot, model: s?.model, terrain: m.terrain??this.panel.terrain, localMap:mapSource(m.terrain??this.panel.terrain)?.identity, sourceTime: this.view.getSourceTime(), appearance: this.view.getAppearance(), sourceHead: this.view.getSourceHead(), look: this.look.getState(), display: this.explore.getDisplay(), flashlight: this.flashlight, lights: this.view.getShotLights(), robotFade: this.view.getRobotFadeState(), policy: s?.policy ?? "-",
+      robot: m.robot!, model: s?.model, terrain: m.terrain??this.panel.terrain, localMap:mapSource(m.terrain??this.panel.terrain)?.identity, sourceTime: this.view.getSourceTime(), appearance: this.view.getAppearance(), sourceHead: this.view.getSourceHead(), look: this.look.getState(), display: this.explore.getDisplay(), flashlight: this.flashlight, lights: this.view.getShotLights(), robotFade: this.view.getRobotFadeState(), policy: s?.policy ?? "-",
       created: new Date().toISOString(), ngeom: m.ngeom, nq: m.nq, baseQadr: m.baseQadr, hinges: m.hinges,
     }, this.liveGeometry.partition);
     this.logged = {};
@@ -1196,8 +1473,37 @@ class App {
     this.updateRecordingInfo();
   }
 
+  /** A Player take records the moving player, its displayed body and view model poses, and every robot the
+   * Spawn gun adds or removes; it keeps recording across those rebuilds. */
+  private beginPlayerRecording(m: RenderModel, geometry: FrameGeometryBuffer) {
+    const player = this.view.player;
+    if (!player) throw new Error('The Player view is not ready.');
+    const terrain = m.terrain ?? this.panel.terrain, content = playerGameContent.content, body = player.bodyPath();
+    const views: Partial<Record<PlayerTool, string>> = {};
+    for (const tool of this.playerStatus?.availableTools ?? NO_TOOLS) {
+      const path = player.viewModelPath(tool);
+      if (path) views[tool] = path;
+    }
+    const meta: PlayerTakeMeta = { mode: 'player', terrain, localMap: mapSource(terrain)?.identity,
+      content: content ? contentRequirements(content) : [], models: { ...(body ? { body } : {}), view: views },
+      sourceTime: this.view.getSourceTime(), appearance: { ...this.view.getAppearance(), sourceBody: 'stock' }, look: this.look.getState(),
+      display: this.explore.getDisplay(), flashlight: this.flashlight, lights: this.view.getShotLights(), created: new Date().toISOString() };
+    const rec = this.playerRec = new PlayerTakeRecorder(meta, m, geometry.partition);
+    this.panel.setRecording(true);
+    this.recBadge.hidden = false;
+    this.recTime.textContent = "REC 0.0 s";
+    this.recBadge.title = 'Preparing recording recovery…';
+    this.recCheckpoint = this.recordingRecovery.recordPlayer(rec, `#${this.takeNo + 1} · Player`, state => {
+      if (this.playerRec !== rec) return;
+      this.recBadge.title = state.error ? state.error :
+        state.saving ? 'Saving recording recovery…' : state.frames ? `Recovery saved through ${fmtTime(state.duration)} s` : 'Preparing recording recovery…';
+      this.updateRecordingInfo(state.error);
+    });
+    this.updateRecordingInfo();
+  }
+
   private updateRecordingInfo(error=this.recCheckpoint?.error) {
-    const rec=this.rec;if(!rec)return;
+    const rec=this.rec??this.playerRec;if(!rec)return;
     const time=fmtTime(rec.elapsed,1),text=`REC ${time} s${error?' · recovery failed':''}`;
     if(this.recTime.textContent===text)return;
     this.recTime.textContent=text;
@@ -1207,6 +1513,7 @@ class App {
 
   /** Stop and open the take on the timeline (`why` explains an automatic stop). */
   private stopRecording(why?: string) {
+    if (this.playerRec) { this.stopPlayerRecording(why); return; }
     const rec = this.rec;
     if (!rec) return;
     this.rec = null;
@@ -1232,6 +1539,34 @@ class App {
     this.rememberTake(take,this.takeModel!,this.takeTitle,checkpoint??undefined);
   }
 
+  private stopPlayerRecording(why?: string) {
+    const rec = this.playerRec!, content = playerGameContent.content;
+    this.playerRec = null;
+    // Every local file the take displayed, including view models first drawn mid-take.
+    if (content) rec.meta.content = contentRequirements(content);
+    const checkpoint=this.recCheckpoint;this.recCheckpoint=null;
+    void checkpoint?.stop();
+    this.panel.setRecording(false);
+    this.recBadge.hidden = true;
+    const take = rec.stop();
+    if (!take) {
+      this.look.setHeadLocked(false);
+      checkpoint?.release();
+      this.panel.setRecordInfo("Nothing recorded — the sim posted no frames (is it loading?).");
+      return;
+    }
+    this.take = take;
+    this.takeModel = take.epochs[0].model;
+    this.takeContent.set(take, content);
+    this.takeNo++;
+    this.takeTitle = `#${this.takeNo} · Player`;
+    this.panel.setTakeAvailable(true);
+    this.panel.setRecordInfo(`Take #${this.takeNo}: ${fmtTime(take.duration)} s, ${take.n} frames, ` +
+                             `${take.events.length} events.` + (why ? ` ${why}` : ""));
+    this.openReview();
+    this.rememberTake(take,this.takeModel,this.takeTitle,checkpoint??undefined);
+  }
+
   private camPose() {
     const c = this.view.camera, t = this.view.controls.target;
     return { pos: [c.position.x, c.position.y, c.position.z] as [number, number, number],
@@ -1255,19 +1590,23 @@ class App {
     this.cancelPlacement();
     this.flight.setActive(false);
     document.getElementById('flight-hud')!.hidden = true;
+    if (take.mode === 'player') { this.playerWanted = this.playerTakeActors(take); this.view.setHoist(null); }
     if (this.viewModel !== tm) { this.buildView(tm); this.viewModel = tm; }
+    else this.syncPlayerActors();
     this.reviewOriginal = { take,
       appearance: take.meta.appearance ?? { ...(this.liveReview?.model === tm ? this.liveReview.appearance : { colorway: 'grey', parts: {} }), sourceBody: 'stock' },
-      head: take.meta.sourceHead === 'ghost' ? 'ghost' : 'stock',
+      head: take.mode === 'robot' && take.meta.sourceHead === 'ghost' ? 'ghost' : 'stock',
       look: take.meta.look ?? this.liveReview!.look,
       display: take.meta.display ?? this.liveReview!.display,
       flashlight: take.meta.flashlight ?? this.liveReview!.flashlight,
       lights: take.meta.lights ?? [] };
     this.applyTakeLook();
     this.send({ t: "pause", on: true });
+    // The paused Player world drops its grab and held input; the mouse is released for the timeline.
+    if (this.player) { this.player.input.setEnabled(false); this.send({ t: 'playerStop' }); }
     this.keysHeld.clear();
     if (this.command.some((v) => v !== 0)) this.setCommand([0, 0, 0]);
-    this.followZ = tm.robot.startsWith("go2") ? 0.35 : 0.7;
+    this.followZ = tm.mode === 'player' ? PLAYER_FOLLOW_Z : tm.robot!.startsWith("go2") ? 0.35 : 0.7;
     Object.assign(this.shot, take.shot ?? this.liveReview!.shot);
     if (!take.shot) {
       if(this.shot.height<=0)this.shot.height=this.followZ;
@@ -1305,23 +1644,25 @@ class App {
     }
     this.shotPath = null;
     this.panel.setReviewScope(false);
+    if (this.model?.mode === 'player') this.playerWanted = this.playerLiveActors;
     if (this.model && this.viewModel !== this.model) {
       this.buildView(this.model,restoreMap);
       this.viewModel = this.model;
       this.lastFrame = null;
-    }
+    } else this.syncPlayerActors();
     if (sameRobot) this.view.setAppearance(live!.appearance, live!.head);
-    else if (this.model) this.look.onModel(this.model.robot);
+    else if (this.model?.robot) this.look.onModel(this.model.robot);
     const head = sameRobot ? live!.head : this.view.getHeadVisual();
     this.liveReview = null;
     this.reviewOriginal = null;
     void this.view.setSourceHead(head).then(() => this.look.refreshHead())
       .catch(error => { if (!this.timeline.isOpen && this.view.getHeadVisual() === head) this.showOverlay(`Head visual could not load: ${error instanceof Error ? error.message : error}`, 'error'); });
-    this.followZ = this.model?.robot.startsWith("go2") ? 0.35 : 0.7;
+    this.followZ = this.model?.mode === 'player' ? PLAYER_FOLLOW_Z : this.model?.robot?.startsWith("go2") ? 0.35 : 0.7;
     if (live) this.restoreWorkspaceCamera(live.camera);
     this.flight.setActive(this.noclip);
     document.getElementById('flight-hud')!.hidden = !this.noclip;
     this.send({ t: "pause", on: false });
+    this.player?.input.setEnabled(true);
     this.inspectorBody.innerHTML = `<span class="ins-empty">Back to the live sim…</span>`;
   }
 
@@ -1350,11 +1691,15 @@ class App {
     });
   }
 
-  private saveTakeEdits(take: Take) {
+  private saveTakeEdits(take: RecordedTake) {
     if (this.take !== take || !this.timeline.isOpen || this.exporting) return;
     this.cancelScreenshot();
-    take.meta.edits = { version: 1, appearance: this.view.getAppearance(), sourceHead: this.view.getHeadVisual(),
-      look: this.look.getState(), lights: this.view.getShotLights(), display: this.explore.getDisplay(), flashlight: this.flashlight };
+    // A Player take has no primary robot: its spawned robots keep stock bodies and heads.
+    take.meta.edits = take.mode === 'player'
+      ? { version: 1, appearance: { ...this.view.getAppearance(), sourceBody: 'stock' }, sourceHead: 'stock',
+        look: this.look.getState(), lights: this.view.getShotLights(), display: this.explore.getDisplay(), flashlight: this.flashlight }
+      : { version: 1, appearance: this.view.getAppearance(), sourceHead: this.view.getHeadVisual(),
+        look: this.look.getState(), lights: this.view.getShotLights(), display: this.explore.getDisplay(), flashlight: this.flashlight };
     this.queueShotUpdate(take);
   }
 
@@ -1416,13 +1761,13 @@ class App {
     this.view.camera.up.fromArray(camera.up); this.view.camera.quaternion.fromArray(camera.orientation);
     this.view.camera.fov = camera.fov; this.view.camera.updateProjectionMatrix();
     this.view.camera.updateMatrixWorld(true); controls.enableDamping = damping;
-    controls.enabled = camera.mode !== 'recorded' && !this.noclip && !this.exporting;
+    controls.enabled = camera.mode !== 'recorded' && !this.cameraOwned && !this.exporting;
     this.heldView = camera.held;
   }
 
   private openExport(tab: "video" | "data") {
     if (this.exporting) return;
-    if (this.rec || this.recordStarting) {
+    if (this.rec || this.playerRec || this.recordStarting) {
       this.panel.setRecordInfo('Stop recording before opening camera / output setup.');
       return;
     }
@@ -1444,6 +1789,7 @@ class App {
   /** Pose the scene from the take at time t (review frames and export frames alike). */
   private poseTake(t: number) {
     const take = this.take!;
+    if (take.mode === 'player') return this.posePlayerTake(take, t);
     this.view.setSourceTime((take.meta.sourceTime ?? 0) + t);
     this.view.setRobotOpacityOverride(take.robotOpacityAt(t));
     const pose = take.poseAt(t);
@@ -1454,12 +1800,64 @@ class App {
     return base;
   }
 
+  /** A Player take shows each layout epoch's own recorded world; crossing into another epoch rebuilds the view. */
+  private posePlayerTake(take: PlayerTake, t: number) {
+    this.view.setSourceTime((take.meta.sourceTime ?? 0) + t);
+    const pose = take.poseAt(t);
+    if (pose.model !== this.viewModel) { this.buildView(pose.model); this.viewModel = pose.model; }
+    this.view.sync(pose.xpos, pose.xmat);
+    const player = this.view.player;
+    if (player) {
+      // The view model belongs to the player's own camera: the recorded view, or a shot that replays it.
+      player.showViewModel = this.exporting ? this.shot.mode === 'viewport'
+        : this.timeline.mode === 'recorded' || this.timeline.mode === 'shot' && this.shot.mode === 'viewport';
+      player.apply(pose.player, pose.presentation, (take.meta.clockStart ?? 0) + t);
+    }
+    const base = take.basePosAt(t);
+    this.view.updateRobotLighting(base[0], base[1], base[2] + pose.player.eyeHeight * INCH);
+    return base;
+  }
+
+  /** Robot, map and, in a Player world, body and view model visuals. */
+  private sceneVisuals(): Promise<unknown> {
+    const player = this.view.player;
+    return Promise.all([this.view.waitForRobotVisuals(), this.view.waitForTerrainVisuals(),
+      ...(player ? [this.playerActorsReady, player.waitForVisuals()] : [])]);
+  }
+
+  /** Show a recorded epoch model; null when it is already shown. */
+  private showTakeEpoch(model: RenderModel): Promise<void> | null {
+    if (model === this.viewModel) return null;
+    this.buildView(model); this.viewModel = model;
+    return this.sceneVisuals().then(() => undefined);
+  }
+
   private stage(): Stage {
+    const take = this.take;
     return {
-      prepare: async () => {await Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]);if(this.take?.meta.localMap&&this.view.mapSource?.identity?.fingerprint!==this.take.meta.localMap.fingerprint)throw new Error('Reattach this take’s original map bundle before exporting.');},
+      prepare: async () => {await this.sceneVisuals();if(this.take?.meta.localMap&&this.view.mapSource?.identity?.fingerprint!==this.take.meta.localMap.fingerprint)throw new Error('Reattach this take’s original map bundle before exporting.');},
       view: this.view, camera: this.exportCam,
+      ...(take?.mode === 'player' ? { ensureScene: (t: number) => this.showTakeEpoch(take.epochs[take.epochAt(t)].model) } : {}),
       pose: (t) => this.poseTake(t),
       aim: (cam, t, aspect) => this.shotPath!.apply(cam, t, aspect),
+    };
+  }
+
+  /** The render adapter exportPlayerGlb reads each recorded epoch and the player actors through. */
+  private playerGlbStage(take: PlayerTake): PlayerGlbStage {
+    return {
+      view: this.view,
+      useEpoch: async (_epoch, model) => { await (this.showTakeEpoch(model) ?? this.sceneVisuals()); },
+      playerActors: async (recorded, times, t0) => {
+        const player = this.view.player;
+        if (!player) throw new Error('The Player view is not available for export.');
+        await this.playerActorsReady;
+        return player.actors(recorded, times, t0);
+      },
+      restore: async () => {
+        if (this.take !== take || !this.timeline.isOpen) return;
+        await (this.showTakeEpoch(take.epochs[take.epochAt(this.timeline.time)].model) ?? this.sceneVisuals());
+      },
     };
   }
 
@@ -1470,21 +1868,78 @@ class App {
     this.cancelScreenshot();
     ++this.viewBuildGeneration;
     this.view.build(desc);
+    if (desc.mode === 'player') {
+      // A Player world has no primary robot: no robot character or paint panel model.
+      this.syncPlayerActors();
+      if (prepareMap) this.prepareMapVisual(desc.terrain ?? this.panel.terrain);
+      return;
+    }
     const visual = launch.active ? this.launchVisualSelection : null;
     const initialHead = visual?.head ?? this.pendingViewRestore?.view.sourceHead;
-    this.look.onModel(desc.robot, initialHead, visual?.appearance ?? this.pendingViewRestore?.view.appearance);
+    this.look.onModel(desc.robot!, initialHead, visual?.appearance ?? this.pendingViewRestore?.view.appearance);
     // Reuse the existing Character handler, including its Original paint semantics.
     const character = launch.selection.character;
     if (launch.active && character && !this.launchCharacterApplied) {
-      this.look.restoreAppearance(desc.robot, visual?.appearance ?? { ...this.view.getAppearance(), sourceBody: 'stock' }, 'stock');
+      this.look.restoreAppearance(desc.robot!, visual?.appearance ?? { ...this.view.getAppearance(), sourceBody: 'stock' }, 'stock');
       const select = document.querySelector<HTMLSelectElement>('#panel select[aria-label="Character"]');
       if (!select) throw new Error('The character menu is unavailable for the selected robot.');
-      characterOptions(select, character, desc.robot, true);
+      characterOptions(select, character, desc.robot!, true);
       select.dispatchEvent(new Event('change', { bubbles: true }));
       this.launchCharacterApplied = true;
     }
     const terrain=desc.terrain??(desc===this.takeModel&&isTerrain(this.take?.meta.terrain)?this.take!.meta.terrain:this.panel.terrain);
     if(prepareMap)this.prepareMapVisual(terrain);
+  }
+
+  /** Give the shared PlayerView the wanted body and view models, once per view and choice. */
+  private syncPlayerActors() {
+    const view = this.view.player, wanted = this.playerWanted;
+    if (!view || !wanted || this.playerShown?.view === view && this.playerShown.actors === wanted) return;
+    this.playerShown = { view, actors: wanted };
+    const work = this.loadPlayerActors(view, wanted);
+    this.playerActorsReady = work;
+    // Launch reports through its own readiness gate; later failures are shown here.
+    work.catch(error => {
+      if (!launch.active && this.playerShown?.actors === wanted)
+        this.showOverlay(`Player model could not load: ${error instanceof Error ? error.message : error}`, 'error');
+    });
+  }
+
+  private async loadPlayerActors(view: PlayerView, actors: PlayerActors): Promise<void> {
+    const { body: id, content, views } = actors;
+    let body: PlayerBodySource | null = null;
+    if (id !== null) {
+      if (decodePmodelId(id)) body = (await this.playerBodySource(id, null)).source;
+      else if (content) body = { kind: 'studio', content, path: id };
+      else throw new Error(`${id} comes from game content that isn't attached.`);
+    }
+    // A view model that cannot load leaves its tool without one (nothing is drawn); the body is required.
+    this.playerViewModelErrors.clear();
+    await Promise.all([view.setBody(body), ...PLAYER_TOOL_SLOTS.map(tool => {
+      const path = views[tool];
+      return view.setViewModel(tool, path && content ? { content, path } : null).catch((error: unknown) => {
+        this.playerViewModelErrors.set(tool, `${path}: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    })]);
+  }
+
+  /** The body and view models a Player take recorded, read from its reattached content. */
+  private playerTakeActors(take: PlayerTake): PlayerActors {
+    let actors = this.takeActors.get(take);
+    if (!actors) {
+      actors = { body: take.meta.models?.body ?? null, content: this.takeContent.get(take) ?? null, views: { ...take.meta.models?.view } };
+      this.takeActors.set(take, actors);
+    }
+    return actors;
+  }
+
+  /** Recorded local game content must be reattached and match by path, size and hash before review. */
+  private async attachPlayerContent(take: PlayerTake, signal?: AbortSignal): Promise<void> {
+    if (this.takeContent.has(take)) return;
+    const meta = take.meta;
+    const content = meta.content.length
+      ? await playerGameContent.reattach(meta.content, (candidate, abort) => verifyPlayerContent(meta, candidate, abort), signal) : null;
+    this.takeContent.set(take, content);
   }
 
   /** Map work survives same-map robot rebuilds; only a new map owns its callbacks. */
@@ -1578,10 +2033,11 @@ class App {
   }
 
   private fileStem(): string {
-    const m = this.take?.meta;
-    if (!m) return `take_${stamp()}`;
-    const d = new Date(m.created);
-    return `${m.robot}_${slug(m.policy === "-" ? "idle" : m.policy)}_${stamp(Number.isNaN(+d) ? undefined : d)}`;
+    const take = this.take;
+    if (!take) return `take_${stamp()}`;
+    const m = take.meta, d = new Date(m.created), when = stamp(Number.isNaN(+d) ? undefined : d);
+    if (take.mode === 'player') return `player_${slug(mapId(m.terrain as TerrainName) ?? m.terrain)}_${when}`;
+    return `${take.meta.robot}_${slug(take.meta.policy === "-" ? "idle" : take.meta.policy)}_${when}`;
   }
 
   private async saveTakeFile() {
@@ -1595,6 +2051,8 @@ class App {
     try {
       const take = await loadTake(await file.arrayBuffer());
       if (this.exporting || this.recordStarting || this.mapPreparing || this.pendingMap || this.pendingViewRestore || this.viewRestoreAbort) return;
+      // A Player take carries every recorded world layout; it needs only its map and local game content.
+      if (take.mode === 'player') { await this.openPlayerTakeFile(take, file.name); return; }
       const meta=take.meta,active=this.model;
       if(!active||active.robot!==meta.robot){
         this.panel.showNotice('Different scene loaded',`Load ${meta.model??meta.robot} before opening ${file.name}. The active scene has not changed.`);
@@ -1628,9 +2086,29 @@ class App {
     }
   }
 
+  private async openPlayerTakeFile(take: PlayerTake, name: string) {
+    await this.attachTakeMap(take);
+    await this.attachPlayerContent(take);
+    if (this.exporting || this.recordStarting || this.mapPreparing || this.pendingMap || this.pendingViewRestore || this.viewRestoreAbort)
+      throw new Error('Finish preparing the current capture before opening a take.');
+    const commit = await this.stageTakeTerrain(take);
+    if (this.rec || this.playerRec) this.stopRecording();
+    if (this.timeline.isOpen) this.closeReview(false);
+    commit();
+    const model = take.epochs[0].model;
+    this.take = take;
+    this.takeModel = model;
+    this.takeNo++;
+    this.takeTitle = `${name.replace(/\.take\.zip$|\.zip$/, "")}`;
+    this.panel.setTakeAvailable(true);
+    this.panel.setRecordInfo(`Opened ${name}: ${fmtTime(take.duration)} s, ${take.n} frames.`);
+    this.openReview();
+    this.rememberTake(take, model, this.takeTitle);
+  }
+
   private shotLibraryBlocked():string|null {
     if(this.mapPreparing||this.pendingMap)return 'Wait for the map to finish loading.';
-    if(this.rec||this.recordStarting)return 'Stop recording before opening Shots.';
+    if(this.rec||this.playerRec||this.recordStarting)return 'Stop recording before opening Shots.';
     if(this.exporting)return 'Wait for the export to finish.';
     if(this.pendingViewRestore||this.viewRestoreAbort)return 'Wait for the saved view to finish restoring.';
     return null;
@@ -1652,14 +2130,10 @@ class App {
     if(blocked)throw new Error(blocked);
     await this.attachTakeMap(saved.take,signal);
     signal?.throwIfAborted();
-    const terrain=saved.take.meta.terrain;
-    const lightSource=isTerrain(terrain)&&terrain!==this.mapVisualTerrain?this.sourceForTerrain(terrain):null;
-    const light=lightSource?await lightSource.json<{light?:MapLight}>('manifest.json'):null;
-    signal?.throwIfAborted();
-    const stage=isTerrain(terrain)&&terrain!==this.mapVisualTerrain?await this.view.stageTerrainVisual(this.sourceForTerrain(terrain)):null;
-    if(signal?.aborted){stage?.dispose();signal.throwIfAborted();}
+    if(saved.take.mode==='player')await this.attachPlayerContent(saved.take,signal);
+    const commit=await this.stageTakeTerrain(saved.take,signal);
     if(this.timeline.isOpen)this.closeReview(false);
-    if(stage){stage.commit();this.mapVisualTerrain=terrain as TerrainName;++this.mapVisualGeneration;document.getElementById('map-loading')!.hidden=true;this.look.setMapLight(light?.light??null);}
+    commit();
     this.take=saved.take;this.takeModel=saved.model;this.takeTitle=saved.info.name;
     const state:StoredTakeState={id:saved.info.id,name:saved.info.name,model:saved.model,created:true,
       writing:false,dirty:false,failed:false,deleted:false,previewDirty:!saved.info.thumbnail,previewReady:false,previewFailed:false,previewVersion:0};
@@ -1670,7 +2144,18 @@ class App {
     if(!saved.info.thumbnail)this.scheduleShotPreview(saved.take,state,0);
   }
 
-  private rememberTake(take:Take,model:RenderModel,name:string,recovery?:RecordingCheckpointWriter) {
+  /** Stage a take's map visuals; the returned commit replaces the shown map (nothing when it is already shown). */
+  private async stageTakeTerrain(take:RecordedTake,signal?:AbortSignal):Promise<()=>void> {
+    const terrain=take.meta.terrain;
+    const lightSource=isTerrain(terrain)&&terrain!==this.mapVisualTerrain?this.sourceForTerrain(terrain):null;
+    const light=lightSource?await lightSource.json<{light?:MapLight}>('manifest.json'):null;
+    signal?.throwIfAborted();
+    const stage=isTerrain(terrain)&&terrain!==this.mapVisualTerrain?await this.view.stageTerrainVisual(this.sourceForTerrain(terrain)):null;
+    if(signal?.aborted){stage?.dispose();signal.throwIfAborted();}
+    return ()=>{if(stage){stage.commit();this.mapVisualTerrain=terrain as TerrainName;++this.mapVisualGeneration;document.getElementById('map-loading')!.hidden=true;this.look.setMapLight(light?.light??null);}};
+  }
+
+  private rememberTake(take:RecordedTake,model:RenderModel,name:string,recovery?:RecordingCheckpointWriter) {
     if(take.meta.localMap){const source=this.sourceForTerrain(take.meta.terrain as TerrainName);if(source)this.takeSources.set(take,source);}
     const state:StoredTakeState={id:recovery?.id??crypto.randomUUID(),name,model,created:false,writing:false,
       dirty:true,failed:false,deleted:false,previewDirty:true,previewReady:false,previewFailed:false,previewVersion:0,recovery};
@@ -1679,14 +2164,14 @@ class App {
     this.scheduleShotPreview(take,state,0);
   }
 
-  private updateShotSaveStatus(take:Take,state:StoredTakeState) {
+  private updateShotSaveStatus(take:RecordedTake,state:StoredTakeState) {
     if(this.take!==take)return;
     this.timeline.setAutosaveState(state.deleted?'Deleted':state.writing||state.dirty?'Saving…':
       state.failed?'Not saved · Save ZIP':state.previewFailed?'Saved · Preview unavailable':state.created?'Saved':'Not saved · Save ZIP',
       state.failed&&!state.deleted);
   }
 
-  private queueShotUpdate(take:Take) {
+  private queueShotUpdate(take:RecordedTake) {
     const state=this.storedTakes.get(take);
     if(!state||state.deleted)return;
     state.dirty=true;state.previewDirty=true;state.previewFailed=false;
@@ -1694,7 +2179,7 @@ class App {
     this.writeStoredTake(take,state);this.scheduleShotPreview(take,state);
   }
 
-  private writeStoredTake(take:Take,state:StoredTakeState) {
+  private writeStoredTake(take:RecordedTake,state:StoredTakeState) {
     if(state.deleted||state.writing||state.failed&&!state.dirty
       ||state.created&&!state.dirty&&state.thumbnail===undefined)return;
     const metadataDirty=state.dirty||!state.created,thumbnail=state.thumbnail;
@@ -1727,13 +2212,13 @@ class App {
     this.updatePendingSaveGuard();
   }
 
-  private scheduleShotPreview(take:Take,state:StoredTakeState,delayMs=500) {
+  private scheduleShotPreview(take:RecordedTake,state:StoredTakeState,delayMs=500) {
     clearTimeout(state.previewTimer);
     const version=++state.previewVersion;
     state.previewTimer=window.setTimeout(()=>{
       state.previewTimer=undefined;
       const generation=this.viewBuildGeneration;
-      void Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]).then(()=>{
+      void this.sceneVisuals().then(()=>{
         if(version!==state.previewVersion||generation!==this.viewBuildGeneration||this.take!==take||!this.timeline.isOpen||this.exporting)return;
         state.previewReady=true;this.snapshotShotPreview(take,state);
       }).catch(()=>{
@@ -1744,8 +2229,10 @@ class App {
   }
 
   /** Copy a real, clean review frame now; asynchronous encoding owns only the small 2D bitmap. */
-  private snapshotShotPreview(take:Take,state:StoredTakeState) {
-    if(state.deleted||!state.previewDirty||this.take!==take||this.viewModel!==state.model
+  private snapshotShotPreview(take:RecordedTake,state:StoredTakeState) {
+    // A Player take may show any of its recorded epoch models.
+    const shown=take.mode==='player'?take.epochs.some(epoch=>epoch.model===this.viewModel):this.viewModel===state.model;
+    if(state.deleted||!state.previewDirty||this.take!==take||!shown
       ||!this.timeline.isOpen||this.exporting)return;
     clearTimeout(state.previewTimer);state.previewTimer=undefined;
     const version=++state.previewVersion;
@@ -1800,6 +2287,8 @@ class App {
   }
 
   private onKeyUp(e: KeyboardEvent) {
+    // Player key-up always reaches the controller so a key held into a modal or unlock is released.
+    if (this.player) { this.player.input.key(e, false); return; }
     if (this.inputBlocked) return;
     if (this.flight.key(e, false)) return;
     const k = e.key.toLowerCase();
@@ -1816,10 +2305,13 @@ class App {
       do {
         generation = this.viewBuildGeneration;
         await Promise.all([this.view.waitForRobotVisuals(), this.view.waitForTerrainVisuals(),
-          this.view.waitForFlashlight(), this.firstSimulationFrame]);
+          this.view.waitForFlashlight(), this.firstSimulationFrame,
+          ...(this.view.player ? [this.playerActorsReady, this.view.player.waitForVisuals()] : [])]);
       } while (generation !== this.viewBuildGeneration);
       if (!this.lastFrame) throw new Error('The simulator did not provide a scene frame.');
       if (this.view.renderer.getContext().isContextLost()) throw new Error('The viewport is unavailable.');
+      // The first ready frame looks through the player's own eyes.
+      if (this.player) this.updatePlayerCamera(0);
       this.drawLiveFrame();
       launch.firstFrame();
       this.overlay.classList.add('hidden');
@@ -1914,17 +2406,27 @@ class App {
         if (launch.active) {
           this.resolveFirstFrame?.();
           this.firstSimulationFrame = new Promise<void>(resolve => { this.resolveFirstFrame = resolve; });
-          launch.phase('Preparing robot and map visuals…');
+          launch.phase(m.desc.mode === 'player' ? 'Preparing player and map visuals…' : 'Preparing robot and map visuals…');
         }
         this.model = m.desc;
         this.liveGeometry = new FrameGeometryBuffer(m.desc.ngeom, m.geometry);
+        if (m.desc.mode === 'player') {
+          // Spawn and remove rebuild the same world: the take continues in a new layout epoch.
+          const rec = this.playerRec;
+          if (rec && rec.meta.terrain !== (m.desc.terrain ?? this.panel.terrain)) this.stopRecording('Stopped when the map changed.');
+          else if (rec) {
+            try { rec.changeScene(m.desc, this.liveGeometry.partition); }
+            catch (error) { this.stopRecording(`Stopped: ${error instanceof Error ? error.message : error}`); }
+          }
+          if (!this.timeline.isOpen) this.playerWanted = this.playerLiveActors;
+        }
         if (this.timeline.isOpen) return;          // the review keeps showing the take's model
         this.buildView(m.desc);
         this.viewModel = m.desc;
         this.lastFrame = null;
         // aim the camera at torso height: ~0.7 m for humanoids, lower for
         // the quadruped so its body doesn't sit at the bottom of the frame
-        this.followZ = m.desc.robot.startsWith("go2") ? 0.35 : 0.7;
+        this.followZ = m.desc.mode === 'player' ? PLAYER_FOLLOW_Z : m.desc.robot!.startsWith("go2") ? 0.35 : 0.7;
         return;
       case "frame":
         if (this.viewModel !== this.model) return;   // reviewing another model's take
@@ -1932,6 +2434,7 @@ class App {
         this.liveGeometry.apply(m.xpos, m.xmat);
         this.lastFrame = this.liveGeometry;
         this.resolveFirstFrame?.(); this.resolveFirstFrame = null;
+        if (this.model?.mode === 'player') return this.playerFrameArrived(m);
         this.baseXY = [m.baseX, m.baseY];
         this.baseZ = this.model && this.model.baseQadr >= 0 ? m.qpos[this.model.baseQadr + 2] : this.followZ;
         if (!this.timeline.isOpen) this.view.setHoist(m.hoistAnchor ?? null);
@@ -1943,6 +2446,9 @@ class App {
           const e = this.rec.elapsed;
           if (e >= MAX_TAKE_S) this.stopRecording(`Stopped at the ${MAX_TAKE_S / 60} min limit.`);
         }
+        return;
+      case 'playerStatus':
+        this.applyPlayerStatus(m);
         return;
       case "status":
         this.applyStatus(m);
@@ -1975,8 +2481,15 @@ class App {
       case "policyFinished": return this.panel.showPolicyFinished(m.policy,m.active);
       case "notice": return this.showOverlay(m.msg, "notice");
       case "error":
+        // A Player world keeps running after a failed spawn, remove or map change; only the request failed.
+        if (this.player && !launch.active) {
+          const pending = this.pendingMap;
+          if (pending) { this.pendingMap = null; pending.stage?.dispose(); pending.reject(new Error(m.msg)); this.panel.setTerrain(this.model?.terrain ?? this.panel.terrain); }
+          else this.player.hud.showNotice(m.msg);
+          return;
+        }
         this.pendingViewRestore?.reject(new Error(m.msg));this.pendingViewRestore=null;
-        this.view.controls.enabled=!this.noclip;return this.showOverlay(m.msg, "error");
+        this.view.controls.enabled=!this.cameraOwned;return this.showOverlay(m.msg, "error");
     }
   }
 
@@ -2095,6 +2608,7 @@ class App {
       return;
     }
     if (this.exporting || document.getElementById("policy-notice")) return;
+    if (this.player) return this.onPlayerKey(e, this.player.input);
     const flightModifier = this.noclip && !e.metaKey && !e.altKey
       && (e.code === 'Space' || e.code.startsWith('Control') || e.code.startsWith('Shift'));
     if ((e.ctrlKey || e.metaKey || e.altKey) && !flightModifier) return;
@@ -2141,6 +2655,22 @@ class App {
     }
   }
 
+  /** Player keys only: Robot driving, Flight and FSM shortcuts never reach a Player world. */
+  private onPlayerKey(e: KeyboardEvent, input: PlayerInputController) {
+    // Movement, tools and third person go first: Ctrl is Duck there, not a shortcut modifier.
+    if (!this.timeline.isOpen && input.key(e, true)) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.code === 'KeyV') { e.preventDefault(); if (!e.repeat) this.toggleRecording(); return; }
+    if (this.timeline.isOpen) {
+      if (this.timeline.onKey(e)) e.preventDefault();
+      return;
+    }
+    if (e.repeat) return;
+    // The knife's F inspect was taken above; otherwise F is the flashlight, as in Source.
+    if (e.code === 'KeyF') { this.setFlashlight(!this.flashlight); return; }
+    if (e.code === 'KeyZ' && input.locked) { e.preventDefault(); this.send({ t: 'playerUndo' }); }
+  }
+
   private noticedPolicy?: string;
   private remoteIdx = -1;
   /** G / Shift+G: fire the next / previous remote combo of the active policy */
@@ -2171,8 +2701,8 @@ class App {
     this.panel.setScreenshotState(false,message);
   }
 
-  private retainScreenshot(png:Blob,name:string,created:string,robot:string,terrain:string,request:number) {
-    const pending=this.photoStore.save({id:crypto.randomUUID(),name,created,robot,terrain,png}).then(()=>{
+  private retainScreenshot(png:Blob,name:string,created:string,mode:SceneMode,robot:string|null,terrain:string,request:number) {
+    const pending=this.photoStore.save({id:crypto.randomUUID(),name,created,mode,robot,terrain,png}).then(()=>{
       this.shotLibrary.refresh();
       if(request===this.screenshotRequest&&!this.screenshotPending)this.panel.setScreenshotState(false,'PNG downloaded · saved in Shots');
     }).catch(error=>{
@@ -2203,7 +2733,7 @@ class App {
     const aborted=new Promise<never>((_,reject)=>controller.signal.addEventListener('abort',()=>reject(new DOMException('Screenshot cancelled.','AbortError')),{once:true}));
     let phase:'prepare'|'capture'='prepare',message='',restoreHighlights:(()=>void)|undefined;
     try{
-      await Promise.race([Promise.all([this.view.waitForRobotVisuals(),this.view.waitForTerrainVisuals()]),aborted]);
+      await Promise.race([this.sceneVisuals(),aborted]);
       // Cached visuals can settle inside the click task; defer the render and readback.
       await Promise.race([new Promise<void>(resolve=>setTimeout(resolve,0)),aborted]);
       if(!current()){this.cancelScreenshot();return}
@@ -2214,13 +2744,13 @@ class App {
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       restoreHighlights=this.view.suspendHighlights();
       if(review&&this.take)this.reviewFrame(0);else this.drawLiveFrame();
-      const filename=`${mapId(terrain)??terrain}_${model.robot}_${stamp()}.png`;
+      const filename=`${mapId(terrain)??terrain}_${model.robot??'player'}_${stamp()}.png`;
       const created=new Date().toISOString();
       const blob=await Promise.race([capturePng(this.view.renderer.domElement),aborted]);
       if(!current()){this.cancelScreenshot();return}
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       download(blob,filename);message='PNG downloaded · saving to Shots…';
-      this.retainScreenshot(blob,filename.slice(0,-4),created,model.robot,terrain,request);
+      this.retainScreenshot(blob,filename.slice(0,-4),created,model.mode,model.robot,terrain,request);
     }catch{
       if(request!==this.screenshotRequest)return;
       message=!current()?'The scene changed. Take the screenshot again when it has loaded.'
@@ -2240,8 +2770,12 @@ class App {
   /** Draw the latest live pose without polling controls or advancing the simulation. */
   private drawLiveFrame(){
     if(this.lastFrame){
-      if(!this.heldView&&!this.noclip&&!this.shotDrag)this.view.follow(this.baseXY[0],this.baseXY[1],this.baseZ);
-      this.view.updateRobotLighting(this.baseXY[0],this.baseXY[1],this.baseZ);
+      // The Player camera is driven per frame elsewhere; light the player's surroundings at eye height.
+      if(this.model?.mode==='player')this.view.updateRobotLighting(this.baseXY[0],this.baseXY[1],this.playerEyeZ);
+      else{
+        if(!this.heldView&&!this.noclip&&!this.shotDrag)this.view.follow(this.baseXY[0],this.baseXY[1],this.baseZ);
+        this.view.updateRobotLighting(this.baseXY[0],this.baseXY[1],this.baseZ);
+      }
       this.view.sync(this.lastFrame.xpos,this.lastFrame.xmat);
     }
     if(this.leashDrag)this.view.setLeash([this.baseXY[0],this.baseXY[1],.3],[this.leashDrag[0],this.leashDrag[1],.12]);
@@ -2266,10 +2800,13 @@ class App {
       requestAnimationFrame(tick);
       if(this.screenshotIsCurrent&&!this.screenshotIsCurrent())this.cancelScreenshot(this.exporting
         ?'An export started. Take another screenshot after it finishes.':undefined);
+      if (this.player) this.updatePlayerHud(this.player);
       if (this.exporting) return;                    // the export owns the canvas
       if (this.timeline.isOpen && this.take) return this.reviewFrame(dt);
       // The loading game owns the screen; prepareLaunch renders one real ready frame.
       if (launch.active) return;
+      // Player worlds take no gamepad or Flight input; the controller releases held input while blocked.
+      if (this.player) { this.player.input.update(); this.updatePlayerCamera(dt); this.drawLiveFrame(); return; }
       if (this.inputBlocked) { this.drawLiveFrame(); return; }
       const padCmd = this.pad.poll((a) => this.onPadAction(a), this.status?.combos,
                                    (combo) => this.remote(combo));
@@ -2299,7 +2836,7 @@ class App {
     const take = this.take!, tl = this.timeline;
     tl.tick(dt);
     const t = tl.time;
-    const b = this.poseTake(t);
+    const b = this.poseTake(t), followZ = take.mode === 'player' ? b[2] + this.followZ : this.followZ;
     if (tl.mode === "recorded") {
       const c = take.camAt(t), cam = this.view.camera;
       cam.position.set(...c.pos);
@@ -2308,7 +2845,7 @@ class App {
       if (cam.fov !== c.fov) { cam.fov = c.fov; cam.updateProjectionMatrix(); }
       this.view.renderWith(cam);
     } else if (tl.mode === "shot" && this.shotPath) {
-      if (!this.shotDrag) this.view.follow(b[0], b[1], this.followZ);
+      if (!this.shotDrag) this.view.follow(b[0], b[1], followZ);
       else this.view.controls.update();
       const aspect = this.dialog.aspect;
       this.shotPath.apply(this.shotCam, t, aspect);
@@ -2316,7 +2853,7 @@ class App {
       const st = this.shotFrame.style;
       st.left = `${r.x}px`; st.top = `${r.y}px`; st.width = `${r.w}px`; st.height = `${r.h}px`;
     } else {
-      this.view.follow(b[0], b[1], this.followZ);
+      this.view.follow(b[0], b[1], followZ);
       this.view.render();
     }
   }

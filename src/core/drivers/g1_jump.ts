@@ -24,7 +24,7 @@
  */
 import { concatF32, matFromWxyz, matTVec } from "../math";
 import type { EvalConfig, RobotSpec } from "../types";
-import type { Engine } from "../../sim/engine";
+import type { EngineScope } from "../../sim/engine";
 import { OnnxSession } from "../policy";
 import { BaseDriver } from "./base";
 
@@ -62,7 +62,7 @@ export class G1JumpDriver extends BaseDriver {
   private last: Float32Array;
   private hist: Float32Array[] = [];
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine, readonly sess: OnnxSession,
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope, readonly sess: OnnxSession,
               readonly clipData: Float32Array, readonly nCols: number) {
     super(cfg, spec, eng);
     const g = cfg.g1!;

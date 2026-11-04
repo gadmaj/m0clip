@@ -42,6 +42,8 @@ import type { GeometryTrack } from '../core/geometry';
 import { applyPartPaint, readPartPaint } from './paint-material';
 import { normalizeDisplay, type SceneDisplay } from './display';
 import type { MapSource } from '../maps/source';
+import { PlayerView } from './player/view';
+import { PLAYER_VIEWMODEL_LAYER } from './player/viewmodel';
 export interface PreparedTerrainVisual { commit(): void; dispose(): void }
 
 import { renderPreview, antialiasingPreview, type PreviewRequest } from './previews';
@@ -437,6 +439,17 @@ export class SceneView {
     }
     return null;
   }
+  /** Player mode's body, view models and camera; null outside Player mode. */
+  player: PlayerView | null = null;
+  private playerWorldRevision = 0;
+  private lightPlayerMaterial(material: THREE.Material) {
+    this.sourceAmbient.patch(material); this.patchDynamicLighting(material); this.displayMaterial(material, this.display.characterWireframe);
+  }
+  /** Static world the third-person camera collides with: the map visual, else the arena geoms. */
+  private playerCollision(): THREE.Object3D[] {
+    return this.terrainVisual ? [this.terrainVisual]
+      : this.geomMeshes.filter((object): object is THREE.Object3D => !!object && !object.userData.robotGeom);
+  }
   showPlacement(point: THREE.Vector3 | null, normal?: THREE.Vector3, valid = false) {
     if (!point) { if (this.placementMarker) this.placementMarker.visible = false; return; }
     if (!this.placementMarker) {
@@ -487,6 +500,7 @@ export class SceneView {
       });
     }
     this.sourceBody?.eachMaterial(material=>this.displayMaterial(material,this.display.characterWireframe));
+    this.player?.eachMaterial(material=>this.displayMaterial(material,this.display.characterWireframe));
     this.sourceBody?.visibility(this.robotFade,display.robot);
     for (const m of this.terrainMaterials)
       for (const material of [...[m.original].flat(), ...[m.source].flat()]) this.displayMaterial(material);
@@ -777,6 +791,7 @@ export class SceneView {
     const fill = this.fill;                                    // camera-side fill
     fill.position.set(-2, -3, 2.5);
     this.scene.add(fill);
+    for (const light of [hemi, dir, fill]) light.layers.enable(PLAYER_VIEWMODEL_LAYER);
     // neutral studio environment map — gives the plastic its highlights
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
@@ -804,7 +819,7 @@ export class SceneView {
     this.headOverride?.restore(); this.headOverride = null;
     this.headToFile = null; this.headLoading = false; this.headError = null;
     this.robotKit.reset();this.kitFrames.clear();
-    this.robotModel = desc.robot;
+    this.robotModel = desc.robot ?? "";
     for (const materials of this.partMaterials.values()) for (const material of materials) material.dispose();
     this.partMaterials.clear();
     for (const m of this.geomMeshes) {
@@ -849,16 +864,16 @@ export class SceneView {
       // Robots with a palette (R1, Go2) paint every mesh part by name with a
       // colour + finish from the product colourway; others (G1) use the
       // model's own rgba.
-      if (desc.robot.startsWith("r1") && meshName === R1_HEAD_PART) {
+      if (desc.robot?.startsWith("r1") && meshName === R1_HEAD_PART) {
         const md = desc.meshes[desc.dataid[g]];
         this.headToFile = new THREE.Matrix4().compose(new THREE.Vector3(...md.pos),
           new THREE.Quaternion(md.quat[1], md.quat[2], md.quat[3], md.quat[0]), new THREE.Vector3(1, 1, 1));
       }
       const robotPart = isMesh && desc.bodyid[g] > 0;           // terrain keeps its rgba
-      const painted = robotPart && hasPalette(desc.robot);
+      const palette = robotPart && desc.robot !== null && hasPalette(desc.robot) ? desc.robot : null;
       let mesh: THREE.Mesh;
-      if (painted) {
-        const { paint, regions } = resolve(desc.robot, meshName);
+      if (palette) {
+        const { paint, regions } = resolve(palette, meshName);
         const md = desc.meshes[desc.dataid[g]];
         const toFile = new THREE.Matrix4().compose(
           new THREE.Vector3(...md.pos),
@@ -895,6 +910,13 @@ export class SceneView {
       this.scene.add(mesh);
       this.geomMeshes.push(mesh);
     }
+    if (desc.mode === 'player') {
+      this.player ??= new PlayerView({ renderer: this.renderer, scene: this.scene,
+        light: material => this.lightPlayerMaterial(material), collision: () => this.playerCollision() });
+      this.player.setSourceFrame(desc.sourceFrame);
+      // Arena collision is the rebuilt geoms; a map's visual survives native recompiles.
+      if (!this.terrainVisual) this.player.worldRevision = ++this.playerWorldRevision;
+    } else if (this.player) { this.player.dispose(); this.player = null; }
     this.setDisplay(this.display);
     void this.setHeadVisual(this.headChoice);
     this.bodyRequest=this.updateSourceBody();
@@ -1111,7 +1133,13 @@ export class SceneView {
     }else draw();
   }
 
+  /** The world, then (Player mode) the view-model pass with its own FOV after clearing depth. */
   private drawSourceScene(camera: THREE.Camera) {
+    this.drawSourceWorld(camera);
+    this.player?.drawViewModel(this.renderer, this.scene, camera);
+  }
+
+  private drawSourceWorld(camera: THREE.Camera) {
     const sky = this.sourceSky3D, renderer = this.renderer;
     const drawWorld = () => renderer.render(this.scene,camera);
     const drawVisibleWorld = () => this.sourceVisibility && this.display.map
@@ -1366,6 +1394,7 @@ export class SceneView {
       this.sourceAmbient.styleValue=()=>1;this.sourceAmbient.setData(null);
       this.sourceColor.reset();this.sourceColor.setColorCorrections([]);
       this.sourceColorMap=false;
+      if(this.player)this.player.worldRevision=++this.playerWorldRevision;
     };
     if (!source) return {commit:()=>{if(!current()){context.dispose();return;}clear();this.configureCamera(this.camera);this.setSourceLighting(this.sourceLighting);},dispose:()=>context.dispose()};
     try {
@@ -1562,6 +1591,8 @@ export class SceneView {
     this.setSourceLighting(this.sourceLighting);
     this.terrainVisual = gltf.scene;
     this.scene.add(gltf.scene);
+    gltf.scene.traverse(o=>{if(o instanceof THREE.Light)o.layers.enable(PLAYER_VIEWMODEL_LAYER);});
+    if(this.player)this.player.worldRevision=++this.playerWorldRevision;
     this.setDisplay(this.display);
     }};
     }catch(error){context.dispose();throw error;}

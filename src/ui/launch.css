@@ -14,6 +14,8 @@
 .launch-shell .btn { min-height: 38px; white-space: normal; border-radius: 1px; }
 .launch-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 24px; }
 .launch-actions .primary { margin-left: auto; }
+.launch-mode button { height: 38px; }
+.launch-add-content { margin-top: 8px; }
 #launch-catalog-status:empty, #launch-appearance-note:empty, #launch-map-progress:empty { display: none; }
 #launch-catalog-status, #launch-appearance-note, #launch-context, #launch-map-progress { color: var(--text-2); overflow-wrap: anywhere; }
 #launch-context { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -28,7 +28,7 @@
  */
 import { clip, matFromWxyz, matTVec } from "../math";
 import type { Command, EvalConfig, RobotSpec } from "../types";
-import type { Engine } from "../../sim/engine";
+import type { EngineScope } from "../../sim/engine";
 import type { OnnxSession } from "../policy";
 import { BaseDriver } from "./base";
 import { Task137, loadRows, resample } from "./g1_vq137";
@@ -216,7 +216,7 @@ export class G1VqDriver extends BaseDriver {
   private anchor = new Float32Array(64);
   activeNet = "main";
 
-  constructor(cfg: EvalConfig, spec: RobotSpec, eng: Engine, readonly sess: OnnxSession,
+  constructor(cfg: EvalConfig, spec: RobotSpec, eng: EngineScope, readonly sess: OnnxSession,
               readonly aux: Record<string, OnnxSession>, readonly files: Record<string, string>) {
     super(cfg, spec, eng);
     const g = cfg.g1!;
@@ -339,7 +339,7 @@ export class G1VqDriver extends BaseDriver {
     if (this.mode === "task" && this.vq.remote) { this.tsched = []; this.played = false; }
     if (this.mode === "getup" && !this.vq.stand_start) {
       const q = this.vq.spawn_quat ?? [1, 0, 0, 0];
-      const all = Array.from({ length: this.eng.model.nbody }, (_, i) => i).filter((i) => i !== 0);
+      const all = this.eng.allBodyIds();
       this.seat(this.initPose, q, all, 0.005);
     } else {
       this.seat(this.default, [1, 0, 0, 0], this.feet, 0.002);
