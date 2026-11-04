@@ -32,7 +32,7 @@ export type ToWorker =
   | { t: 'playerInput'; input: PlayerInputFrame }
   | { t: 'playerTool'; tool: PlayerTool }
   | { t: 'playerInspect' }
-  | { t: 'playerWheel'; direction: number }
+  | { t: 'playerWheel'; direction: number }   // signed wheel clicks: wheel up (positive) pushes a held object farther
   | { t: 'playerSpawnRobot'; robot: string }
   | { t: 'playerUndo' }
   | { t: 'playerStop' }

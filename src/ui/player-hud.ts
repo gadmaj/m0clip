@@ -158,7 +158,8 @@ export class PlayerHud {
     window.clearTimeout(this.lockTimer);
     this.lockTimer = window.setTimeout(() => {
       this.lockTimer = undefined;
-      if (this.mode === 'player' && this.state.enabled && !this.state.locked) this.lockFailed();
+      // Read the live lock: the HUD state refreshes once per frame, which can lag a granted lock.
+      if (this.mode === 'player' && this.state.enabled && !document.pointerLockElement) this.lockFailed();
     }, LOCK_WAIT_MS);
   }
 

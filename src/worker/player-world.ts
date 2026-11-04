@@ -424,7 +424,9 @@ export class PlayerWorld {
     if (!Number.isFinite(direction)) throw new Error('Invalid physics gun wheel direction.');
     const grab = this.grab;
     if (!grab) return;
-    grab.distance = Math.max(PHYSGUN_MIN_DISTANCE, Math.min(PHYSGUN_RANGE, grab.distance + Math.sign(direction) * PHYSGUN_WHEEL));
+    // Signed wheel clicks: the main thread counts clicks Chrome merged into one event.
+    const notches = Math.trunc(direction);
+    grab.distance = Math.max(PHYSGUN_MIN_DISTANCE, Math.min(PHYSGUN_RANGE, grab.distance + notches * PHYSGUN_WHEEL));
   }
 
   /** Focus, lock, modal or review: release everything the player is holding. Momentum stays. */

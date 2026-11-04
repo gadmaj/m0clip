@@ -7,6 +7,12 @@ const MOVEMENT_KEYS: Readonly<Record<string, true>> = {KeyW: true, KeyA: true, K
 const TOOL_SLOTS = ['knife', 'physgun', 'spawn'] as const;
 const LOOK_DEGREES = .022 * 3;
 
+/** Chrome merges fast wheel clicks into one event; its legacy wheelDeltaY stays 120 per click. */
+function wheelNotches(event: WheelEvent): number {
+  const legacy = (event as WheelEvent & { wheelDeltaY?: number }).wheelDeltaY;
+  return typeof legacy === 'number' && legacy !== 0 ? Math.max(1, Math.round(Math.abs(legacy) / 120)) : 1;
+}
+
 export interface PlayerInputActions {
   blocked(): boolean;
   /** The frame is borrowed: postMessage clones it synchronously; do not retain it. */
@@ -208,15 +214,17 @@ export class PlayerInputController {
   private readonly wheel = (event: WheelEvent) => {
     if (!this.locked || this.actions.blocked() || event.deltaY === 0) return;
     event.preventDefault();
+    const notches = wheelNotches(event), down = event.deltaY > 0;
     if (this.selected === 'physgun' && this.holdingObject) {
-      this.actions.holdDistance(event.deltaY < 0 ? 1 : -1);
-    } else if (this.selected === 'knife' && event.deltaY > 0) {
+      this.actions.holdDistance(down ? -notches : notches);
+    } else if (this.selected === 'knife' && down) {
+      // Several clicks inside one tick still make one jump, as in Source.
       this.pendingWheelJump = true;
       this.dirty = true;
     } else if (this.available.length) {
-      const choices = this.available;
+      const choices = this.available, step = (down ? notches : -notches) % choices.length;
       const at = choices.indexOf(this.selected);
-      this.selectTool(choices[(at + (event.deltaY > 0 ? 1 : -1) + choices.length) % choices.length]);
+      this.selectTool(choices[(at + step + choices.length) % choices.length]);
     }
   };
   private readonly contextMenu = (event: Event) => { if (this.locked) event.preventDefault(); };
