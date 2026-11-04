@@ -170,6 +170,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       page.waitForEvent('pageerror').then(error=>{throw error;}),
     ]);
     assert.deepEqual(errors,[]);const results=await page.evaluate(()=>window.results);
+    // Character metadata is optional for builds, not for this check: it must exercise real characters.
+    assert.ok(results&&Object.keys(results).length>0,'No authored characters were found; supply character metadata and assets.');
     if(process.env.QA_ARTIFACT_DIR){fs.mkdirSync(process.env.QA_ARTIFACT_DIR,{recursive:true});fs.writeFileSync(path.join(process.env.QA_ARTIFACT_DIR,'character-body.json'),JSON.stringify(results,null,2));}
     console.log(JSON.stringify(results,null,2));
   } finally {await browser.close();}
