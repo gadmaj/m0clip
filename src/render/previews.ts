@@ -28,6 +28,8 @@ function renderToCanvas(renderer:THREE.WebGLRenderer,target:THREE.WebGLRenderTar
     renderer.setRenderTarget(target);renderer.setScissorTest(false);
     renderer.autoClear=true;
     draw();
+    // A lost context draws nothing (SourceColor and WebGLRenderer skip); never accept that as a preview.
+    if(renderer.getContext().isContextLost())throw new Error('The GPU context was lost while rendering a preview.');
     const {width,height}=target,pixels=new Uint8Array(width*height*4);
     renderer.readRenderTargetPixels(target,0,0,width,height,pixels);
     const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;

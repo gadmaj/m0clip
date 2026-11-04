@@ -1,6 +1,10 @@
-/** Install the hosted R1 catalog once per browser. Existing imports win; an
- * explicit deletion stays deleted on subsequent visits. Manual import remains available. */
+/** Install the selected robot family's hosted catalog once per browser. Only R1 and G1
+ * have hosted catalogs; each is fetched when its family is first selected, never for
+ * another family. Existing imports win; an explicit deletion stays deleted on subsequent
+ * visits. Manual import remains available. */
 import { storePack, type PackMetadata, type StoredPack } from './index';
+
+const labels: Record<string, string> = { r1: 'R1', g1: 'G1' };
 
 function settings(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -11,10 +15,12 @@ function settings(): Promise<IDBDatabase> {
   });
 }
 
-export async function installDefaultPacks(existing: PackMetadata[], progress: (message: string) => void,
+export async function installDefaultPacks(family: string, existing: PackMetadata[], progress: (message: string) => void,
     fetchMetadata: (url: string) => Promise<Response> = fetch): Promise<PackMetadata[]> {
+  const label = labels[family];
+  if (!label) return existing;
   const db = await settings();
-  const key = 'r1-default-v1';
+  const key = `${family}-default-v1`;
   try {
     const installed = await new Promise<boolean>((resolve, reject) => {
       const request = db.transaction('settings').objectStore('settings').get(key);
@@ -22,17 +28,17 @@ export async function installDefaultPacks(existing: PackMetadata[], progress: (m
       request.onerror = () => reject(request.error);
     });
     if (installed) return existing;
-    progress('Preparing the default R1 policy catalog…');
-    const response = await fetchMetadata('/assets/packs/r1-default-v1.json');
-    if (!response.ok) throw new Error(`Default catalog: HTTP ${response.status}`);
+    progress(`Preparing the default ${label} policy catalog…`);
+    const response = await fetchMetadata(`/assets/packs/${key}.json`);
+    if (!response.ok) throw new Error(`Default ${label} catalog: HTTP ${response.status}`);
     const catalog = await response.json() as StoredPack[];
-    if (!Array.isArray(catalog) || !catalog.length) throw new Error('Default catalog contains no policy packs');
+    if (!Array.isArray(catalog) || !catalog.length) throw new Error(`Default ${label} catalog contains no policy packs`);
     const ids = new Set(existing.map(pack => pack.id));
     const result = [...existing];
     for (const pack of catalog) {
       if (typeof pack.id !== 'string' || pack.id !== pack.manifest?.baseName ||
           !pack.manifest.checkpoints?.length || !pack.config?.policy ||
-          !pack.downloadUrl?.startsWith('/assets/packs/r1/')) throw new Error('Invalid default policy entry');
+          !pack.downloadUrl?.startsWith(`/assets/packs/${family}/`)) throw new Error(`Invalid default ${label} policy entry`);
       if (ids.has(pack.id)) continue;
       pack.files = {};
       const metadata = await storePack(pack);

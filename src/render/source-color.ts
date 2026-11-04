@@ -88,6 +88,8 @@ export class SourceColor {
   /** Draw into the reference's sRGB attachment, blend there in linear light, then resolve
    * into the caller's current viewport. Does not disturb letterbox bars or export targets. */
   render(renderer:THREE.WebGLRenderer,draw:()=>void,linearOutput:{value:number},transparent=false,camera?: THREE.Camera) {
+    // Like WebGLRenderer.render, draw nothing while the context is lost; GL queries return null.
+    if(renderer.getContext().isContextLost())return;
     this.updateColorCorrections(camera);
     const viewport=renderer.getCurrentViewport(new THREE.Vector4());
     const width=Math.max(1,Math.round(viewport.z)),height=Math.max(1,Math.round(viewport.w));

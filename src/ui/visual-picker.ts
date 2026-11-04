@@ -44,9 +44,11 @@ export class VisualPicker {
     select.addEventListener('change',this.changed); this.sync();
   }
   sync(preserveSearch=false){
-    const selected=this.select.selectedOptions[0],label=selected?.label;
+    const selected=this.select.selectedOptions[0],label=selected?.label,detail=selected?.dataset.detail;
     this.button.textContent=`${label || this.config.label} ▦`;
-    this.button.setAttribute('aria-label',label?`${this.config.label}: ${label}`:this.config.label);
+    if(detail){const text=document.createElement('span');text.className='visual-picker-trigger-text';const small=document.createElement('small');small.className='visual-picker-detail';small.textContent=detail;text.append(this.button.textContent,small);this.button.replaceChildren(text);}
+    this.button.setAttribute('aria-label',label?`${this.config.label}: ${label}${detail?`, ${detail}`:''}`:this.config.label);
+    if(detail)this.button.title=detail; else this.button.removeAttribute('title');
     const thumbnail=selected?.dataset.preview;
     if(thumbnail){registerPreviewAsset(thumbnail);const image=document.createElement('img');image.crossOrigin='anonymous';image.loading='lazy';image.decoding='async';image.src=thumbnail;image.alt='';image.onerror=()=>{image.remove();this.button.append(' · Preview unavailable');};this.button.prepend(image);}
     this.button.disabled=this.disabled;
@@ -113,6 +115,8 @@ export class VisualPicker {
       button.disabled=option.disabled||parentDisabled; button.setAttribute('aria-pressed',String(this.select.value===option.value));
       const slot=document.createElement('span'); slot.className='visual-picker-preview'; slot.textContent='Preview loading…';
       const name=document.createElement('span'); name.textContent=option.label;button.append(slot,name);
+      // Exact identity (variant, canonical name, State) stays visible and searchable as quieter detail.
+      if(option.dataset.detail){const detail=document.createElement('small');detail.className='visual-picker-detail';detail.textContent=option.dataset.detail;button.append(detail);}
       const description=option.title||(!remote?this.config.description?.(option.value):undefined);
       if(description){const text=document.createElement('small');text.textContent=description;button.append(text);}
       if(button.disabled&&!description){const text=document.createElement('small');text.textContent='Unavailable';button.append(text);}
@@ -142,7 +146,7 @@ export class VisualPicker {
       }).then(preview=>{if(!preview){card.loaded=false;return;}if(this.generation!==generation||this.dialog!==dialog){preview.remove();return;}card.slot.replaceChildren(preview);}).catch(()=>{if(this.generation===generation)card.slot.textContent='Preview unavailable';});
     };
     this.observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){const card=cards.find(c=>c.button===entry.target);if(card)loadPreview(card);}},{root:grid,rootMargin:'100px'});
-    const filter=()=>{const tokens=search?.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)??[];for(const card of cards){const text=`${card.option.label} ${card.option.value} ${card.group} ${card.option.title}`.toLocaleLowerCase();card.button.hidden=!tokens.every(token=>text.includes(token));if(!card.button.hidden)this.observer?.observe(card.button);}for(const group of groups)group.heading.hidden=group.buttons.every(b=>b.hidden);status.textContent='No matching options.';status.hidden=cards.some(c=>!c.button.hidden);};
+    const filter=()=>{const tokens=search?.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)??[];for(const card of cards){const text=`${card.option.label} ${card.option.value} ${card.group} ${card.option.title} ${card.option.dataset.detail??''}`.toLocaleLowerCase();card.button.hidden=!tokens.every(token=>text.includes(token));if(!card.button.hidden)this.observer?.observe(card.button);}for(const group of groups)group.heading.hidden=group.buttons.every(b=>b.hidden);status.textContent='No matching options.';status.hidden=cards.some(c=>!c.button.hidden);};
     const renderIncluded=()=>{
       reset();navigation.hidden=true;
       for(const child of this.select.children){

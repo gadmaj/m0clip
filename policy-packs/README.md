@@ -67,7 +67,7 @@ The browser detects single packs and bundles automatically; a bundle has no
 top-level `pack.json`. Importing it adds its included packs, not missing
 configurations or weights. Open **Policy packs** under
 [Add your own assets](../README.md#add-your-own-assets) for optional hosted R1
-catalogues and their redistribution requirements.
+and G1 catalogues and their redistribution requirements.
 
 Imported packs persist in the browser (IndexedDB); remove them any time from
 the Policy manager.

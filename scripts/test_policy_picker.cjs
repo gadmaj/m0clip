@@ -91,10 +91,17 @@ const attachReadyApp = require('./attach-ready-app.cjs');
     await page.keyboard.press('Enter');
     await page.waitForFunction(name => window.__app.status.policy === name, next, { timeout: 120000 });
     assert.equal(await select.inputValue(), next);
-    assert.ok((await policy.textContent()).includes(next));
+    assert.ok((await policy.getAttribute('aria-label')).includes(next), 'The trigger keeps the exact checkpoint accessible');
 
+    // Activity-first sections: one Locomotion section across R1 variants; every canonical value stays listed.
     await policy.click();
-    await search.fill('walking running');
+    const headings = await gallery.locator('h3').allTextContents();
+    assert.equal(headings.filter(heading => heading === 'Locomotion').length, 1);
+    assert.ok(headings.every(heading => !/\b(Air|EDU)\b/.test(heading)), `variant headings: ${headings}`);
+    const canonical = (await page.evaluate(() => window.__app.status.policies.map(entry => entry.name))).sort();
+    assert.deepEqual((await select.evaluate(select => Array.from(select.options, option => option.value))).sort(), canonical);
+    assert.deepEqual((await gallery.locator('button[data-value]').evaluateAll(buttons => buttons.map(button => button.dataset.value))).sort(), canonical);
+    await search.fill('locomotion');
     const byCategory = await cards.count();
     assert.equal(await gallery.locator('button[data-value="amp_locomotion/amp_locomotion"]').isVisible(), true);
     await page.keyboard.press('Escape');

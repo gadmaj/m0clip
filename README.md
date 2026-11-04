@@ -61,8 +61,11 @@ from Source game files on your computer; the files are not uploaded.
 - On narrow screens, **Play**, **Scene** and **Reference clip** share one
   Controls area; use the buttons above it to switch.
 - **Reference clip** plays a motion CSV at the FPS you set. **Stop** hands control
-  back to the selected policy. Some motion clips run once, then switch to their
-  configured next policy; select the clip again to replay it.
+  back to the selected policy. Some motions run once, then switch to their
+  configured next policy; press **Run again** beside the finished line to replay
+  that motion from where the robot stands.
+- The policy gallery is grouped by activity. Each card names the motion and
+  lists its robot variant, checkpoint and state number; search matches all three.
 - In review, appearance, display, flashlight, lights and camera edits belong to
   that take. Robot, map and policy controls work only live. The **F** flashlight
   key is live-only; use its button while reviewing.
@@ -270,15 +273,18 @@ node scripts/build-packs.mjs --robot r1 --public . --out policy-packs/generated
 writes `r1-all.zip` and individual packs, removes stale ZIPs from the output
 folder, and can succeed with a partial set: read its warnings.
 
-To host a default R1 catalogue, give it your own R1 bundle before building:
+To host a default R1 or G1 catalogue, give it your own bundle for that robot
+before building. Run it once per robot:
 
 ```sh
 node scripts/host-default-packs.mjs asset-sources/r1-all.zip
+node scripts/host-default-packs.mjs asset-sources/g1-all.zip
 ```
 
-This writes `public/assets/packs/r1-default-v1.json` and the packs under
-`public/assets/packs/r1/`. Browsers download weights when a policy is selected.
-Hosting them distributes the weights, so check you are allowed to.
+Each run writes `public/assets/packs/<robot>-default-v1.json` and the packs under
+`public/assets/packs/<robot>/`. A browser fetches a catalogue only when its robot
+is first selected, then downloads weights only for the policy you pick. Hosting
+them distributes the weights, so check you are allowed to.
 
 </details>
 

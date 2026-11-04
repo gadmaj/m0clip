@@ -277,6 +277,8 @@ class App {
   private playerRec: PlayerTakeRecorder | null = null;
   private recCheckpoint:RecordingCheckpointWriter|null=null;
   private recordStarting = false;
+  /** Between a worker "busy" and its "ready" / "error": a policy or scene is still loading. */
+  private workerBusy = false;
   private screenshotPending=false;
   private screenshotRequest=0;
   private screenshotAbort:AbortController|null=null;
@@ -767,7 +769,7 @@ class App {
     const {signal,onCommit,robot,validate}=options;
     if((source?.id??null)!==mapId(terrain))throw new Error('The selected map source does not match the requested terrain.');
     if(this.mapPreparing||this.pendingMap)throw new Error('A map is already loading.');
-    this.mapPreparing=true;
+    this.mapPreparing=true;this.syncPolicyActions();
     try{
     const previous=this.model?.terrain??this.panel.terrain;
     this.panel.setTerrain(previous);
@@ -795,7 +797,7 @@ class App {
       if(this.pendingMap===pending){this.pendingMap=null;stage?.dispose();this.worker.postMessage({t:'cancelTerrain'});this.overlay.classList.add('hidden');}
       throw error;
     }finally{signal?.removeEventListener('abort',cancel);}
-    }finally{this.mapPreparing=false;this.updateCaptureNavigationNotice();}
+    }finally{this.mapPreparing=false;this.syncPolicyActions();this.updateCaptureNavigationNotice();}
   }
 
   /** Existing sources stay synchronous so the initial shared-view worker barrier is installed before init. */
@@ -1427,6 +1429,7 @@ class App {
     if (this.timeline.isOpen) this.closeReview();
     if (this.dialog.isOpen) this.dialog.close();
     this.recordStarting = true;
+    this.syncPolicyActions();
     const generation=this.viewBuildGeneration,model=this.model;
     this.look.setHeadLocked(true);
     this.panel.setRecordInfo('Preparing scene visuals…');
@@ -1441,6 +1444,7 @@ class App {
       this.panel.setRecordInfo(`Recording could not start: ${error instanceof Error ? error.message : error}`);
     }).finally(() => {
       this.recordStarting = false;
+      this.syncPolicyActions();
       if (!this.rec && !this.playerRec && !this.timeline.isOpen) this.look.setHeadLocked(false);
     });
   }
@@ -1716,6 +1720,7 @@ class App {
 
   private setExporting(on: boolean) {
     this.exporting = on;
+    this.syncPolicyActions();
     this.cancelScreenshot();
     this.look.setReadOnly(on);
     this.explore.setReadOnly(on);
@@ -1731,6 +1736,11 @@ class App {
       const state=this.storedTakes.get(this.take);
       if(state?.previewDirty&&!state.deleted)this.scheduleShotPreview(this.take,state);
     }
+  }
+
+  /** Run again follows the same gates as the other live controls; review is handled by the panel. */
+  private syncPolicyActions() {
+    this.panel.setPolicyActionsBlocked(this.workerBusy || this.recordStarting || this.exporting || this.mapPreparing || !!this.pendingMap);
   }
 
   private setViewMode(m: ViewMode) {
@@ -2244,6 +2254,7 @@ class App {
     try{
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       this.reviewFrame(0);
+      if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       const source=this.view.renderer.domElement,scale=Math.min(320/source.width,200/source.height);
       const image=document.createElement('canvas');
       image.width=Math.max(1,Math.round(source.width*scale));image.height=Math.max(1,Math.round(source.height*scale));
@@ -2366,6 +2377,8 @@ class App {
       case 'loadingPlan': void this.prepareStartupAssets(m.plan); return;
       case 'loading': return launch.receiveTransfers(m.generation, m.updates);
       case 'terrainPrepared': {
+        // Worker jobs are serialized: a terrain result ends its busy state, which has no "ready".
+        this.workerBusy=false;this.syncPolicyActions();
         const pending=this.pendingMap;
         if(!pending||pending.id!==m.request)return;
         try{
@@ -2380,6 +2393,7 @@ class App {
         return;
       }
       case 'terrainFailed': {
+        this.workerBusy=false;this.syncPolicyActions();
         const pending=this.pendingMap;if(!pending||pending.id!==m.request)return;
         this.pendingMap=null;pending.stage?.dispose();pending.reject(new Error(m.msg));
         this.overlay.classList.add('hidden');this.panel.setTerrain(this.model?.terrain??'flat');return;
@@ -2463,8 +2477,11 @@ class App {
         this.renderLidar(m.lidar);
         return;
       case 'viewReady':void this.finishViewRestore(m);return;
-      case "busy": return this.showOverlay(m.msg, "busy");
+      case "busy":
+        this.workerBusy = true; this.syncPolicyActions();
+        return this.showOverlay(m.msg, "busy");
       case "ready": {
+        this.workerBusy = false; this.syncPolicyActions();
         if (launch.active) {
           launch.simulationReady();
           void this.prepareLaunch();
@@ -2485,6 +2502,7 @@ class App {
       case "policyFinished": return this.panel.showPolicyFinished(m.policy,m.active);
       case "notice": return this.showOverlay(m.msg, "notice");
       case "error":
+        this.workerBusy = false; this.syncPolicyActions();
         // A Player world keeps running after a failed spawn, remove or map change; only the request failed.
         if (this.player && !launch.active) {
           const pending = this.pendingMap;
@@ -2748,6 +2766,8 @@ class App {
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       restoreHighlights=this.view.suspendHighlights();
       if(review&&this.take)this.reviewFrame(0);else this.drawLiveFrame();
+      // A lost context skips the draw; recovery during encoding must not save that frame.
+      if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       const filename=`${mapId(terrain)??terrain}_${model.robot??'player'}_${stamp()}.png`;
       const created=new Date().toISOString();
       const blob=await Promise.race([capturePng(this.view.renderer.domElement),aborted]);
