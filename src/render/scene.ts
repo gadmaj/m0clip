@@ -484,6 +484,12 @@ export class SceneView {
   setDisplay(display: SceneDisplay) {
     this.display = normalizeDisplay(display);
     ++this.editRevision;
+    this.applyDisplay();
+  }
+
+  /** Re-apply the current display to newly installed visuals; finishing a load is not a scene edit. */
+  private applyDisplay() {
+    const display = this.display;
     if (this.terrainVisual) {
       this.terrainVisual.visible = display.map;
       this.terrainVisual.traverse(object => { if (object.userData.sourceOverlay) object.visible = this.display.decals; });
@@ -629,7 +635,7 @@ export class SceneView {
       const changed=!!this.sourceBody||this.bodyLoading||!!this.bodyError;
       ++this.bodyGeneration;this.sourceBody?.dispose();this.sourceBody=null;this.appliedBody='stock';
       this.bodyPending=null;this.bodyLoading=false;this.bodyError=null;this.trimBodyAssets();
-      if(changed){this.setDisplay(this.display);this.onHeadVisualChange?.();}return;
+      if(changed){this.applyDisplay();this.onHeadVisualChange?.();}return;
     }
     if(this.sourceBody&&this.appliedBody===state.choice) {
       const changed=this.bodyLoading||!!this.bodyError;
@@ -669,7 +675,7 @@ export class SceneView {
       });
       if(this.lastRobotPose)body.sync(this.lastRobotPose.xpos,this.lastRobotPose.xmat);
       this.sourceBody?.dispose();this.sourceBody=body;this.appliedBody=choice;
-      this.scene.add(body.root);this.setDisplay(this.display);
+      this.scene.add(body.root);this.applyDisplay();
       this.previewCache.clear();this.trimBodyAssets();
     }catch(error){if(generation===this.bodyGeneration)this.bodyError=error instanceof Error?error.message:String(error)}
     if(generation===this.bodyGeneration){this.bodyLoading=false;this.onHeadVisualChange?.();}
@@ -924,7 +930,7 @@ export class SceneView {
       // Arena collision is the rebuilt geoms; a map's visual survives native recompiles.
       if (!this.terrainVisual) this.player.worldRevision = ++this.playerWorldRevision;
     } else if (this.player) { this.player.dispose(); this.player = null; }
-    this.setDisplay(this.display);
+    this.applyDisplay();
     void this.setHeadVisual(this.headChoice);
     this.bodyRequest=this.updateSourceBody();
   }
@@ -1618,7 +1624,7 @@ export class SceneView {
     this.scene.add(gltf.scene);
     gltf.scene.traverse(o=>{if(o instanceof THREE.Light)o.layers.enable(PLAYER_VIEWMODEL_LAYER);});
     if(this.player)this.player.worldRevision=++this.playerWorldRevision;
-    this.setDisplay(this.display);
+    this.applyDisplay();
     }};
     }catch(error){context.dispose();throw error;}
   }
@@ -1684,8 +1690,9 @@ export class SceneView {
   // ---- lighting --------------------------------------------------------------
   getLighting(): Lighting { return { ...this.lighting }; }
 
-  setLighting(l: Lighting) {
-    ++this.editRevision;
+  /** The map's own light (edit=false) completes loading that map; it is not a scene edit. */
+  setLighting(l: Lighting, edit = true) {
+    if (edit) ++this.editRevision;
     this.sourceExposure.value = l.exposure;
     this.sourceAmbient.exposure.value = l.exposure;
     this.flashlight.exposure.value = l.exposure;

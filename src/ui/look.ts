@@ -176,7 +176,7 @@ export class LookPanel {
     this.readOnly = on;
     if (!on && this.mapLightPending) {
       this.mapLightPending = false;
-      this.applyLighting();
+      this.applyLighting(false, false);
     }
     this.renderLighting();
     this.renderPaint();
@@ -203,7 +203,7 @@ export class LookPanel {
   setMapLight(l: MapLight | null) {
     this.mapLight = l;
     if (this.readOnly) { this.mapLightPending = true; return; }
-    this.applyLighting();
+    this.applyLighting(false, false);
     this.renderLighting();
   }
 
@@ -220,11 +220,12 @@ export class LookPanel {
     return PRESETS[p];
   }
 
-  private applyLighting(deliberate = false) {
+  /** edit=false: the map's own light arriving with its visuals, which a pending screenshot waits for. */
+  private applyLighting(deliberate = false, edit = true) {
     if (deliberate && this.readOnly) return;
     this.view.setSourceLighting(this.preset === "auto" || this.preset === "map");
     this.view.setSourceAntialiasing(this.antialiasing);
-    this.view.setLighting(this.current());
+    this.view.setLighting(this.current(), edit);
     if (deliberate) {
       if (this.liveLook) this.shotChanged?.();
       else localStorage.setItem(LIGHT_KEY, JSON.stringify(this.getState()));
