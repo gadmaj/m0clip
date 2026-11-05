@@ -67,8 +67,8 @@ from Source game files on your computer; the files are not uploaded.
   that motion from where the robot stands.
 - The policy gallery is grouped by activity. Each card names the motion and
   lists its robot variant, checkpoint and state number; search matches all three.
-  In each group, policies for the robot's current body (Air or EDU) come first;
-  the rest stay listed below them.
+  In each group, policies that run on the robot's current body come first;
+  choosing one of the others switches the body.
 - While a gallery is open, the scene behind it holds its last frame; simulation
   and playback keep running. Recording and screenshots still draw every frame.
 - In review, appearance, display, flashlight, lights and camera edits belong to

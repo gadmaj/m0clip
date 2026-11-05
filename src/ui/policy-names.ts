@@ -57,7 +57,8 @@ export function policySections<T extends { name: string; previewRobot: string; f
   const sections = new Map<string, T[]>();
   for (const e of ordered) {
     const category = policyPresentation(e.name).category;
-    sections.set(category, [...(sections.get(category) ?? []), e]);
+    const list = sections.get(category);
+    if (list) list.push(e); else sections.set(category, [e]);
   }
   const activities: readonly string[] = POLICY_ACTIVITIES;
   return [...sections].sort((a, b) => activities.indexOf(a[0]) - activities.indexOf(b[0]));
