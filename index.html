@@ -49,7 +49,6 @@
       #viewport { flex: 1; position: relative; min-width: 0; min-height: 0; }
       #viewport canvas { display: block; }
 
-      .navigation-help { color: var(--text-2); }
       .screenshot-status { margin-top: 8px; color: var(--text-2); font-size: 12px; overflow-wrap: anywhere; }
       .screenshot-status:empty { display: none; }
       #capture-screenshot[aria-busy="true"] { opacity: .65; cursor: progress; }
@@ -277,6 +276,8 @@
       .row { display: flex; gap: 4px; }
       .row > .btn { flex: 1 1 0; min-width: 0; justify-content: flex-start; }
       .row + .row { margin-top: 4px; }
+      .row.wrap { flex-wrap: wrap; }
+      .row.wrap > .btn { flex: 1 1 auto; }
       .sub { margin-top: 8px; font-size: 11px; color: var(--text-3); }
 
       /* FSM state: segmented control */
@@ -332,10 +333,6 @@
       details.fold > summary .meta { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-3); }
       .fold-body { padding: 0 16px 16px; }
       .pad-debug { font: 11px/1.5 var(--mono); color: var(--text-2); white-space: pre; overflow-x: auto; }
-      .keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; font-size: 12px;
-              color: var(--text-2); align-items: baseline; }
-      .keys dt { white-space: nowrap; }
-      .keys dd { margin: 0; }
       /* lighting + robot colours */
       .lk-row { display: grid; grid-template-columns: 84px minmax(0, 1fr) auto; gap: 8px; align-items: center; margin-top: 6px; }
       .lk-row > label { color: var(--text-2); font-size: 12px; }
@@ -350,7 +347,6 @@
       .lk-swatch input { width: 26px; height: 22px; padding: 0; border: 1px solid var(--line-hi); border-radius: var(--r); background: none; }
       .lk-check { margin-top: 8px; }
       .lk-check input { accent-color: var(--accent); }
-      .keys-note { margin: 12px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-3); }
 
       /* ---- policy manager (slide-out) ---------------------------------- */
       #policy-manager { width: 300px; flex: 0 0 auto; overflow-y: auto; background: var(--panel);

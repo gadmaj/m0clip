@@ -60,7 +60,7 @@ const SECTIONS: HelpSection[] = [
     [['I / O'], 'Set range in / out'], [['X'], 'Clear range'], [['L'], 'Toggle loop'],
     [['F'], 'Fit timeline'], [['Esc'], 'Close Timeline (or close the export dialog first)'],
   ] },
-  { id: 'gamepad', title: 'Gamepad', mode: 'robot', intro: 'Press a gamepad button to connect. Keep the sticks still for about half a second to calibrate. Standard controller labels; policy remote actions can override these combos.', rows: [
+  { id: 'gamepad', title: 'Gamepad', mode: 'robot', intro: 'Press a gamepad button to connect. Keep the sticks still for about half a second to calibrate. Standard controller labels; LB / RB / LT / RT act as the robot remote\'s L1 / R1 / L2 / R2, and policy remote actions can override these combos.', rows: [
     [['Left stick'], 'Forward / backward and strafe'], [['Right stick'], 'Turn'],
     [['LT + ↑'], 'Stance'], [['LT + B'], 'Damping'], [['LT + Y'], 'Zero torque'], [['LT + X'], 'Lock'],
     [['RT + A'], 'Policy'], [['RT + ← / →'], 'Previous / next policy'], [['RT + B'], 'Reset'],
