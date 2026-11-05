@@ -2612,7 +2612,7 @@ class App {
     }
     if (!prev || prev.robot !== s.robot || prev.robotSpec !== s.robotSpec ||
         policyOptionsChanged || prev.policy !== s.policy)
-      this.panel.setPolicies(s.policies, s.policy, s.robot);
+      this.panel.setPolicies(s.policies, s.policy, s.robot, s.robotSpec);
     // the manager lists only the ACTIVE family's packs (r1+r1_air | go2)
     const famPacks = s.packs.filter((p) => fam(p.robot) === s.robot);
     if (!prev || prev.robot !== s.robot ||

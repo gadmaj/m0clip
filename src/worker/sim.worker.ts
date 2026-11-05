@@ -12,7 +12,7 @@ import { SimFSM, type FsmState } from "../sim/fsm";
 import { isTerrain, mapId, terrainTransform, type TerrainName } from "../sim/terrain";
 import { getSpec, SPECS } from "../robots";
 import { observeTransfers } from "../loading/transfers";
-import { robotFamily as fam, r1Models, modelKey, specFor, selectRobotPolicy, type RobotPolicySelection } from './robot-policy';
+import { robotFamily as fam, modelKey, policyInfo, specFor, selectRobotPolicy, type RobotPolicySelection } from './robot-policy';
 import type { FromWorker, ToWorker, SceneIdentity } from "../sim/protocol";
 import { renderModelFromEngine } from '../sim/render-model';
 import { createFrameGeometryLayout, copyMovingGeometry } from '../sim/geometry-frames';
@@ -984,11 +984,7 @@ class SimWorker {
       robots: [...new Set(Object.keys(SPECS).map(fam))],
       robot: fam(this.robot),
       robotSpec: this.robot,
-      policies: this.policies.map((p) => ({
-        name: p.name, family: p.family, dof: p.dof,
-        group: p.group, packId: p.packId, fsmId: p.fsmId,
-        previewRobot: p.name === e?.name ? this.robot : specFor(p, this.robot),
-        models: fam(p.robot) === "r1" ? r1Models(p) : p.models })),
+      policies: this.policies.map((p) => policyInfo(p, this.robot, p.name === e?.name)),
       packs: this.packs.map((p) => ({
         id: p.id, group: p.manifest.group, robot: p.manifest.robot,
         checkpoints: p.manifest.checkpoints.map((c) => c.id) })),
