@@ -765,7 +765,8 @@ class SimWorker {
           post({t:'terrainFailed',request:m.request,msg:String(error)});return;
         } finally {this.busy=false;}
         if (this.playback) this.rebindPlayback();
-        else if (this.policies.length) await this.loadDriver(this.polIdx,!!selection);
+        // The map was compiled for this robot: keep its model, or a dual-model G1 Air would recompile the map as EDU.
+        else if (this.policies.length) await this.loadDriver(this.polIdx,true);
         else {if(selection)await releasePolicySessions();post({t:'ready'});}
         return this.playback ? (post({t:'ready'}),this.sendStatus()) : this.reenter();
       }
