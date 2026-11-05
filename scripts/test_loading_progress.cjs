@@ -16,6 +16,9 @@ const path = require('node:path');
 const { chooseVisual } = require('./choose-visual.cjs');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const wasm = '/wasm/mujoco.wasm';
+// The failure scenario's late asset: the selected map visual downloads beside the model and is not
+// part of the worker's failure path. Startup planning awaits the flashlight, so it cannot be held.
+const FAILURE_MAP = 'map:nt_bullet_tdm', lateMapVisual = '/assets/maps/nt_bullet_tdm/visual.glb';
 const isSceneAsset = pathname => /\/wasm\/|\/assets\/(?:models|source-robots|packs)\/|\.(?:wasm|onnx)$/.test(pathname);
 
 async function createProxy(upstream) {
@@ -34,11 +37,11 @@ async function createProxy(upstream) {
     if (mode === 'original' && /\/assets\/source-robots\/.*\.glb$/.test(pathname)) {
       record.failed = true; res.writeHead(503, { 'content-type': 'text/plain', 'cache-control': 'no-store' }); res.end('Real-network QA: optional head unavailable'); return;
     }
-    const lateImage = mode === 'failure' && pathname === '/assets/source/flashlight.png';
+    const lateVisual = mode === 'failure' && pathname === lateMapVisual;
     // The ONNX runtime is requested after compilation, when nothing else is queued: streaming it
     // too gives the #55 contract a real interval in which every remaining request is open.
     const lastRequest = ['cold', 'unknown', 'compressed', 'stall'].includes(mode) && /\/assets\/ort-[^/]*\.wasm$/.test(pathname);
-    const target = pathname === wasm || lateImage || lastRequest || (mode === 'concurrent' && /\/meshes\//.test(pathname));
+    const target = pathname === wasm || lateVisual || lastRequest || (mode === 'concurrent' && /\/meshes\//.test(pathname));
     const request = (origin.protocol === 'https:' ? https : http).request(new URL(req.url, origin), {
       method: req.method, headers: { ...req.headers, host: origin.host, 'accept-encoding': 'identity' },
     }, upstreamResponse => {
@@ -73,13 +76,13 @@ async function createProxy(upstream) {
         else headers['content-length'] = String(body.length);
         record.expectedWire = body.length;
         if (res.destroyed || closed) return;
-        if (lateImage) {
+        if (lateVisual) {
           while (!current.failureObservedAt && !res.destroyed && !closed) await later(50);
           await later(800);
         }
         res.writeHead(upstreamResponse.statusCode, headers);
         current.active++; current.peak = Math.max(current.peak, current.active);
-        const steps = lateImage ? 2 : /\/meshes\//.test(pathname) ? 8 : ['cold', 'unknown'].includes(mode) ? 120 : 45;
+        const steps = lateVisual ? 2 : /\/meshes\//.test(pathname) ? 8 : ['cold', 'unknown'].includes(mode) ? 120 : 45;
         const chunkSize = Math.max(1, Math.ceil(body.length / steps));
         try {
           for (let offset = 0; offset < body.length && !res.destroyed && !closed; offset += chunkSize) {
@@ -172,7 +175,7 @@ async function raf(page, frames = 12) {
   }), frames);
 }
 
-async function pick(page, proxy, { mobile = false, head = false } = {}) {
+async function pick(page, proxy, { mobile = false, head = false, terrain = 'flat' } = {}) {
   await page.goto(`${proxy.url}/?plain&body=stock`, { waitUntil: 'domcontentloaded' });
   await page.locator('#launch-map-trigger').waitFor();
   if (mobile) {
@@ -199,7 +202,7 @@ async function pick(page, proxy, { mobile = false, head = false } = {}) {
     assert.ok(width === 320 || width === 390, 'MOBILE_WIDTH must be 320 or 390');
     await page.setViewportSize({ width, height: 844 });
   }
-  await chooseVisual(page, 'launch-map', 'flat');
+  await chooseVisual(page, 'launch-map', terrain);
   await page.locator('#launch-next').click();
   if (!head) await chooseVisual(page, 'launch-character', 'stock');
   const loadStartedAt = Date.now();
@@ -305,7 +308,7 @@ async function runSuite() {
       const sampler = (async () => { while (sampling) { try { samples.push(await snapshot(page)); } catch {} await delay(125); } })();
       const result = { name, errors, networkErrors, samples, requestedPaths }; results.push(result);
       try {
-        const { loadStartedAt } = await pick(page, proxy, { mobile, head: name === 'original' });
+        const { loadStartedAt } = await pick(page, proxy, { mobile, head: name === 'original', terrain: name === 'failure' ? FAILURE_MAP : 'flat' });
         result.loadStartedAt = loadStartedAt;
         await page.locator('#launch-progress').waitFor();
         assert.equal(await page.locator('#launch-details').evaluate(node => node.open), false, 'Details must start genuinely collapsed');
@@ -335,8 +338,9 @@ async function runSuite() {
           if (name === 'failure') {
             run.failureObservedAt = Date.now();
             const deadline = Date.now() + 15000;
-            while (!run.resources.some(resource => resource.path === '/assets/source/flashlight.png' && resource.done) && Date.now() < deadline) await delay(100);
-            const lateAsset = run.resources.find(resource => resource.path === '/assets/source/flashlight.png');
+            while (!run.resources.some(resource => resource.path === lateMapVisual && resource.done) && Date.now() < deadline) await delay(100);
+            const lateAsset = run.resources.find(resource => resource.path === lateMapVisual);
+            assert.ok(lateAsset?.started < run.failureObservedAt, 'The late asset must be requested beside the failing model, before the failure');
             assert.ok(lateAsset?.done && lateAsset.ended > run.failureObservedAt, 'Canonical-error retention must be challenged by a genuinely later real asset completion');
           }
           await delay(2000); const late = await snapshot(page);

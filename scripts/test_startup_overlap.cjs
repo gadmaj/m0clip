@@ -214,11 +214,13 @@ async function pick(page, proxy, run, name, sharedUrl) {
   return { terrain, robot, loadStartedAt };
 }
 function analyze(result, run, phase) {
+  // Hosted policies live in each family's own directory; whole-catalogue archives sit beside them.
+  const family = result.robot.split('_')[0], ownPack = resource => resource.path.startsWith(`/assets/packs/${family}/`);
   const zip = run.resources.filter(resource => isZip(resource.path));
   assert.ok(zip.length <= 1, 'Only selected hosted ZIP may download, without duplicate/retry');
-  assert.ok(zip.every(resource => resource.path.startsWith('/assets/packs/r1/')), 'Aggregate catalog ZIP must never download');
+  assert.ok(zip.every(ownPack), 'Only the selected family\'s own pack ZIP may download, never an aggregate catalogue ZIP');
   const demandedZips = result.requests.filter(resource => isZip(resource.path));
-  assert.ok(demandedZips.length <= 1 && demandedZips.every(resource => resource.path.startsWith('/assets/packs/r1/')), 'Browser/cache demand stays selected-only without aggregate or duplicate policy requests');
+  assert.ok(demandedZips.length <= 1 && demandedZips.every(ownPack), 'Browser/cache demand stays selected-only without aggregate or duplicate policy requests');
   const mapBodies = result.requests.filter(resource => /\/assets\/maps\/.*\.(glb|bin|xml|rgb|rgba)(?:\.gz)?$/.test(resource.path));
   assert.ok(mapBodies.every(resource => resource.path.startsWith(`/assets/maps/${MAP}/`)), 'Only the actually selected real converted map may download');
   if (!result.terrain.startsWith('map:') && result.name !== 'ownership') assert.equal(mapBodies.length, 0, 'Built-in fixtures cannot start an unrelated converted map');
@@ -237,10 +239,15 @@ function analyze(result, run, phase) {
     assert.equal(result.timing.mapBeforeEnginePrerequisite, phase === 'candidate', 'Selected map critical-path dependency differs only in integrated candidate');
     assert.ok(result.ready.at > Math.max(engine.ended, zip[0].ended, map.ended), 'Canonical ready waits real required assets');
   }
-  if (['g1', 'g1-air', 'no-policy'].includes(result.name)) {
+  if (['g1', 'g1-air', 'no-policy'].includes(result.name)) assert.ok(models.some(resource => resource.path.includes(`/models/${family}/`)), 'Correct physics bundle must load');
+  if (result.name === 'no-policy') {
     assert.equal(zip.length, 0, 'Driverless robot must not download hosted policies');
     assert.ok(!run.resources.some(resource => /ort.*\.wasm$|\.onnx$/.test(resource.path)), 'Driverless init must not initialize inference');
-    assert.ok(models.some(resource => resource.path.includes(`/models/${result.robot.split('_')[0]}/`)), 'Correct driverless physics bundle must load');
+    assert.equal(result.physicsAtReady.policy, 'No policy', 'Driverless status cannot silently pick a policy');
+  }
+  if (['g1', 'g1-air'].includes(result.name)) {
+    assert.ok(zip.length === 1 && zip[0].done, 'G1 downloads exactly one complete default policy from its own family packs');
+    assert.notEqual(result.physicsAtReady.policy, 'No policy', 'G1 runs its selected default policy');
   }
   if (result.name === 'air') {
     assert.equal(result.physicsAtReady.model, 'R1 Air · 20-DOF', 'Worker canonical status, not bundle file presence, identifies compiled Air physics');
@@ -249,7 +256,6 @@ function analyze(result, run, phase) {
   if (result.name === 'g1') assert.equal(result.physicsAtReady.model, 'G1 EDU · 29-DOF', 'Canonical worker status identifies actual G1 variant');
   if (result.name === 'g1-air') assert.equal(result.physicsAtReady.model, 'G1 Air · 23-DOF', 'Canonical worker status identifies actual Air G1 variant');
   if (result.name === 'flat') assert.equal(result.physicsAtReady.model, 'R1 EDU · 24-DOF', 'Default R1 retains EDU physics');
-  if (['g1', 'g1-air', 'no-policy'].includes(result.name)) assert.equal(result.physicsAtReady.policy, 'No policy', 'Driverless status cannot silently pick a policy');
   const requiredPaths = result.requests.filter(resource => /\.(glb|zip)$/.test(resource.path)).map(resource => resource.path);
   if (!['ownership', 'restores'].includes(result.name)) assert.equal(new Set(requiredPaths).size, requiredPaths.length, 'First model build must reuse in-flight map/body downloads');
 }
@@ -302,11 +308,28 @@ async function visualMouse(page, cdp, id, value) {
   await waitDOM(cdp, `!document.querySelector('dialog[data-visual-picker="${id}"][open]')`, `Real ${id} selection must close its gallery`);
 }
 
+const HEARTBEAT = `new Promise(resolve => { const start = performance.now(); setTimeout(() => resolve({ elapsedMs: performance.now() - start }), 200); })`;
+const terrainValue = `document.querySelector('#sel-terrain').value`;
+async function mapNotLoaded(page, cdp, message) {
+  // A failed in-app map change keeps the active scene and reports it in the existing notice.
+  await waitDOM(cdp, `document.querySelector('#policy-notice-title')?.textContent === 'Map not loaded'`, message, 120000);
+  const detail = await readDOM(cdp, `document.querySelector('#policy-notice .dlg-body').textContent`);
+  assert.match(detail, /503/, 'Map failure notice must name the real HTTP failure');
+  await mouseDOM(page, cdp, '#policy-notice .dlg-foot button');
+  await waitDOM(cdp, `!document.querySelector('#policy-notice')`, 'Map failure notice must close');
+  return detail;
+}
+
+/** In-app map changes are transactions: the active scene runs until the new map's visuals and physics
+ * are both ready. A robot chosen while the map's visuals download rebuilds at once, and the map then
+ * compiles for that robot; a failed map leaves the active scene and its terrain choice unchanged. */
 async function ownership(page, run, out) {
   await page.locator('#launch-enter').click();
   const cdp = await page.context().newCDPSession(page);
   const observedByPlaywright = process.env.OVERLAP_OBSERVATION === 'playwright';
   run.observation = observedByPlaywright ? 'playwright' : 'direct-cdp';
+  // Control: timer latency of the running scene before any map work, in this same browser.
+  run.idleHeartbeat = await readDOM(cdp, HEARTBEAT);
   run.ownershipStage = 'rebuild';
   if (observedByPlaywright) await chooseVisual(page, 'terrain', `map:${MAP}`);
   else await visualMouse(page, cdp, 'terrain', `map:${MAP}`);
@@ -317,35 +340,45 @@ async function ownership(page, run, out) {
     delay(5000).then(() => { throw new Error('Read-only DOM probe blocked for 5s while real map pending'); }),
   ]) : await readDOM(cdp, `({ at: Date.now(), hidden: document.hidden, inert: document.querySelector('#app').inert, robotDisabled: document.querySelector('#robot-trigger').disabled })`);
   run.pendingMapDOMRoundTripMs = Date.now() - probeAt;
-  run.pendingMapHeartbeat = await readDOM(cdp, `new Promise(resolve => { const start = performance.now(); setTimeout(() => resolve({ elapsedMs: performance.now() - start }), 200); })`);
+  run.pendingMapHeartbeat = await readDOM(cdp, HEARTBEAT);
+  assert.equal(await readDOM(cdp, terrainValue), 'flat', 'The active scene keeps its terrain while the new map loads');
   // Real input and DOM-open postconditions, independent of slow RAF actionability.
   await visualMouse(page, cdp, 'robot', 'go2');
-  await waitFor(() => run.resources.find(resource => /\/models\/go2\/.*\.xml$/.test(resource.path)), 'Robot rebuild must start while map remains pending');
+  const robotChosenAt = Date.now();
+  const robotModel = await waitFor(() => run.resources.find(resource => /\/models\/go2\/.*\.xml$/.test(resource.path)), 'Robot rebuild must start while map remains pending');
+  assert.equal(held.done, false, 'The robot download starts while the map visual is still held');
+  run.robotRequestDelayMs = robotModel.started - robotChosenAt;
   await waitDOM(cdp, `!!document.querySelector('#status')?.dataset.k?.includes('No policy')`, 'Canonical rebuilt go2 status must arrive while the original map is still pending', 120000);
+  run.rebuildHeartbeat = await readDOM(cdp, HEARTBEAT);
   assert.equal(held.done, false, 'Map remains genuinely held through the same-map model build');
   assert.equal(run.resources.filter(resource => resource.path === visual).length, 1, 'Same-map robot rebuild shares the in-flight visual');
   run.releaseRebuild = true; await waitFor(() => held.done, 'Held real map must complete');
-  await waitDOM(cdp, `document.querySelector('#map-loading').hidden`, 'Original map readiness callback survives same-map rebuild', 120000); await raf(page);
+  await waitDOM(cdp, `${terrainValue} === 'map:${MAP}'`, 'The held map must commit after the robot rebuild', 120000);
+  assert.ok(await readDOM(cdp, `!!document.querySelector('#status')?.dataset.k?.includes('No policy')`), 'The committed map keeps the newly chosen robot');
+  assert.equal(run.resources.filter(resource => resource.path === visual).length, 1, 'The committed map uses the one held visual download');
+  await raf(page);
   await page.screenshot({ path: path.join(out, 'ownership-same-map.png') });
   await visualMouse(page, cdp, 'terrain', 'flat');
+  await waitDOM(cdp, `${terrainValue} === 'flat'`, 'Built-in terrain must commit', 120000);
   run.ownershipStage = 'late'; await visualMouse(page, cdp, 'terrain', `map:${MAP}`);
   const late = await waitFor(() => run.resources.find(resource => resource.path === visual && resource.expectedFailure === undefined && resource.held && resource !== held), 'Late map must really start');
-  await visualMouse(page, cdp, 'terrain', 'rough');
-  await waitDOM(cdp, `document.querySelector('#map-loading').hidden`, 'New built-in scene must own readiness before delivering the old error', 120000);
+  assert.equal(await readDOM(cdp, terrainValue), 'flat', 'The active built-in scene keeps its terrain while the map loads');
   run.releaseLate = true;
-  await waitFor(() => late.done, 'Old map error must be delivered'); await delay(1500); await raf(page);
-  const status = await readDOM(cdp, `document.querySelector('#map-loading span').textContent`);
-  assert.ok(!/failed|503|unavailable/i.test(status), 'Late map error must not replace the newest built-in scene');
-  assert.match(await readDOM(cdp, `document.querySelector('#terrain-trigger').textContent`), /rough/i);
+  await waitFor(() => late.done, 'Map error must be delivered');
+  const lateError = await mapNotLoaded(page, cdp, 'A late map failure must be reported');
+  assert.equal(await readDOM(cdp, terrainValue), 'flat', 'A failed map must not replace the active built-in scene');
+  assert.ok(await readDOM(cdp, `!!document.querySelector('#status')?.dataset.k?.includes('No policy')`), 'A failed map keeps the running robot');
+  await raf(page);
   await page.screenshot({ path: path.join(out, 'ownership-late-map.png') });
-  const newestTerrain = await readDOM(cdp, `document.querySelector('#terrain-trigger').textContent`);
   run.ownershipStage = 'retry'; await visualMouse(page, cdp, 'terrain', `map:${MAP}`);
-  await waitDOM(cdp, `!document.querySelector('#map-loading button').hidden`, 'Real map failure must expose retry', 120000);
-  await mouseDOM(page, cdp, '#map-loading button');
-  await waitDOM(cdp, `document.querySelector('#map-loading').hidden`, 'Real map retry must finish', 120000); await raf(page);
-  assert.match(await readDOM(cdp, `document.querySelector('#terrain-trigger').textContent`), /bullet/i, 'Map-only retry preserves current terrain');
+  await mapNotLoaded(page, cdp, 'A failed map download must be reported');
+  assert.equal(await readDOM(cdp, terrainValue), 'flat', 'A failed map keeps the current terrain');
+  await visualMouse(page, cdp, 'terrain', `map:${MAP}`);
+  await waitDOM(cdp, `${terrainValue} === 'map:${MAP}'`, 'Choosing the map again must load it', 120000); await raf(page);
+  assert.match(await readDOM(cdp, `document.querySelector('#terrain-trigger').textContent`), /bullet/i, 'Retried map shows as the current terrain');
   await page.screenshot({ path: path.join(out, 'ownership-map-retry.png') });
-  return { sameMapRequests: 1, oldErrorAt: late.ended, newestTerrain, status, mapRetry: true };
+  return { sameMapRequests: 1, robotRequestDelayMs: run.robotRequestDelayMs, lateErrorAt: late.ended, lateError, mapRetry: true,
+    heartbeatMs: { idle: run.idleHeartbeat.elapsedMs, pendingMap: run.pendingMapHeartbeat.elapsedMs, rebuild: run.rebuildHeartbeat.elapsedMs } };
 }
 
 async function movePlayPanel(page, cdp, targetX) {

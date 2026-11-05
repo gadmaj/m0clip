@@ -24,7 +24,7 @@ export type ToWorker =
   | { t: "policy"; name: string }
   | { t: "cycle"; step: 1 | -1 }
   | { t: "state"; state: FsmState }
-  | { t: "robot"; robot: string }
+  | { t: "robot"; robot: string; request?: number }
   | { t: "terrain"; terrain: TerrainName; robot?:string; localMap?: LocalMapPayload; request:number; commit?:false }
   | { t: "terrain"; terrain: TerrainName; request:number; commit:true }
   | { t: 'cancelTerrain' }
@@ -148,6 +148,8 @@ export type FromWorker =
   | {t:'viewReady';request:number;robot:string;terrain:TerrainName}
   | { t: 'robotPlaced' }
   | { t: 'robotPlacementFailed'; msg: string }
+  /** The robot command with this request finished, successfully or not; its status was posted first. */
+  | { t: 'robotSettled'; request: number }
   | { t: "model"; desc: RenderModel; geometry: FrameGeometryLayout }
   | { t: 'terrainPrepared'; request: number; scene:SceneIdentity }
   | { t: 'terrainFailed'; request: number; msg: string }

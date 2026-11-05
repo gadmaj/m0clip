@@ -182,6 +182,14 @@ class App {
   private mapRequest=0;
   private mapPreparing=false;
   private pendingMap:{id:number;terrain:TerrainName;source:MapSource|null;stage:PreparedTerrainVisual|null;resolve:()=>void;reject:(error:unknown)=>void;committing:boolean;onCommit?:()=>void;validate?:(scene:SceneIdentity)=>void}|null=null;
+  /** How a robot choice meets a map change: `now` while only the map's visuals download (the worker then
+   * compiles the map for that robot), `later` once the worker compiles it for the current robot. A take or
+   * saved view that needs the current robot leaves it null and the choice is refused. */
+  private mapRobotChoice:'now'|'later'|null=null;
+  private deferredRobot:string|null=null;
+  /** The robot of the latest robot command, until the worker acknowledges that exact command. */
+  private requestedRobot:string|null=null;
+  private robotRequest=0;
   /** Modal surfaces own keyboard, pointer and gamepad input. */
   private get inputBlocked() { return launch.active || this.mapPreparing || !!this.pendingMap || !!document.querySelector('dialog[data-local-map][open]') || !!this.help?.isOpen || !!this.shotLibrary?.isOpen || VisualPicker.active; }
   /** Flight and the live Player camera own the viewport camera; orbit controls stay off. */
@@ -271,6 +279,10 @@ class App {
   private hoistOn = false;
   private mapVisualTerrain: TerrainName | null = null;
   private mapVisualGeneration = 0;
+  /** The shown map's own light; scene visuals are ready only once it is applied. */
+  private mapLight: Promise<void> = Promise.resolve();
+  /** Waiting for the next live simulation frame: a view rebuilt on leaving review has none yet. */
+  private liveFrameWaiters: (() => void)[] = [];
 
   // ---- recording / review ----
   private model: RenderModel | null = null;       // the live model (last "model" message)
@@ -378,11 +390,7 @@ class App {
   constructor() {
     this.panel = new Panel(document.getElementById("panel")!,
                            document.getElementById("policy-manager")!, [], {
-      onRobot: (r) => {
-        if(this.timeline.isOpen||this.exporting||(this.mapPreparing&&!this.viewRestoreAbort))return;
-        this.cancelScreenshot();
-        void this.cancelViewRestore().then(()=>{if(this.noclip)this.setNoclip(false);this.heldView=false;this.send({t:'robot',robot:r});});
-      },
+      onRobot: (r) => this.chooseRobot(r),
       onTerrain: (t) => {
         if(this.timeline.isOpen||this.exporting||(this.mapPreparing&&!this.viewRestoreAbort))return;
         this.cancelScreenshot();
@@ -774,6 +782,7 @@ class App {
     if((source?.id??null)!==mapId(terrain))throw new Error('The selected map source does not match the requested terrain.');
     if(this.mapPreparing||this.pendingMap)throw new Error('A map is already loading.');
     this.mapPreparing=true;this.syncPolicyActions();
+    this.mapRobotChoice=this.mode!=='player'&&!robot&&!validate?'now':null;
     try{
     const previous=this.model?.terrain??this.panel.terrain;
     this.panel.setTerrain(previous);
@@ -783,6 +792,8 @@ class App {
     const stage=terrain===this.mapVisualTerrain&&this.view.mapSource?.id===source?.id
       ?null:await this.view.stageTerrainVisual(source);
     if(signal?.aborted){stage?.dispose();signal.throwIfAborted();}
+    // From here the worker compiles this map for its current robot; a newer choice waits for it.
+    if(this.mapRobotChoice)this.mapRobotChoice='later';
     const {promise,resolve,reject}=Promise.withResolvers<void>();
     const pending={id,terrain,source,stage,resolve,reject,committing:false as boolean,onCommit,validate};
     this.pendingMap=pending;
@@ -801,7 +812,31 @@ class App {
       if(this.pendingMap===pending){this.pendingMap=null;stage?.dispose();this.worker.postMessage({t:'cancelTerrain'});this.overlay.classList.add('hidden');}
       throw error;
     }finally{signal?.removeEventListener('abort',cancel);}
-    }finally{this.mapPreparing=false;this.syncPolicyActions();this.updateCaptureNavigationNotice();}
+    }finally{
+      this.mapPreparing=false;this.mapRobotChoice=null;this.syncPolicyActions();this.updateCaptureNavigationNotice();
+      // The latest choice wins; one that equals the running robot needs no rebuild.
+      const deferred=this.deferredRobot;this.deferredRobot=null;
+      if(deferred&&deferred!==this.status?.robot)this.chooseRobot(deferred);
+    }
+  }
+
+  /** A robot choice never waits for map visuals: before the map reaches the worker, the worker's queue runs
+   * this rebuild first and the map then compiles for the new robot. */
+  private chooseRobot(robot:string){
+    if(this.timeline.isOpen||this.exporting)return;
+    const apply=()=>{
+      if(this.timeline.isOpen||this.exporting){if(this.status)this.panel.setRobots(this.status.robots,this.deferredRobot??this.status.robot);return;}
+      if(!this.mapPreparing||this.mapRobotChoice==='now'){
+        if(this.noclip)this.setNoclip(false);this.heldView=false;
+        const request=++this.robotRequest;this.requestedRobot=robot;
+        // `send` holds live controls during a map change; this rebuild precedes the map's worker job.
+        if(this.mapPreparing)this.worker.postMessage({t:'robot',robot,request});else this.send({t:'robot',robot,request});
+      }else if(this.mapRobotChoice==='later')this.deferredRobot=robot;
+      else if(this.status)this.panel.setRobots(this.status.robots,this.status.robot);
+    };
+    if(this.mapPreparing&&!this.viewRestoreAbort){apply();return;}
+    this.cancelScreenshot();
+    void this.cancelViewRestore().then(apply);
   }
 
   /** Existing sources stay synchronous so the initial shared-view worker barrier is installed before init. */
@@ -1098,6 +1133,7 @@ class App {
     // Flying owns the camera directly. Keep the final view when returning to physics.
     this.heldView = true;
     this.panel.setNoclip(on);
+    this.explore.setFlight(on);
     this.rec?.mark("noclip", on ? "Noclip on" : "Noclip off");
     this.send({ t: "noclip", on });
   }
@@ -1836,11 +1872,19 @@ class App {
     return base;
   }
 
-  /** Robot, map and, in a Player world, body and view model visuals. */
+  /** Robot, map (with its own light) and, in a Player world, body and view model visuals. */
   private sceneVisuals(): Promise<unknown> {
     const player = this.view.player;
-    return Promise.all([this.view.waitForRobotVisuals(), this.view.waitForTerrainVisuals(),
+    return Promise.all([this.view.waitForRobotVisuals(), this.view.waitForTerrainVisuals(), this.mapLight,
       ...(player ? [this.playerActorsReady, player.waitForVisuals()] : [])]);
+  }
+
+  /** Apply a map's own light from its manifest; a map without one (or a failed read) uses none. */
+  private loadMapLight(source: MapSource | null, current: () => boolean) {
+    this.look.setMapLight(null);
+    this.mapLight = source ? source.json<{light?:MapLight}>('manifest.json').then(
+      m => { if (current()) this.look.setMapLight(m.light ?? null); },
+      () => { if (current()) this.look.setMapLight(null); }) : Promise.resolve();
   }
 
   /** Show a recorded epoch model; null when it is already shown. */
@@ -1971,10 +2015,7 @@ class App {
     const loadVisual=()=>{
       if(!current())return;
       let failed=false;
-      this.look.setMapLight(null);
-      if(source)void source.json<{light?:MapLight}>('manifest.json')
-        .then((m:{light?:MapLight})=>{if(current())this.look.setMapLight(m.light??null)})
-        .catch(()=>{if(current())this.look.setMapLight(null)});
+      this.loadMapLight(source, current);
       loading.hidden = !id; retry.hidden = true;
       message.textContent = 'Loading map visuals…';
       void this.view.setTerrainVisual(source, (phase, loaded, total) => {
@@ -2170,7 +2211,7 @@ class App {
     signal?.throwIfAborted();
     const stage=isTerrain(terrain)&&terrain!==this.mapVisualTerrain?await this.view.stageTerrainVisual(this.sourceForTerrain(terrain)):null;
     if(signal?.aborted){stage?.dispose();signal.throwIfAborted();}
-    return ()=>{if(stage){stage.commit();this.mapVisualTerrain=terrain as TerrainName;++this.mapVisualGeneration;document.getElementById('map-loading')!.hidden=true;this.look.setMapLight(light?.light??null);}};
+    return ()=>{if(stage){stage.commit();this.mapVisualTerrain=terrain as TerrainName;++this.mapVisualGeneration;document.getElementById('map-loading')!.hidden=true;this.mapLight=Promise.resolve();this.look.setMapLight(light?.light??null);}};
   }
 
   private rememberTake(take:RecordedTake,model:RenderModel,name:string,recovery?:RecordingCheckpointWriter) {
@@ -2418,9 +2459,8 @@ class App {
           else url.searchParams.delete('map');
           history.replaceState(null,'',url);
           if(!this.timeline.isOpen){
-            this.look.setMapLight(null);
             const generation=this.mapVisualGeneration;
-            if(pending.source)void pending.source.json<{light?:MapLight}>('manifest.json').then(m=>{if(generation===this.mapVisualGeneration)this.look.setMapLight(m.light??null);}).catch(()=>{if(generation===this.mapVisualGeneration)this.look.setMapLight(null);});
+            this.loadMapLight(pending.source,()=>generation===this.mapVisualGeneration);
           }
           pending.resolve();
         }
@@ -2456,6 +2496,7 @@ class App {
         this.liveGeometry.apply(m.xpos, m.xmat);
         this.lastFrame = this.liveGeometry;
         this.resolveFirstFrame?.(); this.resolveFirstFrame = null;
+        for (const resolve of this.liveFrameWaiters.splice(0)) resolve();
         if (this.model?.mode === 'player') return this.playerFrameArrived(m);
         this.baseXY = [m.baseX, m.baseY];
         this.baseZ = this.model && this.model.baseQadr >= 0 ? m.qpos[this.model.baseQadr + 2] : this.followZ;
@@ -2503,6 +2544,13 @@ class App {
       case 'robotPlacementFailed':
         if (this.placingRobot) { this.placementPending = false; document.getElementById('flight-hint')!.textContent = m.msg; }
         return;
+      case 'robotSettled':
+        // Only the latest robot command retires the shown choice; its status (or a failure) came first.
+        if (m.request === this.robotRequest && this.requestedRobot !== null) {
+          this.requestedRobot = null;
+          if (this.status) this.panel.setRobots(this.status.robots, this.deferredRobot ?? this.status.robot);
+        }
+        return;
       case "policyFinished": return this.panel.showPolicyFinished(m.policy,m.active);
       case "notice": return this.showOverlay(m.msg, "notice");
       case "error":
@@ -2549,8 +2597,9 @@ class App {
       if (!s.playback) this.statusInput("state", s.state);
       if (s.hoist !== undefined) this.statusInput("hoist", s.hoist);
     }
+    // A queued choice, or the latest unacknowledged robot command, stays shown over earlier rebuilds.
     if (!prev || prev.robots.join() !== s.robots.join() || prev.robot !== s.robot)
-      this.panel.setRobots(s.robots, s.robot);
+      this.panel.setRobots(s.robots, this.deferredRobot ?? this.requestedRobot ?? s.robot);
     let policyOptionsChanged = !prev || prev.policies.length !== s.policies.length;
     if (prev && !policyOptionsChanged) {
       for (let i = 0; i < s.policies.length; i++) {
@@ -2745,7 +2794,7 @@ class App {
     if(this.exporting){this.panel.setScreenshotState(false,'Wait for the export to finish, then take a screenshot.');return}
     if(this.pendingViewRestore||this.viewRestoreAbort){this.panel.setScreenshotState(false,'Wait for the saved view to finish restoring, then take a screenshot.');return}
     const model=this.viewModel,review=this.timeline.isOpen,take=this.take,mode=this.timeline.mode;
-    if(!model||!review&&(!this.lastFrame||model!==this.model||!this.overlay.classList.contains('hidden')||(model.terrain??this.panel.terrain)!==this.panel.terrain)){
+    if(!model||!review&&(model!==this.model||!this.overlay.classList.contains('hidden')||(model.terrain??this.panel.terrain)!==this.panel.terrain)){
       this.panel.setScreenshotState(false,'Wait for the scene to finish loading, then take a screenshot.');return;
     }
     const request=++this.screenshotRequest,generation=this.viewBuildGeneration,revision=this.view.getVisualRevision(),controller=new AbortController();
@@ -2757,9 +2806,11 @@ class App {
     this.updatePendingSaveGuard();
     this.panel.setScreenshotState(true,'Preparing scene visuals…');
     const aborted=new Promise<never>((_,reject)=>controller.signal.addEventListener('abort',()=>reject(new DOMException('Screenshot cancelled.','AbortError')),{once:true}));
-    let phase:'prepare'|'capture'='prepare',message='',restoreHighlights:(()=>void)|undefined;
+    let phase:'prepare'|'capture'='prepare',message='',restoreHighlights:(()=>void)|undefined,frameWaiter:(()=>void)|undefined;
     try{
-      await Promise.race([this.sceneVisuals(),aborted]);
+      // Leaving review rebuilds the live view, which shows the robot from its next simulation frame.
+      const frame=review||this.lastFrame?null:new Promise<void>(resolve=>{frameWaiter=resolve;this.liveFrameWaiters.push(resolve);});
+      await Promise.race([Promise.all([this.sceneVisuals(),frame]),aborted]);
       // Cached visuals can settle inside the click task; defer the render and readback.
       await Promise.race([new Promise<void>(resolve=>setTimeout(resolve,0)),aborted]);
       if(!current()){this.cancelScreenshot();return}
@@ -2787,6 +2838,8 @@ class App {
         :'The PNG could not be saved. Try Screenshot again.';
     }finally{
       restoreHighlights?.();
+      // A cancelled request must not stay registered until a live frame that may never come.
+      if(frameWaiter){const index=this.liveFrameWaiters.indexOf(frameWaiter);if(index>=0)this.liveFrameWaiters.splice(index,1);}
       if(request===this.screenshotRequest){
         this.screenshotPending=false;this.screenshotAbort=null;this.screenshotIsCurrent=null;
         this.updatePendingSaveGuard();

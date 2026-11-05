@@ -94,6 +94,9 @@ export class ExplorePanel {
   private readOnly = false;
   private checks = new Map<keyof SceneDisplay, HTMLInputElement>();
   private liveViewControls: HTMLButtonElement[] = [];
+  private nameInput!: HTMLInputElement;
+  private followHint!: HTMLElement;
+  private flight = false;
   private bookmarks: Bookmark[] = [];
   private list: HTMLElement;
   private message: HTMLElement;
@@ -125,14 +128,15 @@ export class ExplorePanel {
     }
     callbacks.display(this.display);
     const views = fold(parent, 'Saved views');
-    this.viewScope = document.createElement('div'); this.viewScope.className = 'sub'; this.viewScope.textContent = 'LIVE';
+    this.viewScope = document.createElement('div'); this.viewScope.className = 'sub'; this.viewScope.id = 'saved-view-scope'; this.viewScope.textContent = 'LIVE';
     views.append(this.viewScope);
-    const name = document.createElement('input'); name.type = 'text'; name.placeholder = 'View name'; name.setAttribute('aria-label', 'View name');
+    // Blank names fall back to “View N”, so the placeholder marks the field optional.
+    const name = this.nameInput = document.createElement('input'); name.type = 'text'; name.placeholder = 'Name (optional)'; name.setAttribute('aria-label', 'View name');
     name.maxLength = 80; name.style.minWidth = '0'; name.style.flex = '1';
     const saveRow = document.createElement('div'); saveRow.className = 'row';
     const save=()=>{
-      const unavailable = this.viewUnavailable();
-      if (unavailable) { this.showMessage(unavailable); return; }
+      // The scope line above already states why; a blocked Enter adds no second notice.
+      if (this.viewUnavailable()) return;
       try{
         const view=callbacks.capture();if(!validView(view))throw new Error('Wait for the scene to finish loading, then save the view again.');
         let number=1;while(this.bookmarks.some(bookmark=>bookmark.name===`View ${number}`))number++;
@@ -161,11 +165,12 @@ export class ExplorePanel {
     this.link.setAttribute('aria-label', 'Shareable view link'); this.link.style.width = '100%';
     this.link.style.marginTop = '6px';
     const help = document.createElement('p'); help.className = 'saved-view-state';
-    help.textContent = 'Saves the camera, robot appearance, lighting and flight settings. Press C to follow the robot again. Links need the same map and robot assets on the receiving server.';
+    this.followHint = document.createElement('span'); this.followHint.dataset.robotOnly = '';
+    help.append('Saves the camera, robot appearance, lighting and flight settings.', this.followHint,
+      ' Links need the same map and robot assets on the receiving server.');
     const shareRow = document.createElement('div'); shareRow.className = 'row';
     const shareButton = button('Share current view', () => {
-      const unavailable = this.viewUnavailable();
-      if (unavailable) { this.showMessage(unavailable); return; }
+      if (this.viewUnavailable()) return;
       try{void this.share(callbacks.capture())}catch(error){this.showMessage(error instanceof Error?error.message:String(error))}
     });
     this.liveViewControls.push(shareButton);
@@ -173,6 +178,7 @@ export class ExplorePanel {
     views.append(saveRow, shareRow,
       this.link,this.message,this.undo,this.search,this.results,this.list,help);
     this.renderBookmarks();
+    this.syncViewControls();
   }
 
   getDisplay(): SceneDisplay { return { ...this.display }; }
@@ -193,7 +199,6 @@ export class ExplorePanel {
     this.setDisplay(display);
     this.shotChanged = changed;
     this.renderScope.textContent = 'SHOT';
-    this.viewScope.textContent = 'LIVE · Close timeline to restore a saved view.';
     this.syncViewControls();
   }
 
@@ -204,7 +209,6 @@ export class ExplorePanel {
     if (live) this.setDisplay(live);
     this.liveDisplay = null;
     this.renderScope.textContent = 'LIVE';
-    this.viewScope.textContent = 'LIVE';
     this.syncViewControls();
   }
 
@@ -214,25 +218,37 @@ export class ExplorePanel {
     this.syncViewControls();
   }
 
-  private viewUnavailable(): string | null {
-    return this.readOnly ? 'Saved views are locked during export.'
-      : this.liveDisplay ? 'LIVE · Close timeline to save or restore a view.' : null;
+  /** Flight takes C for moving down, so the follow hint names N first while flying. */
+  setFlight(on: boolean): void {
+    this.flight = on;
+    this.syncViewControls();
   }
 
+  private viewUnavailable(): string | null {
+    const lock = 'Save, restore and Share current view need LIVE.';
+    return this.readOnly ? `${lock} Wait for the export to finish.`
+      : this.liveDisplay ? `${lock} Close Timeline first.` : null;
+  }
+
+  /** One visible line carries the lock reason; locked controls point to it rather than repeating it. */
   private syncViewControls(): void {
-    const reason = this.viewUnavailable();
-    for (const control of [...this.liveViewControls, ...this.list.querySelectorAll<HTMLButtonElement>('.saved-view-restore')]) {
-      control.disabled = !!reason;
-      if (reason) control.setAttribute('aria-description', reason);
-      else control.removeAttribute('aria-description');
+    const reason = this.viewUnavailable(), scope = this.viewScope.id;
+    this.viewScope.textContent = reason ?? 'LIVE';
+    for (const control of [this.nameInput, ...this.liveViewControls, ...this.list.querySelectorAll<HTMLButtonElement>('.saved-view-restore')]) {
+      if (control !== this.nameInput) control.disabled = !!reason;
+      const ids = (control.getAttribute('aria-describedby') ?? '').split(' ').filter(id => id && id !== scope);
+      if (reason) ids.push(scope);
+      if (ids.length) control.setAttribute('aria-describedby', ids.join(' '));
+      else control.removeAttribute('aria-describedby');
     }
+    this.followHint.textContent = reason ? ''
+      : this.flight ? ' Press N to leave Flight, then C to follow the robot.' : ' Press C to follow the robot again.';
   }
 
   showMessage(text:string){this.message.textContent=text;}
 
   async restoreView(view:SavedView,restore=this.callbacks.restore) {
-    const unavailable = this.viewUnavailable();
-    if (unavailable) { this.showMessage(unavailable); return; }
+    if (this.viewUnavailable()) return;
     const request=++this.restoreRequest;this.showMessage('Restoring view…');
     try{await restore(view);if(request===this.restoreRequest)this.showMessage('View restored.');}
     catch(error){if(request===this.restoreRequest)this.showMessage(error instanceof Error?error.message:String(error));}
@@ -265,7 +281,7 @@ export class ExplorePanel {
     this.results.textContent=tokens.length?`${matches.length} of ${this.bookmarks.length} saved views`:`${this.bookmarks.length} saved ${this.bookmarks.length===1?'view':'views'}`;
     this.results.hidden=!this.bookmarks.length&&!tokens.length;
     if (!this.bookmarks.length) {
-      const empty = document.createElement('p'); empty.className = 'saved-view-state'; empty.textContent = 'No saved views. Enter a name and select Save view.';
+      const empty = document.createElement('p'); empty.className = 'saved-view-state'; empty.textContent = 'No saved views yet. Select Save view to add one.';
       this.list.append(empty); return;
     }
     if(!matches.length){const empty=document.createElement('p');empty.className='saved-view-state';empty.textContent='No matching views. Try another name, map file or robot.';this.list.append(empty);return}
@@ -293,9 +309,9 @@ export class ExplorePanel {
       remove.setAttribute('aria-label', `Delete ${bookmark.name}`);
       const actions=document.createElement('div');actions.className='row saved-view-actions';actions.append(share,rename,remove);
       row.append(restore,actions);this.list.append(row);
-      restore.disabled = this.readOnly || !!this.liveDisplay;
       const reason = this.viewUnavailable();
-      if (reason) restore.setAttribute('aria-description', reason);
+      restore.disabled = !!reason;
+      if (reason) restore.setAttribute('aria-describedby', `${location.id} ${this.viewScope.id}`);
     });
   }
 
