@@ -22,6 +22,7 @@ export class FloatingWorkspace {
     const capture = this.window('capture-window', 'Reference clip', menu);
     const scene = this.window('scene-window', 'Scene', menu);
     const inspector = element('inspector');
+    let tools: HTMLElement | null = null;
     for (const child of original) {
       if (child.matches('.p-head')) {
         const packButton = child.querySelector('button');
@@ -29,9 +30,12 @@ export class FloatingWorkspace {
         child.remove();
       } else if (child.dataset.workspace === 'capture') capture.body!.append(child);
       else if (child.dataset.workspace === 'inspector') inspector.append(child);
+      else if (child.dataset.workspace === 'tools') tools = child;
       else if (child.matches('details')) scene.body!.append(child);
       else play.body!.append(child);
     }
+    // Window chrome follows the scene settings people open Scene for.
+    if (tools) scene.body!.append(tools);
     this.register(play.root, play.body, 'Play', () => ({ x: 20, y: 96, collapsed: innerWidth <= 760 }));
     this.register(scene.root, scene.body, 'Scene', () => ({ x: innerWidth <= 760 ? 12 : innerWidth - 324, y: innerWidth <= 760 ? 148 : 96, collapsed: innerWidth <= 760 }));
     this.register(capture.root, capture.body, 'Reference clip', () => ({ x: innerWidth <= 760 ? 12 : innerWidth - 324, y: innerWidth <= 760 ? 200 : Math.min(352, innerHeight - 310), collapsed: true }));
