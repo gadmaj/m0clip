@@ -8,7 +8,7 @@ import type { PackInfo, PolicyInfo } from "../sim/protocol";
 import { TERRAINS, type MapEntry, type TerrainName } from "../sim/terrain";
 import type { SceneMode } from "../player/types";
 import { mapEntryLabel, TERRAIN_LABELS } from './launch';
-import { POLICY_ACTIVITIES, policyPresentation } from './policy-names';
+import { policyPresentation, policySections, policyVariantRank } from './policy-names';
 import { TerrainPicker } from './terrain-picker';
 import { VisualPicker } from './visual-picker';
 import { previewImage, staticPreviewOptions, policyPreview } from './preview-catalog';
@@ -577,7 +577,7 @@ export class Panel {
     this.cb.onPolicy(target);
   }
 
-  setPolicies(entries: PolicyInfo[], active: string, robot = "") {
+  setPolicies(entries: PolicyInfo[], active: string, robot = "", robotSpec = "") {
     this.policySel.innerHTML = "";
     const description = document.getElementById('policy-description')!;
     if (!entries.length) {
@@ -593,25 +593,11 @@ export class Panel {
       this.syncRunAgain();
       return;
     }
-    // Activity sections first (one Locomotion section across R1 / R1 Air / R1 EDU); within a section
-    // Air-only, then Air + EDU, then EDU-only. The variant, canonical name and FSM State are card detail.
+    // Activity sections (one Locomotion section across R1 / R1 Air / R1 EDU); within a section the policies
+    // for the running Air or EDU body first, then the rest. The variant, canonical name and FSM State are card detail.
     const fam = robot.toUpperCase() || "G1";
-    const variant = (e: PolicyInfo): [number, string] => {
-      const m = e.models;
-      if (!m?.length) return [3, ""];
-      const air = m.includes("air"), edu = m.includes("edu");
-      return air && !edu ? [0, `${fam} Air`] : air && edu ? [1, `${fam} Air + EDU`] : [2, `${fam} EDU`];
-    };
-    const ordered = [...entries].sort((a, b) =>
-      variant(a)[0] - variant(b)[0] || (a.fsmId ?? 1e9) - (b.fsmId ?? 1e9) || a.name.localeCompare(b.name));
-    const byGroup = new Map<string, PolicyInfo[]>();
-    for (const e of ordered) {
-      const g = policyPresentation(e.name).category;
-      if (!byGroup.has(g)) byGroup.set(g, []);
-      byGroup.get(g)!.push(e);
-    }
-    const activities: readonly string[] = POLICY_ACTIVITIES;
-    for (const [g, list] of [...byGroup].sort((a, b) => activities.indexOf(a[0]) - activities.indexOf(b[0]))) {
+    const variants = [`${fam} Air`, `${fam} Air + EDU`, `${fam} EDU`, ""];
+    for (const [g, list] of policySections(entries, robotSpec)) {
       const grp = document.createElement("optgroup");
       grp.label = g;
       for (const e of list) {
@@ -619,7 +605,7 @@ export class Panel {
         const option = new Option(presentation.title, e.name);
         option.dataset.label=presentation.title;
         option.dataset.previewRobot=e.previewRobot;
-        option.dataset.detail=[variant(e)[1], e.name, e.fsmId===undefined?'':`State ${e.fsmId}`].filter(Boolean).join(' · ');
+        option.dataset.detail=[variants[policyVariantRank(e.models)], e.name, e.fsmId===undefined?'':`State ${e.fsmId}`].filter(Boolean).join(' · ');
         option.title = presentation.description;
         grp.appendChild(option);
       }

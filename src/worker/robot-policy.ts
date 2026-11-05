@@ -1,5 +1,6 @@
 /** Metadata-only robot/policy resolution, shared by launch and live robot selection. */
 import type { PolicyEntry, RobotSpec } from '../core/types';
+import type { PolicyInfo } from '../sim/protocol';
 import { getSpec, SPECS } from '../robots';
 export interface RobotPolicySelection {robot:string;policies:PolicyEntry[];index:number}
 
@@ -28,6 +29,14 @@ export function specFor(entry: PolicyEntry, robot: string, keep = false): string
   if (models.length === 1 && models[0] === 'air') return 'g1_air';
   if (keep && models.includes('air') && robotFamily(robot) === 'g1') return robot;
   return 'g1';
+}
+
+/** Picker metadata for one family policy. `previewRobot` is the exact robot a deliberate selection
+ * of it runs; the active policy keeps the running robot. */
+export function policyInfo(p: PolicyEntry, robot: string, active: boolean): PolicyInfo {
+  return { name: p.name, family: p.family, dof: p.dof, group: p.group, packId: p.packId, fsmId: p.fsmId,
+    previewRobot: active ? robot : specFor(p, robot),
+    models: robotFamily(p.robot) === 'r1' ? r1Models(p) : p.models };
 }
 
 /** Preflight without changing any active worker context or loading assets.
