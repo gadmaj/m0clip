@@ -12,7 +12,7 @@ import { applyStaticShot, grabShotView, defaultShot, ShotPath, type Shot } from 
 import { loadTake, saveTake, TakeRecorder, type RecordedTake } from "./record/take";
 import { PlayerTakeRecorder, contentRequirements, verifyPlayerContent, type PlayerTake, type PlayerTakeMeta } from './record/player-take';
 import { eventList, fmtTime, Timeline, type ViewMode } from "./record/timeline";
-import { download, capturePng, stamp } from "./render/recorder";
+import { BlankCaptureError, download, capturePng, stamp } from "./render/recorder";
 import { SceneView, type Appearance, type HeadVisual } from "./render/scene";
 import { SceneCamera } from './render/scene-camera';
 import type { FromWorker, InspectMsg, RenderModel, StatusMsg, ToWorker, SceneIdentity } from "./sim/protocol";
@@ -2825,15 +2825,15 @@ class App {
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       const filename=`${mapId(terrain)??terrain}_${model.robot??'player'}_${stamp()}.png`;
       const created=new Date().toISOString();
-      const blob=await Promise.race([capturePng(this.view.renderer.domElement),aborted]);
+      const blob=await Promise.race([capturePng(this.view.renderer.getContext() as WebGL2RenderingContext),aborted]);
       if(!current()){this.cancelScreenshot();return}
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       download(blob,filename);message='PNG downloaded · saving to Shots…';
       this.retainScreenshot(blob,filename.slice(0,-4),created,model.mode,model.robot,terrain,request);
-    }catch{
+    }catch(error){
       if(request!==this.screenshotRequest)return;
       message=!current()?'The scene changed. Take the screenshot again when it has loaded.'
-        :this.view.renderer.getContext().isContextLost()?'The viewport is unavailable. Wait for it to recover, then try Screenshot again.'
+        :error instanceof BlankCaptureError||this.view.renderer.getContext().isContextLost()?'The viewport is unavailable. Wait for it to recover, then try Screenshot again.'
         :phase==='prepare'?'Scene visuals could not load. Retry the map or robot model, then try Screenshot again.'
         :'The PNG could not be saved. Try Screenshot again.';
     }finally{
