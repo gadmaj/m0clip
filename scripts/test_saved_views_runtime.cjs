@@ -2,18 +2,18 @@
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const assert=require('node:assert/strict');
 const {chooseVisual}=require('./choose-visual.cjs');
+const attachReadyApp=require('./attach-ready-app.cjs');
 (async()=>{
-  const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});
+  const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});
   const errors=[];
   async function pageIn(context){
     const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
-    const renderLoop=body=>process.env.RENDER_ON_DEMAND?body.replaceAll('this.renderLoop()','void 0'):body;
-    await page.route('**/{src/main.ts*,assets/main-*.js}',async route=>{const response=await route.fetch();await route.fulfill({response,body:renderLoop(require('./expose-app.cjs')(await response.text()))});});
-    await page.route('**/assets/main-*.js',async route=>{const response=await route.fetch(),original=await response.text();const body=renderLoop(require('./expose-app.cjs')(original));await route.fulfill({response,body});});
+    if(process.env.RENDER_ON_DEMAND)await require('./render-on-demand.cjs')(page);
     return page;
   }
   const base=process.env.BASE_URL||'http://127.0.0.1:5176';
-  async function ready(page){await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});}
+  // The release chunk stays byte-identical; the real Ready App is attached through CDP after launch.
+  async function ready(page){await page.waitForFunction(()=>document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});await attachReadyApp(page.context(),page);await page.waitForFunction(()=>window.__app?.lastFrame,null,{timeout:120000});}
   async function restored(page){await page.waitForFunction(()=>!window.__app.pendingViewRestore,null,{timeout:120000});}
   async function matches(page,view){
     const actual=await page.evaluate(()=>window.__app.captureView());
@@ -83,7 +83,8 @@ const {chooseVisual}=require('./choose-visual.cjs');
     await race.evaluate(view=>{void window.__app.explore.restoreView(view)},saved);await race.waitForFunction(()=>window.__app.view.getBodyVisualState().loading);
     await chooseVisual(race,'robot','go2');assert.equal(await race.evaluate(()=>!!window.__app.pendingViewRestore),false);release();
     await race.waitForFunction(()=>window.__app.viewModel?.robot==='go2');await race.waitForTimeout(150);assert.equal(await race.evaluate(()=>window.__app.noclip),false);assert.equal(await race.evaluate(()=>window.__app.view.getBodyVisualState().applied),'stock');
-    if(!process.env.SKIP_SCREENSHOTS){await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-views-desktop.png'});await page.setViewportSize({width:390,height:844});await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-views-mobile.png'});}
+    // Compact layouts show one advanced panel at a time; Saved views lives in Scene.
+    if(!process.env.SKIP_SCREENSHOTS){await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-views-desktop.png'});await page.setViewportSize({width:390,height:844});await page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}).click();await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-views-mobile.png'});}
     const bounds=await page.getByRole('button',{name:'Dog inspection',exact:true}).boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<= (process.env.SKIP_SCREENSHOTS?1440:390));
     assert.deepEqual(errors,[]);console.log(JSON.stringify({savedAppearance:true,sourceHead:true,robotLight:true,roll:true,flight:true,freshLink:true,crossModelTerrain:true,recordingGuard:true,reviewGuard:true,exportGuard:true,legacy:true,latestSelection:true,manualNavigationCancels:true,bounds,errors}));
   }finally{await browser.close();}
