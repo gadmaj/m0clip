@@ -1,6 +1,7 @@
 import type { MapBundleIndex } from '../maps/bundle';
 import { registerLocalMap, type LocalMapIdentity, type MapSource } from '../maps/source';
 import { verifyMapBundle, type BundleVerificationObserver } from '../maps/bundle-verification';
+import type { RestoreTiming } from '../core/restore-timing';
 
 let localMapModule: { complete: boolean } | undefined;
 /** File rejection or cancellation does not unload an imported module graph. */
@@ -27,6 +28,7 @@ export function openLocalMap(
   prepare?: (source: MapSource, signal: AbortSignal, commit: () => void) => Promise<void>,
   signal?: AbortSignal,
   observer?: BundleVerificationObserver,
+  timing?: Pick<RestoreTiming, 'start' | 'end'>,
 ): Promise<MapSource> {
   if (signal?.aborted) return Promise.reject(signal.reason);
   const { promise, resolve, reject } = Promise.withResolvers<MapSource>();
@@ -92,10 +94,12 @@ export function openLocalMap(
     load.disabled = true; input.disabled = true;
     status.textContent = 'Verifying local files…';
     try {
+      timing?.start('verify');
       const source = await loadLocalMap(selected, controller.signal, observer);
       if (settled) return;
       if (expected && source.identity?.fingerprint !== expected.fingerprint)
         throw new Error(`Different map content. Choose the original bundle for ${expected.name}.`);
+      timing?.end('verify');
       if (prepare) {
         status.textContent = 'Preparing map materials and collision…';
         await prepare(source, controller.signal, () => {

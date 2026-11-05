@@ -180,7 +180,10 @@ async function extract(file: Blob, entry: ZipEntry, centralOffset: number, signa
     aborted(signal);
     if (chunk.length > entry.bytes - size) fail(`inflated size exceeds declared bytes: ${entry.path}`);
     size += chunk.length;
-    for (const byte of chunk) crc = crcTable[(crc ^ byte) & 255] ^ (crc >>> 8);
+    // A captured `crc` updated per byte kept verification CPU-bound (≈5 s for a 242 MB map); run on a local.
+    let value = crc;
+    for (let i = 0, n = chunk.length; i < n; i++) value = crcTable[(value ^ chunk[i]) & 255] ^ (value >>> 8);
+    crc = value;
     if (entry.method !== 0 && chunk.length) chunks.push(chunk as BlobPart);
   };
   const inflate = entry.method === 8 ? new BoundedInflate(entry.compressed, entry.bytes, consume, signal) : null;
