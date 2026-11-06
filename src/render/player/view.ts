@@ -249,6 +249,14 @@ export class PlayerView {
   /** Queues a view-model activity (and the body's attack gesture) for the next `present`. */
   trigger(action: ViewModelAction): void { if (this.actions.length < 8) this.actions.push(action); }
 
+  /** Hides the body and every view model until the next `apply`/`present` shows them again, for
+   * while the host's requested actors are still loading. Animation state is untouched. */
+  hideActors(): void {
+    if (this.body) this.body.object.visible = false;
+    for (const rig of this.viewModels.values()) rig.object.visible = false;
+    this.activeViewModel = null;
+  }
+
   viewModelStatus(): PlayerViewModelStatus {
     const tool = this.appliedTool, rig = this.viewModels.get(tool) ?? null, error = this.viewModelErrors.get(tool);
     const status: PlayerViewModelStatus = { tool, shown: rig !== null && rig === this.activeViewModel,

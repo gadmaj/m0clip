@@ -45,10 +45,12 @@ const DURATION: Readonly<Record<DefaultViewModelTool, readonly number[]>> = {
   physgun: [0.7, 4, 0.34, 0.55, 2.6],
   spawn: [0.55, 3.2, 0.28, 0.45, 2.4],
 };
-/** Rest placement of the grip-top origin in the eye frame (inches) and its yaw/roll (degrees). */
+/** Rest placement of the grip-top origin in the eye frame (inches) and its yaw/roll (degrees),
+ * fitted so the tool and gloves sit inside the lower-right third of a 4:3 view below the horizon
+ * (wider screens keep the same angles); only the sleeves leave the frame. */
 const REST: Readonly<Record<DefaultViewModelTool, { x: number; y: number; z: number; yaw: number; roll: number }>> = {
-  physgun: { x: 12.6, y: -6.0, z: -2.9, yaw: 1, roll: -2 },
-  spawn: { x: 10.6, y: -4.8, z: -2.2, yaw: 4, roll: -3 },
+  physgun: { x: 36.5, y: -12.25, z: -7.5, yaw: 1, roll: -2 },
+  spawn: { x: 28, y: -8, z: -4.75, yaw: 4, roll: -3 },
 };
 
 const DEG = Math.PI / 180;
@@ -339,9 +341,10 @@ function gloveHand(parts: Parts, h: HandPlacement): THREE.Vector3 | null {
   add(new THREE.CylinderGeometry(1.24, 1.08, 2.0, 14, 1), scaled(along(v(0.45, 0, 0), v(-1.55, 0, 0.04), v(0, 1, 0)), 1, 1, 0.8), GLOVE);
   add(new THREE.CylinderGeometry(1.14, 1.14, 0.32, 14, 1), scaled(along(v(0.12, 0, 0), v(-0.2, 0, 0.01), v(0, 1, 0)), 1, 1, 0.84), GLOVE_STRAP);
   // Sleeve along the forearm direction, with a cuff band over the gauntlet.
+  // Long enough to leave the frame even on portrait screens, where the view model sees more height.
   const wrist = point(-1.2, 0, 0.03), dir = h.forearm.clone().normalize(), across = y.clone();
-  const elbow = wrist.clone().addScaledVector(dir, 15);
-  parts.cylinder(wrist, elbow, 1.36, 1.8, SLEEVE, 14, across, 0.86);
+  const elbow = wrist.clone().addScaledVector(dir, 32);
+  parts.cylinder(wrist, elbow, 1.36, 2.1, SLEEVE, 14, across, 0.86);
   parts.cylinder(wrist.clone().addScaledVector(dir, -0.15), wrist.clone().addScaledVector(dir, 0.55), 1.46, 1.48, SLEEVE_BAND, 14, across, 0.86);
   return trigger;
 }
