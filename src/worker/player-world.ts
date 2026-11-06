@@ -219,6 +219,11 @@ function clampMagnitude(v: Float64Array, max: number) {
   if (n > max) { const k = max / n; v[0] *= k; v[1] *= k; v[2] *= k; }
 }
 
+/** A body's compiled name; attached robots carry their `${id}/` prefix, so it is stable across rebuilds. */
+function bodyNameOf(engine: Engine, body: number): string {
+  return engine.mj.mj_id2name(engine.model, engine.mj.mjtObj.mjOBJ_BODY.value, body) ?? '';
+}
+
 export class PlayerWorld {
   private scene: PlayerScene | null = null;
   private runtimes: EntityRuntime[] = [];
@@ -708,10 +713,25 @@ export class PlayerWorld {
     const grab = this.grab;
     if (!grab) return;
     this.grab = null;
+    this.removeWrench(grab);
+  }
+
+  /** Take the grab's wrench off the engine it was applied to; the next substep applies it anew. */
+  private removeWrench(grab: Grab) {
     const scene = this.scene;
     if (!scene || grab.runtime.scope.engine !== scene.engine) return;
     const xf = scene.engine.xfrcApplied, o = 6 * grab.body;
     for (let i = 0; i < 6; i++) xf[o + i] -= grab.applied[i];
+    grab.applied.fill(0);
+  }
+
+  /** The held body of the same robot in the rebuilt scene; null when that robot left it. */
+  private rebindGrab(held: Grab, bodyName: string, engine: Engine): Grab | null {
+    const runtime = this.runtimes.find(r => r.id === held.runtime.id);
+    if (!runtime) return null;
+    const entity = runtime.scope.entity, body = entity.bodyStart + held.body - held.runtime.scope.entity.bodyStart;
+    if (body >= entity.bodyEnd || bodyNameOf(engine, body) !== bodyName) return null;
+    return { ...held, runtime, body, view: { ...held.view, body } };
   }
 
   private appYaw(scene: PlayerScene): number { return (this.yaw - scene.frame.yawDeg) * DEG; }
@@ -852,7 +872,6 @@ export class PlayerWorld {
   private async compose(planned: PlannedEntity[], recompile: boolean) {
     const scene = this.scene;
     if (!scene) throw new Error('The Player world is not loaded.');
-    this.releaseGrab();
     const old = scene.engine;
     const saved = planned.map(p => p.prior ? snapshot(old, p.prior.scope.entity) : null);
     let engine = old, next = scene;
@@ -864,6 +883,11 @@ export class PlayerWorld {
       const prepared = await Engine.prepareScene(spec);
       engine = await Engine.createScene(spec, scene.transform, prepared);
     }
+    // A held robot that stays stays held. Its wrench leaves the current engine now; afterwards the
+    // grab moves to the same body of the rebuilt robot unless it was released meanwhile. Removing
+    // the held robot releases it, and a failed rebuild keeps it on the current engine.
+    const held = this.grab, heldBody = held ? bodyNameOf(old, held.body) : '';
+    if (held) this.removeWrench(held);
     let runtimes: EntityRuntime[];
     try {
       if (engine.entities.length !== planned.length || engine.entities.some((entity, i) => entity.id !== planned[i].id))
@@ -903,6 +927,7 @@ export class PlayerWorld {
     this.simFrame = this.makeSimFrame();
     this.updateShadow();
     engine.forward();
+    if (held && this.grab === held) this.grab = this.rebindGrab(held, heldBody, engine);
     if (recompile) this.postModel();
   }
 
