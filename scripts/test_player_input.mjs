@@ -41,18 +41,19 @@ try {
 
   /** One Player world wired as App and the worker wire it; `raf()` stands for App's frame loop. */
   async function session(tools = ['physgun', 'spawn', 'knife']) {
-    const s = Object.setPrototypeOf({ frames: [], status: null, sent: [], toolRequests: [], distances: [], blocked: false, now: 0, models: [] }, proto);
+    const s = Object.setPrototypeOf({ frames: [], status: null, sent: [], toolRequests: [], distances: [], errors: [], blocked: false, now: 0, models: [] }, proto);
     s.world = new PlayerWorld({ post(m) {
       if (m.t === 'frame') {
         const p = m.player;
         s.frames.push({ z: p.origin[2], x: p.origin[0], y: p.origin[1], speed: Math.hypot(p.velocity[0], p.velocity[1]),
-          vz: p.velocity[2], grounded: p.grounded, tool: p.tool });
+          vz: p.velocity[2], grounded: p.grounded, tool: p.tool, third: p.thirdPerson });
         s.onFrame?.(m);
       } else if (m.t === 'playerStatus') {
         s.status = m;
         s.input?.setAvailableTools(m.availableTools);
         s.input?.confirmTool(m.tool);
       } else if (m.t === 'model') s.models.push(m);
+      else if (m.t === 'error') s.errors.push(m.msg);
     },
     // No imported policies: the spawn gun is available but has no robot to place.
     entries: () => [],
@@ -187,6 +188,32 @@ try {
     assert.equal(s.takeoffs(), 1, 'the next press after relocking jumps');
   });
 
+  await run('a press released before a worker tick is still cancelled by focus loss', async s => {
+    const tap = async (press, release) => { press(); await s.settle(); release(); await s.settle(); };
+    const space = () => tap(() => s.key('Space', true), () => s.key('Space', false));
+    await space();
+    window.dispatchEvent(new Event('blur')); await s.settle();
+    await s.ticks(30);
+    assert.equal(s.takeoffs(), 0, 'Space tap, then blur');
+    await space();
+    await s.ticks(4);
+    assert.equal(s.takeoffs(), 1, 'the same tap without blur jumps');
+    // The spawn gun reports its click as an attempt; this world has no policy to spawn with.
+    s.key('Digit3', true); s.key('Digit3', false); await s.settle();
+    const click = () => tap(() => s.mouse(['pointerdown', 0], ['mousedown', 0]), () => s.mouse(['pointerup', 0], ['mouseup', 0]));
+    await click();
+    window.dispatchEvent(new Event('blur')); await s.settle();
+    await s.ticks(5);
+    assert.deepEqual(s.errors, [], 'left click, then blur');
+    await click();
+    await s.ticks(5);
+    assert.equal(s.errors.length, 1, 'the same click without blur reaches the spawn gun');
+    // Exactly one release frame per transition, even after a neutral frame.
+    const before = s.sent.length;
+    window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('blur')); await s.settle();
+    assert.equal(s.sent.length, before + 1);
+  });
+
   await run('Alt+wheel sets a held object\'s reach; plain wheel never does', async s => {
     s.input.setHoldingObject(true);
     s.wheel(-1, { alt: true }); s.wheel(2, { alt: true }); await s.settle(); s.raf();
@@ -244,6 +271,37 @@ try {
     await s.ticks(40);
     assert.equal(s.last().tool, 'spawn');
     assert.ok(s.last().speed > 150, 'W still walks after the tool swap');
+  });
+
+  await run('a tool swap does not carry a held attack into the new tool', async s => {
+    s.mouse(['pointerdown', 0], ['mousedown', 0]); await s.settle();
+    // Key 3 sends the tool at once; the controller's release follows in a microtask, and a worker
+    // tick may run in between.
+    s.key('Digit3', true);
+    await s.ticks(5);
+    s.key('Digit3', false); s.mouse(['pointerup', 0], ['mouseup', 0]); await s.settle();
+    await s.ticks(5);
+    assert.equal(s.last().tool, 'spawn');
+    assert.deepEqual(s.errors, [], 'the held physics gun button did not fire the spawn gun');
+    s.mouse(['pointerdown', 0], ['mousedown', 0]); await s.settle();
+    await s.ticks(5);
+    assert.equal(s.errors.length, 1, 'a new click fires the spawn gun');
+  });
+
+  await run('worker stop and pause return the view to first person', async s => {
+    s.key('KeyX', true); await s.settle();
+    await s.ticks(2);
+    assert.equal(s.last().third, true);
+    s.world.stop();
+    await s.ticks(2);
+    assert.equal(s.last().third, false, 'stop');
+    s.key('KeyX', false); await s.settle(); s.key('KeyX', true); await s.settle();
+    await s.ticks(2);
+    assert.equal(s.last().third, true);
+    s.world.setPaused(true); s.world.setPaused(false);
+    await s.world.wake(s.now, false);
+    await s.ticks(2);
+    assert.equal(s.last().third, false, 'pause');
   });
 
   await run('takes record release frames and read older wheel jumps as jump presses', async s => {

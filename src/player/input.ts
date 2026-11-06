@@ -47,7 +47,8 @@ export class PlayerInputController {
   private enabled = false;
   private dirty = false;
   private flushQueued = false;
-  /** The last frame sent holds something a release must clear in the worker. */
+  /** Something was sent since the last release frame: a press may still be queued in the worker
+   * even after a neutral frame, so only a release frame clears this. */
   private live = false;
   private readonly keys = new Set<string>();
   private mouseButtons = 0;
@@ -197,7 +198,8 @@ export class PlayerInputController {
   }
 
   /** One release path for focus, lock, modal, review, scene and mode transitions. The worker drops
-   * held buttons and any press it has not simulated yet; nothing is sent if nothing is held. */
+   * held buttons and any press it has not simulated yet; nothing is sent if nothing was sent since
+   * the last release. */
   reset() {
     this.keys.clear();
     this.mouseButtons = 0;
@@ -212,13 +214,14 @@ export class PlayerInputController {
     frame.reset = true;
     this.send();
     frame.reset = false;
+    this.live = false;
   }
 
   private send() {
     const frame = this.frame;
     frame.sequence++;
     this.actions.input(frame);
-    this.live = frame.forward !== 0 || frame.side !== 0 || frame.held !== 0 || frame.pressed !== 0 || frame.thirdPerson;
+    this.live ||= frame.forward !== 0 || frame.side !== 0 || frame.held !== 0 || frame.pressed !== 0 || frame.thirdPerson;
   }
 
   private changed() {

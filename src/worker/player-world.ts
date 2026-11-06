@@ -409,7 +409,10 @@ export class PlayerWorld {
     if (tool !== this.tool) {
       this.releaseGrab();
       this.knifeHitAt = -1;
-      this.pulse &= ~(PLAYER_BUTTON.attack | PLAYER_BUTTON.attack2);
+      // The new tool starts with its buttons up, even before the controller's release arrives;
+      // movement, jump, duck and run are kept.
+      const keep = ~(PLAYER_BUTTON.attack | PLAYER_BUTTON.attack2);
+      this.pulse &= keep; this.held &= keep; this.prevHeld &= keep;
       this.tool = tool;
     }
     this.postStatus();
@@ -451,6 +454,7 @@ export class PlayerWorld {
 
   private clearInput() {
     this.forward = this.side = this.held = this.prevHeld = this.pulse = 0;
+    this.thirdPerson = false;
   }
 
   postStatus() {
