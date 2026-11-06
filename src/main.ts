@@ -304,6 +304,8 @@ class App {
   private screenshotIsCurrent:(()=>boolean)|null=null;
   private liveReview: { model: RenderModel | null; appearance: Appearance; head: HeadVisual; look: LookState; display: SceneDisplay; flashlight: boolean; shot: Shot; camera: WorkspaceCamera } | null = null;
   private reviewOriginal: { take: RecordedTake; appearance: Appearance; head: HeadVisual; look: LookState; display: SceneDisplay; flashlight: boolean; lights: ShotLight[] } | null = null;
+  /** The external Player review camera keeps its orbit when Recorded owns the viewport. */
+  private playerReviewOrbit: THREE.Vector3 | null = null;
   /** last value logged per input: a change the user makes is logged when they make it (at the frame
    * they were looking at), and the status that confirms it later is not logged again */
   private logged: { state?: FsmState; policy?: string; hoist?: boolean } = {};
@@ -1654,6 +1656,7 @@ class App {
     if(this.updateCaptureNavigationNotice(true))return;
     const take = this.take, tm = this.takeModel;
     if (!take || !tm || this.exporting) return;
+    const framePlayer = take.mode === 'player' && (!this.timeline.isOpen || this.reviewOriginal?.take !== take);
     this.cancelScreenshot();
     if (!this.timeline.isOpen) {
       this.liveReview = { model: this.viewModel, appearance: this.view.getAppearance(),
@@ -1682,13 +1685,21 @@ class App {
     if (this.player) { this.player.input.setEnabled(false); this.send({ t: 'playerStop' }); }
     this.keysHeld.clear();
     if (this.command.some((v) => v !== 0)) this.setCommand([0, 0, 0]);
-    this.followZ = tm.mode === 'player' ? PLAYER_FOLLOW_Z : tm.robot!.startsWith("go2") ? 0.35 : 0.7;
+    this.followZ = tm.mode === 'player' ? PLAYER_FOLLOW_Z * 0.6 : tm.robot!.startsWith("go2") ? 0.35 : 0.7;
     Object.assign(this.shot, take.shot ?? this.liveReview!.shot);
     if (!take.shot) {
       if(this.shot.height<=0)this.shot.height=this.followZ;
       take.shot={...this.shot};
     }
     this.timeline.open(take, this.takeTitle);
+    if (framePlayer) {
+      const base = take.basePosAt(this.timeline.time), framing = defaultShot(this.followZ);
+      framing.height += base[2];
+      applyStaticShot(this.view.camera, framing, base, this.view.camera.aspect);
+      this.view.controls.target.set(base[0], base[1], framing.height);
+      this.playerReviewOrbit = this.view.camera.position.clone().sub(this.view.controls.target);
+      this.restorePlayerReviewOrbit();
+    }
     this.panel.setReviewScope(true);
     this.rebuildShot(false);
     if (this.dialog.isOpen) this.dialog.refresh();
@@ -1707,6 +1718,7 @@ class App {
     if(stored&&stored.previewDirty&&stored.previewReady)this.snapshotShotPreview(this.take!,stored);
     if (this.dialog.isOpen) this.dialog.close();
     this.timeline.close();
+    this.playerReviewOrbit = null;
     this.view.setSourceTime(null);
     this.view.setRobotOpacityOverride(null);
     this.setViewMode("free");
@@ -1820,12 +1832,32 @@ class App {
   }
 
   private setViewMode(m: ViewMode) {
-    if(this.timeline.mode!==m)this.cancelScreenshot();
+    const previous = this.timeline.mode, cam = this.view.camera;
+    if (previous !== m) {
+      this.cancelScreenshot();
+      if (this.timeline.isOpen && this.take?.mode === 'player' && this.playerReviewOrbit) {
+        if (previous === 'free') this.playerReviewOrbit.copy(cam.position).sub(this.view.controls.target);
+        if (m === 'free') this.restorePlayerReviewOrbit();
+      }
+    }
     this.timeline.setMode(m);
-    const cam = this.view.camera;
     if (m !== "recorded" && cam.fov !== 45) { cam.fov = 45; cam.updateProjectionMatrix(); }
     this.shotFrame.hidden = m !== "shot";
     this.view.controls.enabled = m !== "recorded" && !this.exporting;
+  }
+
+  private restorePlayerReviewOrbit() {
+    const take = this.take, orbit = this.playerReviewOrbit;
+    if (take?.mode !== 'player' || !orbit) return;
+    const base = take.basePosAt(this.timeline.time), controls = this.view.controls;
+    const damping = controls.enableDamping;
+    controls.enableDamping = false;
+    controls.update();
+    controls.target.set(base[0], base[1], base[2] + this.followZ);
+    this.view.camera.position.copy(controls.target).add(orbit);
+    this.view.camera.lookAt(controls.target);
+    controls.update();
+    controls.enableDamping = damping;
   }
 
   private rebuildShot(persist=true) {
