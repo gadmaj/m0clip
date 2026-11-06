@@ -44,6 +44,9 @@ Download anything you want to keep before clearing site data.
 On the character step, choose **Player** to walk a map yourself instead of
 driving a robot. Click the scene to capture the mouse; **Esc** releases it.
 
+The physics gun starts equipped. Physics and spawn guns include original
+first-person models and gloved hands; no game files are needed for these tools.
+
 - **W A S D** move, **Shift** runs, **C** crouches, and **Space** or scrolling
   down jumps. Scrolling up selects the previous tool.
 - Hold **X** for third person.

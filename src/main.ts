@@ -262,7 +262,7 @@ class App {
   private readonly playerHudState: PlayerHudState = { enabled: false, locked: false, tool: 'none', tools: NO_TOOLS, holding: false, spawnLabel: null };
   /** What the shared PlayerView should show (live or the reviewed take) and what it was last given. */
   private playerWanted: PlayerActors | null = null;
-  private playerShown: { view: PlayerView; actors: PlayerActors } | null = null;
+  private playerShown: { view: PlayerView; actors: PlayerActors; ready: boolean } | null = null;
   private playerLiveActors: PlayerActors | null = null;
   private playerActorsReady: Promise<void> = Promise.resolve();
   private playerActorsAbort: AbortController | null = null;
@@ -542,9 +542,9 @@ class App {
     window.addEventListener('keydown', event => {
       if (this.help.isOpen || this.shotLibrary.isOpen || VisualPicker.active) {
         this.modalKeys.add(event.code);
-        // A fresh keydown also recovers a release Chrome swallowed while unlocking the mouse.
-        if (!event.repeat) this.keysBeforeModal.delete(event.code);
-        else if (this.keysBeforeModal.has(event.code)) {
+        // Chrome can restart key repeat with a non-repeat event when focus changes.
+        // The key still belongs to the previous surface until its actual release.
+        if (this.keysBeforeModal.has(event.code)) {
           event.preventDefault();
           event.stopPropagation();
         }
@@ -554,6 +554,11 @@ class App {
       this.modalKeys.delete(event.code);
       this.keysBeforeModal.delete(event.code);
     }, true);
+    document.addEventListener('pointerlockchange', () => {
+      // Escape can swallow later key-up events; a gallery-caused unlock must retain its opening key.
+      if (!document.pointerLockElement && !this.help.isOpen && !this.shotLibrary.isOpen && !VisualPicker.active)
+        this.keysBeforeModal.clear();
+    });
     window.addEventListener("keydown", (e) => this.onKey(e));
     window.addEventListener("keyup", (e) => this.onKeyUp(e));
     // Return keyboard control to the simulation after a dropdown or ordinary action.
@@ -1031,6 +1036,7 @@ class App {
     // Animation advances by simulated time only, so review and export replay the same poses.
     const delta = this.playerClock === null ? 0 : m.clock - this.playerClock;
     this.playerClock = m.clock;
+    if (!this.playerActorsReadyFor(view)) { view.hideActors(); return; }
     // Output setup previews a static shot camera, which must not carry the player's view model.
     view.showViewModel = !this.dialog.isOpen || this.shot.mode === 'viewport';
     view.showBody = !view.showViewModel;
@@ -1733,7 +1739,9 @@ class App {
     if (playerView) {
       playerView.showViewModel = true;
       playerView.showBody = false;
-      if (this.playerFrame && this.lastFrame) playerView.present(this.playerFrame, this.playerClock ?? 0, 0);
+      if (this.playerActorsReadyFor(playerView) && this.playerFrame && this.lastFrame)
+        playerView.present(this.playerFrame, this.playerClock ?? 0, 0);
+      else playerView.hideActors();
     }
     this.flight.setActive(this.noclip);
     document.getElementById('flight-hud')!.hidden = !this.noclip;
@@ -1889,13 +1897,13 @@ class App {
     if (pose.model !== this.viewModel) { this.buildView(pose.model); this.viewModel = pose.model; }
     this.view.sync(pose.xpos, pose.xmat);
     const player = this.view.player;
-    if (player) {
+    if (player && this.playerActorsReadyFor(player)) {
       // The view model belongs to the player's own camera: the recorded view, or a shot that replays it.
       player.showViewModel = this.exporting ? this.shot.mode === 'viewport'
         : this.timeline.mode === 'recorded' || this.timeline.mode === 'shot' && this.shot.mode === 'viewport';
       player.showBody = !player.showViewModel;
       player.apply(pose.player, pose.presentation, (take.meta.clockStart ?? 0) + t);
-    }
+    } else player?.hideActors();
     const base = take.basePosAt(t);
     this.view.updateRobotLighting(base[0], base[1], base[2] + pose.player.eyeHeight * INCH);
     return base;
@@ -1983,18 +1991,28 @@ class App {
     if(prepareMap)this.prepareMapVisual(terrain);
   }
 
+  private playerActorsReadyFor(view: PlayerView): boolean {
+    const shown = this.playerShown;
+    return !!shown && shown.view === view && shown.actors === this.playerWanted && shown.ready;
+  }
+
   /** Give the shared PlayerView the wanted body and view models, once per view and choice. */
   private syncPlayerActors() {
     const view = this.view.player, wanted = this.playerWanted;
     if (!view || !wanted || this.playerShown?.view === view && this.playerShown.actors === wanted) return;
     this.playerActorsAbort?.abort();
     const controller = this.playerActorsAbort = new AbortController();
-    this.playerShown = { view, actors: wanted };
-    const work = this.loadPlayerActors(view, wanted, controller.signal);
+    const shown = { view, actors: wanted, ready: false };
+    this.playerShown = shown;
+    view.hideActors();
+    const work = this.loadPlayerActors(view, wanted, controller.signal).then(() => {
+      controller.signal.throwIfAborted();
+      if (this.playerShown === shown) shown.ready = true;
+    });
     this.playerActorsReady = work;
     // Launch reports through its own readiness gate; later failures are shown here.
     work.catch(error => {
-      if (!controller.signal.aborted && !launch.active && this.playerShown?.actors === wanted)
+      if (!controller.signal.aborted && !launch.active && this.playerShown === shown)
         this.showOverlay(`Player model could not load: ${error instanceof Error ? error.message : error}`, 'error');
     });
   }
@@ -2781,7 +2799,7 @@ class App {
 
   /** Player keys only: Robot driving, Flight and FSM shortcuts never reach a Player world. */
   private onPlayerKey(e: KeyboardEvent, input: PlayerInputController) {
-    // Movement, tools and third person go first: Ctrl is Duck there, not a shortcut modifier.
+    // Movement, tools and third person go first; the Player controller owns their bindings.
     if (!this.timeline.isOpen && input.key(e, true)) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.code === 'KeyV') { e.preventDefault(); if (!e.repeat) this.toggleRecording(); return; }
