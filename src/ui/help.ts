@@ -26,6 +26,7 @@ const SECTIONS: HelpSection[] = [
     [['Alt + Wheel'], 'Move a held object farther (↑) / nearer (↓)'],
     [['Q'], 'Choose the robot to spawn'], [['F'], 'Inspect the knife; otherwise toggle the flashlight'],
     [['X'], 'Hold for third person'], [['Esc'], 'Release the mouse'],
+    [['`'], 'Toggle panels when the viewport has focus'],
   ] },
   { id: 'play', title: 'Play', mode: 'robot', intro: 'Robot controls apply outside Flight and Timeline. Release movement keys to stop.', rows: [
     [['W / S'], 'Forward / backward'], [['A / D'], 'Turn left / right'], [['Q / E'], 'Strafe left / right'],
@@ -34,7 +35,7 @@ const SECTIONS: HelpSection[] = [
     [['0', '1', '2', '3', '4'], 'Zero torque / damping / lock / stance / policy'],
     [['[ / ]'], 'Previous / next policy'], [['G / Shift+G'], 'Next / previous remote action, when the policy provides them'],
     [['R'], 'Reset'], [['C'], 'Recenter view'], [['H'], 'Toggle hoist'], [['F'], 'Toggle flashlight'],
-    [['Tab'], 'Toggle panels when the viewport has focus'],
+    [['`'], 'Toggle panels when the viewport has focus; Tab moves to controls'],
   ] },
   { id: 'flight', title: 'Flight', mode: 'robot', intro: 'N toggles Flight. Arrow or numpad movement keys also enter Flight. Robot movement keys become camera controls.', rows: [
     [['W / S', '↑ / ↓', 'Num 8 / 2'], 'Forward / backward'],
@@ -61,7 +62,7 @@ const SECTIONS: HelpSection[] = [
     [['I / O'], 'Set range in / out'], [['X'], 'Clear range'], [['L'], 'Toggle loop'],
     [['F'], 'Fit timeline'], [['Esc'], 'Close Timeline (or close the export dialog first)'],
   ] },
-  { id: 'gamepad', title: 'Gamepad', mode: 'robot', intro: 'Press a gamepad button to connect. Keep the sticks still for about half a second to calibrate. Standard controller labels; policy remote actions can override these combos.', rows: [
+  { id: 'gamepad', title: 'Gamepad', mode: 'robot', intro: 'Press a gamepad button to connect. Keep the sticks still for about half a second to calibrate. Standard controller labels; LB / RB / LT / RT act as the robot remote\'s L1 / R1 / L2 / R2, and policy remote actions can override these combos.', rows: [
     [['Left stick'], 'Forward / backward and strafe'], [['Right stick'], 'Turn'],
     [['LT + ↑'], 'Stance'], [['LT + B'], 'Damping'], [['LT + Y'], 'Zero torque'], [['LT + X'], 'Lock'],
     [['RT + A'], 'Policy'], [['RT + ← / →'], 'Previous / next policy'], [['RT + B'], 'Reset'],

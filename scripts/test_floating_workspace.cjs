@@ -229,10 +229,13 @@ async function timeline(page, directory, { touch = false, small = false, smoke =
   assert.equal(await page.locator('#scene-actions').isVisible(), true, 'Review never hides the real screenshot/dock surface');
   const take = await fileEventFrom(page, 'download', () => activate(page.getByTitle('Save this take to reopen it later (.take.zip)', { exact: true }), touch));
   const takePath = path.join(directory, 'workspace-real.take.zip'); await take.saveAs(takePath);
-  await activate(page.getByTitle('Render the range to MP4 / MOV / WebM / PNG', { exact: true }), touch);
+  const exportButton = page.getByTitle('Render the range to MP4 / MOV / WebM / PNG', { exact: true });
+  await activate(exportButton, touch);
   await page.locator('#export').waitFor({ state: 'visible' }); assert.equal(await page.locator('#scene-actions').isVisible(), false, 'Export owns the interaction surface instead of covering live dock actions');
   assert.equal(await page.locator('#workspace-panels').isVisible(), false, 'Export hides advanced activators alongside the live dock');
+  assert.equal(await page.locator('#export').evaluate(element => element.contains(document.activeElement)), true, 'Opening Export places keyboard focus in its controls');
   await page.keyboard.press('Escape'); await page.locator('#export').waitFor({ state: 'hidden' });
+  assert.equal(await exportButton.evaluate(element => element === document.activeElement), true, 'Escape returns focus to the Export opener');
   await dockProof(page);
   // Every wrapped toolbar action, including bottom-row Close/Save, must be truly reachable.
   const reachable = [];
@@ -263,13 +266,17 @@ async function desktop(page, base, directory) {
   await chooseVisual(page, 'robot', 'r1'); await dockProof(page);
   await page.locator('.help-trigger').click(); const help = page.locator('.help-dialog'); await help.waitFor({ state: 'visible' });
   const takeBeforeHelp = await page.locator('#record-status').textContent();
-  for (const key of ['v', 'n', 'Space', 'Tab', 'ArrowUp']) await page.keyboard.press(key);
+  for (const key of ['v', 'n', 'Space', 'Tab', 'Backquote', 'ArrowUp']) await page.keyboard.press(key);
   assert.equal(await help.isVisible(), true); assert.equal(await page.locator('#record-status').textContent(), takeBeforeHelp); assert.equal(await page.locator('#flight-hud').isVisible(), false);
   await page.keyboard.press('Escape'); await help.waitFor({ state: 'hidden' });
   const canvas = page.locator('#viewport canvas'), canvasBox = await canvas.boundingBox();
   await page.mouse.click(canvasBox.x + canvasBox.width * .55, canvasBox.y + canvasBox.height * .35);
-  await page.keyboard.press('Tab'); assert.equal(await page.locator('#panel').isVisible(), true);
-  await page.keyboard.press('Tab'); assert.equal(await page.locator('#panel').isVisible(), false); await dockProof(page);
+  await page.keyboard.press('Tab');
+  assert.equal(await canvas.evaluate(element => element === document.activeElement), false, 'Tab leaves the viewport for controls instead of trapping focus');
+  assert.equal(await page.locator('#panel').isVisible(), false);
+  await canvas.focus();
+  await page.keyboard.press('Backquote'); assert.equal(await page.locator('#panel').isVisible(), true);
+  await page.keyboard.press('Backquote'); assert.equal(await page.locator('#panel').isVisible(), false); await dockProof(page);
   await page.locator('#toggle-menu').click();
   assert.equal(await page.locator('#workspace-panels').isVisible(), false, 'Tall desktop keeps the compact toolbar even with Controls open');
   await hit(page.locator('#policy-trigger'));
@@ -314,8 +321,8 @@ async function desktop(page, base, directory) {
   const restored = await page.locator('#play-window').boundingBox(); assert.ok(Math.abs(restored.x - keyed.x) < 1, 'Real dragged layout must survive reload');
   await openTools(page); await page.locator('#reset-workspace').click();
   await openTools(page); await page.locator('#toggle-panels').click(); assert.equal(await page.locator('#panel').isVisible(), false); await dockProof(page);
-  await page.mouse.click(canvasBox.x + canvasBox.width * .55, canvasBox.y + canvasBox.height * .35); await page.keyboard.press('Tab');
-  assert.equal(await page.locator('#panel').isVisible(), true, 'Map-focused Tab restores the remembered advanced visibility');
+  await page.mouse.click(canvasBox.x + canvasBox.width * .55, canvasBox.y + canvasBox.height * .35); await page.keyboard.press('Backquote');
+  assert.equal(await page.locator('#panel').isVisible(), true, 'The viewport panel shortcut restores the remembered advanced visibility');
   await page.locator('#toggle-menu').click();
   const media = await timeline(page, directory);
   return { launch, quiet, packCards, initial, dragged, keyed, restored, fullscreenExercised, media };

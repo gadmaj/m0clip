@@ -29,7 +29,7 @@ const attachReadyApp = require('./attach-ready-app.cjs');
     const original = await select.inputValue();
     const refresh = () => page.evaluate(() => {
       const app = window.__app;
-      app.panel.setPolicies(app.status.policies, app.status.policy, app.status.robot);
+      app.panel.setPolicies(app.status.policies, app.status.policy, app.status.robot, app.status.robotSpec);
     });
     const frames = () => page.evaluate(() => new Promise(resolve => {
       let ticks = 0;
@@ -107,6 +107,14 @@ const attachReadyApp = require('./attach-ready-app.cjs');
     const canonical = (await page.evaluate(() => window.__app.status.policies.map(entry => entry.name))).sort();
     assert.deepEqual((await select.evaluate(select => Array.from(select.options, option => option.value))).sort(), canonical);
     assert.deepEqual((await gallery.locator('button[data-value]').evaluateAll(buttons => buttons.map(button => button.dataset.value))).sort(), canonical);
+    // The running Air or EDU body's policies lead each section; cards follow the select order exactly.
+    const values = await select.evaluate(select => Array.from(select.options, option => option.value));
+    assert.deepEqual(await gallery.locator('button[data-value]').evaluateAll(buttons => buttons.map(button => button.dataset.value)), values);
+    const leads = await select.evaluate((select, spec) => Array.from(select.querySelectorAll('optgroup'), group =>
+      Array.from(group.querySelectorAll('option'), option => option.dataset.previewRobot.endsWith('_air') === spec.endsWith('_air'))),
+    await page.evaluate(() => window.__app.status.robotSpec));
+    for (const flags of leads) assert.deepEqual(flags, [...flags].sort((a, b) => Number(b) - Number(a)), 'Running body first in each section');
+    assert.ok(leads.some(flags => flags.includes(false)), 'Policies for the other body stay listed');
     await search.fill('locomotion');
     const byCategory = await cards.count();
     assert.equal(await gallery.locator('button[data-value="amp_locomotion/amp_locomotion"]').isVisible(), true);

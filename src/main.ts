@@ -12,7 +12,7 @@ import { applyStaticShot, grabShotView, defaultShot, ShotPath, type Shot } from 
 import { loadTake, saveTake, TakeRecorder, type RecordedTake } from "./record/take";
 import { PlayerTakeRecorder, contentRequirements, verifyPlayerContent, type PlayerTake, type PlayerTakeMeta } from './record/player-take';
 import { eventList, fmtTime, Timeline, type ViewMode } from "./record/timeline";
-import { download, capturePng, stamp } from "./render/recorder";
+import { BlankCaptureError, download, capturePng, stamp } from "./render/recorder";
 import { SceneView, type Appearance, type HeadVisual } from "./render/scene";
 import { SceneCamera } from './render/scene-camera';
 import type { FromWorker, InspectMsg, RenderModel, StatusMsg, ToWorker, SceneIdentity } from "./sim/protocol";
@@ -647,7 +647,7 @@ class App {
     this.send({ t: "init", robot: selection.robot, terrain: selection.terrain, localMap:mapSource(selection.terrain)?.payload, loadingId: launch.loadingId, catalogue,
       robotExplicit:selection.robotChanged||selection.preserveView,
       policy: selection.robotChanged || selection.robot !== prefs.robot ? undefined : prefs.policy });
-    if (this.pendingViewRestore) this.send({ t: 'viewReady', request: this.pendingViewRestore.id });
+    if (this.pendingViewRestore)this.send({ t: 'viewReady', request: this.pendingViewRestore.id });
     this.send({ t: "inspect", on: true });   // left column always streams
   }
 
@@ -815,8 +815,8 @@ class App {
     const id=++this.mapRequest;
     this.stopAndRearm();this.cancelScreenshot();
     signal?.throwIfAborted();
-    const stage=terrain===this.mapVisualTerrain&&this.view.mapSource?.id===source?.id
-      ?null:await this.view.stageTerrainVisual(source);
+    const reuse=terrain===this.mapVisualTerrain&&this.view.mapSource?.id===source?.id;
+    const stage=reuse?null:await this.view.stageTerrainVisual(source);
     if(signal?.aborted){stage?.dispose();signal.throwIfAborted();}
     // From here the worker compiles this map for its current robot; a newer choice waits for it.
     if(this.mapRobotChoice)this.mapRobotChoice='later';
@@ -1214,7 +1214,7 @@ class App {
     }).observe(toolbar);
     window.addEventListener('keydown', e => {
       if (this.inputBlocked) return;
-      if (e.code === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
+      if (e.code === 'Backquote' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
           && e.target === this.view.renderer.domElement) {
         e.preventDefault(); panels.click();
       }
@@ -2711,7 +2711,7 @@ class App {
     }
     if (!prev || prev.robot !== s.robot || prev.robotSpec !== s.robotSpec ||
         policyOptionsChanged || prev.policy !== s.policy)
-      this.panel.setPolicies(s.policies, s.policy, s.robot);
+      this.panel.setPolicies(s.policies, s.policy, s.robot, s.robotSpec);
     // the manager lists only the ACTIVE family's packs (r1+r1_air | go2)
     const famPacks = s.packs.filter((p) => fam(p.robot) === s.robot);
     if (!prev || prev.robot !== s.robot ||
@@ -2924,15 +2924,15 @@ class App {
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       const filename=`${mapId(terrain)??terrain}_${model.robot??'player'}_${stamp()}.png`;
       const created=new Date().toISOString();
-      const blob=await Promise.race([capturePng(this.view.renderer.domElement),aborted]);
+      const blob=await Promise.race([capturePng(this.view.renderer.getContext() as WebGL2RenderingContext),aborted]);
       if(!current()){this.cancelScreenshot();return}
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       download(blob,filename);message='PNG downloaded · saving to Shots…';
       this.retainScreenshot(blob,filename.slice(0,-4),created,model.mode,model.robot,terrain,request);
-    }catch{
+    }catch(error){
       if(request!==this.screenshotRequest)return;
       message=!current()?'The scene changed. Take the screenshot again when it has loaded.'
-        :this.view.renderer.getContext().isContextLost()?'The viewport is unavailable. Wait for it to recover, then try Screenshot again.'
+        :error instanceof BlankCaptureError||this.view.renderer.getContext().isContextLost()?'The viewport is unavailable. Wait for it to recover, then try Screenshot again.'
         :phase==='prepare'?'Scene visuals could not load. Retry the map or robot model, then try Screenshot again.'
         :'The PNG could not be saved. Try Screenshot again.';
     }finally{
