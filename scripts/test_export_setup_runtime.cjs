@@ -211,7 +211,7 @@ function assertSameCamera(actual, expected, message) {
     assert.equal(await root.isVisible(), true, 'Typing V in an output field cannot start recording');
     assert.equal(await page.evaluate(() => !!window.__app.rec || window.__app.recordStarting), false);
     await root.getByRole('button', { name: 'Video', exact: true }).click();
-    assert.equal(await root.evaluate(element => element.contains(document.activeElement)), true);
+    assert.equal(await root.getByRole('button', { name: 'Video', exact: true }).evaluate(element => element === document.activeElement), true, 'The output tab keeps keyboard focus after its real click');
     await page.keyboard.press('v');
     assert.equal(await root.isHidden(), true, 'The V shortcut closes LIVE static preview before recording its actual viewport');
     await page.waitForFunction(() => window.__app.rec?.frames >= 10, null, { timeout: 120000 });
