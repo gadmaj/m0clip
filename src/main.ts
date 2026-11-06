@@ -92,8 +92,7 @@ const LIVE_ONLY_MESSAGES: Partial<Record<ToWorker['t'], true>> = {
 };
 /** Spawn gun choices: every robot variant the app simulates, labelled as on the launch screen. */
 const SPAWN_ROBOTS = Object.keys(SPECS).map(value => ({ value, label: value.replace(/_/g, ' ').toUpperCase() }));
-/** View models for the Player tools, used only when the person's own game content has them: Garry's Mod's
- * physics gun and tool gun, whose v_ models carry their hands. Without one, nothing is drawn for that tool. */
+/** Optional local Garry's Mod models replace the bundled first-person tools; their files stay local. */
 const PLAYER_VIEW_MODELS: Partial<Record<PlayerTool, string>> = { physgun: 'models/weapons/v_physics.mdl', spawn: 'models/weapons/v_toolgun.mdl' };
 const NO_TOOLS: readonly PlayerTool[] = [];
 const PLAYER_TOOL_SLOTS: readonly PlayerTool[] = ['knife', 'physgun', 'spawn'];
@@ -200,6 +199,8 @@ class App {
   }
   private help!: HelpDialog;
   private modalKeys = new Set<string>();
+  /** Keys already down before a dialog opened must not auto-type into its focused field. */
+  private readonly keysBeforeModal = new Set<string>();
   private initialViewRestore: Promise<void> = Promise.resolve();
   private launchCharacterApplied = false;
   private startupCatalogue!: StartupAssetCatalogue;
@@ -250,10 +251,11 @@ class App {
   private playerEyeZ = 0;
   private readonly playerFeet = new Float64Array(3);
   /** Copy of the last input sent, recorded with each frame (the controller lends its frame). */
-  private readonly playerSentInput: PlayerInputFrame = { sequence: 0, yaw: 0, pitch: 0, forward: 0, side: 0, held: 0, pressed: 0, wheelJump: false, thirdPerson: false };
+  private readonly playerSentInput: PlayerInputFrame = { sequence: 0, yaw: 0, pitch: 0, forward: 0, side: 0, held: 0, pressed: 0, reset: false, thirdPerson: false };
   private playerInputSent = false;
-  /** A tool the person chose that the worker has not yet confirmed; older statuses must not undo it. */
-  private playerToolPending: PlayerTool | null = null;
+  /** Until the latest tool command settles, older statuses must not undo the controller's choice. */
+  private playerToolPending = false;
+  private playerToolRequest = 0;
   private readonly playerAim = new THREE.Vector3();
   /** Why a tool's view model could not load; told to the person when they equip that tool. */
   private readonly playerViewModelErrors = new Map<PlayerTool, string>();
@@ -263,6 +265,7 @@ class App {
   private playerShown: { view: PlayerView; actors: PlayerActors } | null = null;
   private playerLiveActors: PlayerActors | null = null;
   private playerActorsReady: Promise<void> = Promise.resolve();
+  private playerActorsAbort: AbortController | null = null;
   private readonly goldSrcSources = new Map<string, Promise<{ source: GoldSrcSource; planned: PlannedAsset[] }>>();
   /** Reattached local game content, and the actors, of reviewed Player takes. */
   private readonly takeContent = new WeakMap<PlayerTake, LocalGameContent | null>();
@@ -537,9 +540,20 @@ class App {
     });
     this.wireNavigation();
     window.addEventListener('keydown', event => {
-      if (this.help.isOpen || this.shotLibrary.isOpen || VisualPicker.active) this.modalKeys.add(event.code);
+      if (this.help.isOpen || this.shotLibrary.isOpen || VisualPicker.active) {
+        this.modalKeys.add(event.code);
+        // A fresh keydown also recovers a release Chrome swallowed while unlocking the mouse.
+        if (!event.repeat) this.keysBeforeModal.delete(event.code);
+        else if (this.keysBeforeModal.has(event.code)) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      } else this.keysBeforeModal.add(event.code);
     }, true);
-    window.addEventListener('keyup', event => this.modalKeys.delete(event.code), true);
+    window.addEventListener('keyup', event => {
+      this.modalKeys.delete(event.code);
+      this.keysBeforeModal.delete(event.code);
+    }, true);
     window.addEventListener("keydown", (e) => this.onKey(e));
     window.addEventListener("keyup", (e) => this.onKeyUp(e));
     // Return keyboard control to the simulation after a dropdown or ordinary action.
@@ -557,6 +571,7 @@ class App {
     // a key released while the window is unfocused never sends keyup — stop instead of walking on
     window.addEventListener("blur", () => {
       this.modalKeys.clear();
+      this.keysBeforeModal.clear();
       if (this.keysHeld.size) { this.keysHeld.clear(); this.applyKeys(false); }
       if (this.player) this.send({ t: 'playerStop' });
     });
@@ -944,11 +959,10 @@ class App {
         this.send({ t: 'playerInput', input: frame });
       },
       tool: tool => {
-        this.playerToolPending = tool;
-        this.view.player?.trigger('draw');
-        this.send({ t: 'playerTool', tool });
+        this.playerToolPending = true;
+        this.send({ t: 'playerTool', tool, request: ++this.playerToolRequest });
         const failed = this.playerViewModelErrors.get(tool);
-        if (failed) hud.showNotice(`View model unavailable · ${failed}`);
+        if (failed) hud.showNotice(`Imported viewmodel unavailable · ${failed}`);
       },
       unavailable: tool => hud.unavailable(tool),
       inspect: () => {
@@ -1029,9 +1043,8 @@ class App {
     const player = this.player;
     if (!player) return;
     player.input.setAvailableTools(s.availableTools);
-    // Adopt the worker's tool unless a newer choice is still on its way to it.
-    if (this.playerToolPending === s.tool) this.playerToolPending = null;
-    if (this.playerToolPending === null && s.tool !== player.input.tool) player.input.selectTool(s.tool);
+    // Earlier statuses must not overwrite a newer choice or send another tool command.
+    if (!this.playerToolPending) player.input.confirmTool(s.tool);
     if (!previous || previous.spawnRobot !== s.spawnRobot || previous.spawnRobots.join() !== s.spawnRobots.join()) {
       const options = SPAWN_ROBOTS.filter(option => s.spawnRobots.includes(option.value));
       this.playerSpawnLabel = options.find(option => option.value === s.spawnRobot)?.label ?? null;
@@ -1929,6 +1942,7 @@ class App {
   private buildView(desc: RenderModel,prepareMap=true) {
     this.cancelScreenshot();
     ++this.viewBuildGeneration;
+    if (desc.mode !== 'player') this.playerActorsAbort?.abort();
     this.view.build(desc);
     if (desc.mode === 'player') {
       // A Player world has no primary robot: no robot character or paint panel model.
@@ -1957,17 +1971,19 @@ class App {
   private syncPlayerActors() {
     const view = this.view.player, wanted = this.playerWanted;
     if (!view || !wanted || this.playerShown?.view === view && this.playerShown.actors === wanted) return;
+    this.playerActorsAbort?.abort();
+    const controller = this.playerActorsAbort = new AbortController();
     this.playerShown = { view, actors: wanted };
-    const work = this.loadPlayerActors(view, wanted);
+    const work = this.loadPlayerActors(view, wanted, controller.signal);
     this.playerActorsReady = work;
     // Launch reports through its own readiness gate; later failures are shown here.
     work.catch(error => {
-      if (!launch.active && this.playerShown?.actors === wanted)
+      if (!controller.signal.aborted && !launch.active && this.playerShown?.actors === wanted)
         this.showOverlay(`Player model could not load: ${error instanceof Error ? error.message : error}`, 'error');
     });
   }
 
-  private async loadPlayerActors(view: PlayerView, actors: PlayerActors): Promise<void> {
+  private async loadPlayerActors(view: PlayerView, actors: PlayerActors, signal: AbortSignal): Promise<void> {
     const { body: id, content, views } = actors;
     let body: PlayerBodySource | null = null;
     if (id !== null) {
@@ -1975,12 +1991,13 @@ class App {
       else if (content) body = { kind: 'studio', content, path: id };
       else throw new Error(`${id} comes from game content that isn't attached.`);
     }
-    // A view model that cannot load leaves its tool without one (nothing is drawn); the body is required.
+    signal.throwIfAborted();
+    // A failed imported tool keeps the bundled model; the failure is still reported when equipped.
     this.playerViewModelErrors.clear();
-    await Promise.all([view.setBody(body), ...PLAYER_TOOL_SLOTS.map(tool => {
+    await Promise.all([view.setBody(body, signal), ...PLAYER_TOOL_SLOTS.map(tool => {
       const path = views[tool];
-      return view.setViewModel(tool, path && content ? { content, path } : null).catch((error: unknown) => {
-        this.playerViewModelErrors.set(tool, `${path}: ${error instanceof Error ? error.message : String(error)}`);
+      return view.setViewModel(tool, path && content ? { content, path } : null, signal).catch((error: unknown) => {
+        if (!signal.aborted) this.playerViewModelErrors.set(tool, `${path}: ${error instanceof Error ? error.message : String(error)}`);
       });
     })]);
   }
@@ -2512,6 +2529,12 @@ class App {
         return;
       case 'playerStatus':
         this.applyPlayerStatus(m);
+        return;
+      case 'playerToolSettled':
+        if (m.request === this.playerToolRequest) {
+          this.playerToolPending = false;
+          if (this.playerStatus) this.player?.input.confirmTool(this.playerStatus.tool);
+        }
         return;
       case "status":
         this.applyStatus(m);
