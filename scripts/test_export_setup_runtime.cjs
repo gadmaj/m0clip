@@ -206,7 +206,12 @@ function assertSameCamera(actual, expected, message) {
     assert.deepEqual(await page.evaluate(() => {
       const host = window.__app.dialog.host; return [host.take(), host.path(), host.range()];
     }), [null, null, null], 'an old recording does not make live setup exportable');
-    await page.locator('#viewport canvas').focus();
+    await root.locator('input[type="number"]').first().focus();
+    await page.keyboard.press('v');
+    assert.equal(await root.isVisible(), true, 'Typing V in an output field cannot start recording');
+    assert.equal(await page.evaluate(() => !!window.__app.rec || window.__app.recordStarting), false);
+    await root.getByRole('button', { name: 'Video', exact: true }).click();
+    assert.equal(await root.evaluate(element => element.contains(document.activeElement)), true);
     await page.keyboard.press('v');
     assert.equal(await root.isHidden(), true, 'The V shortcut closes LIVE static preview before recording its actual viewport');
     await page.waitForFunction(() => window.__app.rec?.frames >= 10, null, { timeout: 120000 });

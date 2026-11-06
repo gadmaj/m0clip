@@ -170,6 +170,12 @@ export class ExportDialog {
     this.body = h("div", "x-body");
     root.append(head, this.body);
     root.addEventListener("keydown", (e) => {
+      const target = e.target;
+      const editing = target instanceof HTMLInputElement || target instanceof HTMLSelectElement ||
+        target instanceof HTMLTextAreaElement || target instanceof HTMLElement && target.isContentEditable;
+      // V still records from non-editable setup controls; contain every movement/typing key.
+      if (!this.busy && !editing && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey &&
+          (e.key === "v" || e.key === "V")) return;
       if (e.key === "Escape" && !this.busy) { e.stopPropagation(); this.close(); }
       e.stopPropagation();          // typing in a field must not drive the robot or the timeline
     });
