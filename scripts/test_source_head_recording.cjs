@@ -1,12 +1,25 @@
 /** Chromium regression for native Ghost head recording, review, take files and GLB/PNG export.
- * Run against Vite development: BASE_URL=http://127.0.0.1:5176
+ * Run against an unmodified built preview: BASE_URL=http://127.0.0.1:PORT
  * PLAYWRIGHT_MODULE=/path/to/playwright node scripts/test_source_head_recording.cjs
  * Set HEADLESS=1 for Chromium without a visible window; LOW_DPR=1 uses DPR 0.5 for software graphics. */
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert=require('node:assert/strict');
 const {chooseVisual}=require('./choose-visual.cjs');
 const {readyApp}=require('./attach-ready-app.cjs');
-(async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS === '1',...(process.env.CHROME_EXECUTABLE?{executablePath:process.env.CHROME_EXECUTABLE}:{}),args:['--no-sandbox','--ozone-platform=x11']});try{const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:process.env.LOW_DPR ? 0.5 : 1});const errors=[];page.on('pageerror',e=>{errors.push(String(e));console.error('Head fixture browser error:',String(e))});
+const path=require('node:path'),buildFixture=require('./build-fixture.cjs');
+(async()=>{
+const fixture=await buildFixture({
+  root:path.resolve(__dirname,'..'),
+  source:`
+    export { saveTake, loadTake } from './src/record/take';
+    export { exportGlb } from './src/record/export-blender';
+    export { renderVideo } from './src/record/export-video';
+    export { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    export { unzipSync } from 'fflate';
+  `,
+  platform:'browser',format:'iife',globalName:'HeadRecordingFixture',
+});
+const browser=await chromium.launch({headless:process.env.HEADLESS === '1',...(process.env.CHROME_EXECUTABLE?{executablePath:process.env.CHROME_EXECUTABLE}:{}),args:['--no-sandbox','--ozone-platform=x11']});try{const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:process.env.LOW_DPR ? 0.5 : 1});const errors=[];page.on('pageerror',e=>{errors.push(String(e));console.error('Head fixture browser error:',String(e))});
 page.on('framenavigated',frame=>{if(frame===page.mainFrame())console.log('Head fixture navigation:',frame.url())});
 page.on('response',response=>{if(response.status()>=400)console.error('Head fixture HTTP:',response.status(),response.url())});
 // Keep this native-head export regression independent of the fresh default map;
@@ -30,14 +43,16 @@ gate.resolve();await page.waitForFunction(()=>!!window.__app.rec);assert.equal(a
 await page.waitForFunction(()=>window.__app.rec?.frames>=8,null,{timeout:120000});
 await page.getByTitle('Stop recording and open the timeline (V)',{exact:true}).click();
 await page.waitForFunction(()=>window.__app.timeline.isOpen&&window.__app.view.getSourceHead()==='ghost');
-const takeProof=await page.evaluate(async()=>{const a=window.__app;const {saveTake,loadTake}=await import('/src/record/take.ts');const blob=await saveTake(a.take);const loaded=await loadTake(await blob.arrayBuffer());return{frames:a.take.n,duration:a.take.duration,head:a.take.meta.sourceHead,savedHead:loaded.meta.sourceHead,reviewHead:a.view.getSourceHead()};});assert.equal(takeProof.head,'ghost');assert.equal(takeProof.savedHead,'ghost');
+await page.addScriptTag({content:fixture.code});
+if(fixture.css)await page.addStyleTag({content:fixture.css});
+const takeProof=await page.evaluate(async()=>{const a=window.__app;const {saveTake,loadTake}=window.HeadRecordingFixture;const blob=await saveTake(a.take);const loaded=await loadTake(await blob.arrayBuffer());return{frames:a.take.n,duration:a.take.duration,head:a.take.meta.sourceHead,savedHead:loaded.meta.sourceHead,reviewHead:a.view.getSourceHead()};});assert.equal(takeProof.head,'ghost');assert.equal(takeProof.savedHead,'ghost');
 console.log('Head fixture: native recording and ZIP passed');
 const glbProof=await page.evaluate(async()=>{
   const a=window.__app;
-  const {exportGlb}=await import('/src/record/export-blender.ts');
+  const {exportGlb}=window.HeadRecordingFixture;
   const blob=await exportGlb(a.take,a.view,a.takeModel,{fps:10,t0:0,t1:Math.min(.4,a.take.duration),camera:null,floor:false});
   const binary=await blob.arrayBuffer();
-  const {GLTFLoader}=await import('/node_modules/three/examples/jsm/loaders/GLTFLoader.js');
+  const {GLTFLoader}=window.HeadRecordingFixture;
   const loaded=await new GLTFLoader().parseAsync(binary,'');
   let head;
   loaded.scene.traverse(o=>{if(o.userData.sourceModel==='models/nt/props_tech/girlbot_head.mdl')head=o;});
@@ -51,9 +66,9 @@ assert.equal(glbProof.source,'models/nt/props_tech/girlbot_head.mdl');
 console.log('Head fixture: animated GLB passed');
 const pngProof=await page.evaluate(async()=>{
   const a=window.__app;
-  const {renderVideo}=await import('/src/record/export-video.ts');
+  const {renderVideo}=window.HeadRecordingFixture;
   const blob=await renderVideo({width:240,height:180,fps:5,speed:1,t0:0,t1:.4,container:'png',codec:'avc',quality:'medium',transparent:false,floor:true},a.stage(),()=>{},new AbortController().signal);
-  const {unzipSync}=await import('/node_modules/fflate/esm/browser.js');
+  const {unzipSync}=window.HeadRecordingFixture;
   const files=unzipSync(new Uint8Array(await blob.arrayBuffer()));
   return{frames:Object.values(files).map(data=>{
     const header=new DataView(data.buffer,data.byteOffset,data.byteLength);

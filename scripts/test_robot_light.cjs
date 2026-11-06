@@ -2,7 +2,14 @@
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert = require('node:assert/strict');
 const {readyApp} = require('./attach-ready-app.cjs');
+const path = require('node:path');
+const buildFixture = require('./build-fixture.cjs');
 (async () => {
+  const fixture = await buildFixture({
+    root: path.resolve(__dirname, '..'),
+    source: "export { saveTake, loadTake } from './src/record/take';",
+    platform: 'browser', format: 'iife', globalName: 'RobotLightFixture',
+  });
   const browser = await chromium.launch({headless:process.env.HEADLESS === '1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});
   try {
     const page = await browser.newPage({viewport:{width:1440,height:1000}}), errors=[];
@@ -38,7 +45,9 @@ const {readyApp} = require('./attach-ready-app.cjs');
     assert.equal(await page.locator('#robot-dull').isChecked(),true);await showScene();await page.getByText('Robot appearance',{exact:true}).click();
     await page.setViewportSize({width:1440,height:1000});await page.locator('#robot-dull').uncheck();await page.locator('#robot-light-brightness').evaluate(e=>e.value='25');await page.locator('#robot-light-brightness').dispatchEvent('input');
     await page.evaluate(()=>window.__app.startRecording());await page.waitForFunction(()=>!!window.__app.rec);assert.equal(await page.locator('#robot-dull').isDisabled(),true);await page.waitForTimeout(800);await page.evaluate(()=>window.__app.stopRecording());await page.waitForFunction(()=>window.__app.timeline.isOpen);
-    const recorded=await page.evaluate(async()=>{const a=window.__app;const {saveTake,loadTake}=await import('/src/record/take.ts');const take=await loadTake(await (await saveTake(a.take)).arrayBuffer());a.closeReview();a.view.setAppearance({...a.view.getAppearance(),robotLight:{brightness:0,color:0xffffff,range:8,dull:true}});a.openReview();const review=a.view.getAppearance().robotLight;a.closeReview();return{saved:take.meta.appearance.robotLight,review,restored:a.view.getAppearance().robotLight};});assert.equal(recorded.saved.brightness,25);assert.equal(recorded.review.brightness,25);assert.equal(recorded.restored.dull,true);
+    await page.addScriptTag({content:fixture.code});
+    if(fixture.css)await page.addStyleTag({content:fixture.css});
+    const recorded=await page.evaluate(async()=>{const a=window.__app;const {saveTake,loadTake}=window.RobotLightFixture;const take=await loadTake(await (await saveTake(a.take)).arrayBuffer());a.closeReview();a.view.setAppearance({...a.view.getAppearance(),robotLight:{brightness:0,color:0xffffff,range:8,dull:true}});a.openReview();const review=a.view.getAppearance().robotLight;a.closeReview();return{saved:take.meta.appearance.robotLight,review,restored:a.view.getAppearance().robotLight};});assert.equal(recorded.saved.brightness,25);assert.equal(recorded.review.brightness,25);assert.equal(recorded.restored.dull,true);
     await page.evaluate(()=>{const v=window.__app.view;v.setAppearance({...v.getAppearance(),robotLight:{brightness:25,color:0xffffff,range:8,dull:false}});});
     await page.waitForFunction(()=>window.__app.view.robotLight.brightness.value===25);
     await page.evaluate(()=>window.__app.setNoclip(true));await page.waitForFunction(()=>window.__app.view.getRobotOpacity()===0);assert.equal(await page.evaluate(()=>window.__app.view.robotLight.brightness.value),0);
