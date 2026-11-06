@@ -2,6 +2,9 @@
  * and the view-model pass. Live frames go through `present` (advance controllers, then `apply`);
  * review and export call `apply` with a recorded presentation, which is pure.
  *
+ * The physics gun and spawn tool always have a view model: a game-file model when one loads, else
+ * the bundled default (default-viewmodel.ts). `viewModelPath` reports which, for take metadata.
+ *
  * View-model motion follows the Source SDK: HL2's AddViewmodelBob (speed-scaled bob cycle) and
  * CBaseViewModel::CalcViewModelLag (facing drift and pitch offsets), recorded camera-relative as
  * viewModelPosition (metres) and viewModelOrientation (xyzw) so any render camera carries them.
@@ -21,13 +24,24 @@ import { GoldSrcPlayerBody } from './goldsrc-body';
 import { StudioPlayerBody } from './studio-body';
 import type { MaterialLighter } from './studio-object';
 import { WorldRayGrid } from './trace';
-import { PLAYER_VIEWMODEL_LAYER, ViewModelRig, type ViewModelAction } from './viewmodel';
+import { DefaultViewModelKit, DefaultViewModelRig, defaultViewModelPath, isDefaultViewModelPath } from './default-viewmodel';
+import { PLAYER_VIEWMODEL_LAYER, ViewModelRig, type PlayerViewModelRig, type ViewModelAction } from './viewmodel';
 
 export type PlayerBodySource =
   | { kind: 'goldsrc'; id: string; source: GoldSrcSource }
   | { kind: 'studio'; content: LocalGameContent; path: string };
-export interface PlayerViewModelSource { content: LocalGameContent; path: string; hands?: string }
-export interface PlayerViewModelStatus { tool: PlayerTool; shown: boolean; reason?: string }
+/** A view model from the person's game files. If it fails to load, `onError` 'default' (the
+ * default) shows the tool's bundled model instead; 'clear' leaves the tool without one, for
+ * reviewing a take that recorded this exact model. */
+export interface PlayerViewModelSource { content: LocalGameContent; path: string; hands?: string; onError?: 'default' | 'clear' }
+export interface PlayerViewModelStatus {
+  tool: PlayerTool;
+  shown: boolean;
+  /** What the tool has: the bundled model, one from game files, or nothing. */
+  source: 'default' | 'imported' | null;
+  path: string | null;
+  reason?: string;
+}
 
 export interface PlayerViewHost {
   readonly renderer: THREE.WebGLRenderer;
@@ -53,9 +67,13 @@ export class PlayerView {
   private body: PlayerBodyRig | null = null;
   private bodyLoad: Promise<void> = Promise.resolve();
   private bodyGeneration = 0;
-  private readonly viewModels = new Map<PlayerTool, ViewModelRig>();
-  private readonly viewModelLoads = new Map<PlayerTool, { generation: number; promise: Promise<void>; error: string | null }>();
-  private viewModelGeneration = 0;
+  private readonly viewModels = new Map<PlayerTool, PlayerViewModelRig>();
+  /** Pending game-file loads by tool; a load whose entry was replaced or removed is discarded. */
+  private readonly viewModelLoads = new Map<PlayerTool, { promise: Promise<void> }>();
+  /** Why the last requested game-file model for a tool did not load. */
+  private readonly viewModelErrors = new Map<PlayerTool, string>();
+  /** Materials shared by the bundled view models; made on first use, released in dispose. */
+  private defaultKit: DefaultViewModelKit | null = null;
   private readonly libraries = new Map<LocalGameContent, SourceMaterialLibrary>();
   private readonly cam = new PlayerCamera();
   private world: WorldRayGrid | null = null;
@@ -64,12 +82,15 @@ export class PlayerView {
   worldRevision = 0;
   /** Capture modes that must not show the view model (e.g. a free or shot camera) turn this off. */
   showViewModel = true;
+  /** External cameras (review free, follow and shot cameras) turn this on to show the body in a
+   * first-person presentation; it never shows through the first-person camera by default. */
+  showBody = false;
 
   private readonly presentation: Mutable<PlayerPresentation>;
   private readonly emptyPose: PlayerAnimationPose = { sequence: 0, cycle: 0, poseParameters: new Float32Array(0), layers: [] };
   private readonly actions: ViewModelAction[] = [];
   private lastTool: PlayerTool | null = null;
-  private activeViewModel: ViewModelRig | null = null;
+  private activeViewModel: PlayerViewModelRig | null = null;
   private appliedThird = false;
   private appliedTool: PlayerTool = 'none';
   private viewModelFov = PLAYER_VIEWMODEL_FOV;
@@ -128,30 +149,78 @@ export class PlayerView {
     return load;
   }
 
-  /** Loads (or clears with null) the real view model shown for `tool`. */
+  /** Shows a view model for `tool`. Null, or a source whose path is a bundled id, selects the
+   * bundled model of the physics gun or spawn tool without reading game files (and clears any other
+   * tool); it takes effect at once and supersedes a pending load. Showing the bundled model that is
+   * already shown keeps it. A game-file model replaces the current one once it has loaded; until
+   * then the current one stays. A failed load rejects, keeps the reason for viewModelStatus and
+   * applies `source.onError`. An aborted or superseded load changes nothing. */
   setViewModel(tool: PlayerTool, source: PlayerViewModelSource | null, signal?: AbortSignal): Promise<void> {
-    const generation = ++this.viewModelGeneration;
-    const entry = { generation, promise: Promise.resolve(), error: null as string | null };
-    entry.promise = (async () => {
+    this.viewModelLoads.delete(tool);
+    this.viewModelErrors.delete(tool);
+    if (!source || isDefaultViewModelPath(source.path)) {
       try {
-        let rig: ViewModelRig | null = null;
-        if (source) {
-          const [model, hands] = await Promise.all([loadStudioModel(source.content, source.path, signal),
-            source.hands ? loadStudioModel(source.content, source.hands, signal) : null]);
-          rig = await ViewModelRig.load(source.path, model, this.library(source.content), hands, this.host.light, signal);
-        }
-        if (this.viewModelLoads.get(tool)?.generation !== generation || signal?.aborted) { rig?.dispose(); signal?.throwIfAborted(); return; }
-        this.viewModels.get(tool)?.dispose();
-        if (rig) { rig.object.visible = false; this.host.scene.add(rig.object); this.viewModels.set(tool, rig); }
-        else this.viewModels.delete(tool);
-        this.viewModelLoads.delete(tool);
+        signal?.throwIfAborted();
+        this.showDefaultViewModel(tool, source?.path ?? null);
       } catch (error) {
-        if (this.viewModelLoads.get(tool)?.generation === generation) entry.error = error instanceof Error ? error.message : String(error);
-        throw error;
+        if (!signal?.aborted) this.viewModelErrors.set(tool, error instanceof Error ? error.message : String(error));
+        return Promise.reject(error);
       }
-    })();
+      return Promise.resolve();
+    }
+    // Registered before any work starts, so the load can always tell whether it is still current.
+    const entry = { promise: Promise.resolve() };
     this.viewModelLoads.set(tool, entry);
+    entry.promise = this.loadViewModel(tool, source, entry, signal);
     return entry.promise;
+  }
+
+  private async loadViewModel(tool: PlayerTool, source: PlayerViewModelSource, entry: { promise: Promise<void> }, signal?: AbortSignal): Promise<void> {
+    /** Ends this load's pending entry; true when its result should still be shown. */
+    const settle = () => {
+      const mine = this.viewModelLoads.get(tool) === entry;
+      if (mine) this.viewModelLoads.delete(tool);
+      return mine && !signal?.aborted;
+    };
+    let rig: ViewModelRig;
+    try {
+      const [model, hands] = await Promise.all([loadStudioModel(source.content, source.path, signal),
+        source.hands ? loadStudioModel(source.content, source.hands, signal) : null]);
+      rig = await ViewModelRig.load(source.path, model, this.library(source.content), hands, this.host.light, signal);
+    } catch (error) {
+      if (!settle()) { signal?.throwIfAborted(); return; }
+      this.viewModelErrors.set(tool, `${source.path}: ${error instanceof Error ? error.message : String(error)}`);
+      if (source.onError === 'clear') this.removeViewModel(tool);
+      else this.showDefaultViewModel(tool, null);
+      throw error;
+    }
+    if (!settle()) { rig.dispose(); signal?.throwIfAborted(); return; }
+    this.installViewModel(tool, rig);
+  }
+
+  /** The bundled model for `tool` (reused when already shown), or none for a tool without one. */
+  private showDefaultViewModel(tool: PlayerTool, requested: string | null): void {
+    const id = defaultViewModelPath(tool);
+    if (requested !== null && requested !== id) throw new Error(`${requested} is not the bundled view model for this tool.`);
+    if (tool !== 'physgun' && tool !== 'spawn') { this.removeViewModel(tool); return; }
+    if (this.viewModels.get(tool)?.path === id) return;
+    if (!this.defaultKit || this.defaultKit.disposed) this.defaultKit = new DefaultViewModelKit(this.host.light);
+    this.installViewModel(tool, DefaultViewModelRig.create(tool, this.defaultKit));
+  }
+
+  private installViewModel(tool: PlayerTool, rig: PlayerViewModelRig): void {
+    this.removeViewModel(tool);
+    rig.object.visible = false;
+    this.host.scene.add(rig.object);
+    this.viewModels.set(tool, rig);
+  }
+
+  private removeViewModel(tool: PlayerTool): void {
+    const rig = this.viewModels.get(tool);
+    if (!rig) return;
+    if (rig === this.activeViewModel) this.activeViewModel = null;
+    rig.dispose();
+    this.viewModels.delete(tool);
   }
 
   async waitForVisuals(): Promise<void> {
@@ -161,6 +230,7 @@ export class PlayerView {
 
   /** Body identity for take metadata: the pmodel id or the canonical model path. */
   bodyPath(): string | null { return this.body?.path ?? null; }
+  /** View-model identity for take metadata: the canonical game-file path or a bundled id. */
   viewModelPath(tool: PlayerTool): string | null { return this.viewModels.get(tool)?.path ?? null; }
   /** What the displayed player can't reproduce, for exports and diagnostics. */
   limitations(): string[] {
@@ -180,15 +250,17 @@ export class PlayerView {
   trigger(action: ViewModelAction): void { if (this.actions.length < 8) this.actions.push(action); }
 
   viewModelStatus(): PlayerViewModelStatus {
-    const tool = this.appliedTool;
-    if (tool === 'none') return { tool, shown: false, reason: 'No tool is equipped.' };
-    const load = this.viewModelLoads.get(tool);
-    if (load?.error) return { tool, shown: false, reason: load.error };
-    if (load) return { tool, shown: false, reason: 'The view model is loading.' };
-    if (!this.viewModels.has(tool)) return { tool, shown: false, reason: 'Your selected game files have no view model for this tool.' };
-    if (this.appliedThird) return { tool, shown: false, reason: 'Third person.' };
-    if (!this.showViewModel) return { tool, shown: false, reason: 'This camera does not show the view model.' };
-    return { tool, shown: true };
+    const tool = this.appliedTool, rig = this.viewModels.get(tool) ?? null, error = this.viewModelErrors.get(tool);
+    const status: PlayerViewModelStatus = { tool, shown: rig !== null && rig === this.activeViewModel,
+      source: rig ? rig.builtin ? 'default' : 'imported' : null, path: rig?.path ?? null };
+    if (tool === 'none') status.reason = 'No tool is equipped.';
+    else if (this.viewModelLoads.has(tool)) status.reason = 'The view model is loading.';
+    else if (error) status.reason = rig ? `${error} Showing the bundled model instead.` : error;
+    else if (!rig) status.reason = 'Your selected game files have no view model for this tool.';
+    else if (this.appliedThird) status.reason = 'Third person.';
+    else if (!this.showViewModel) status.reason = 'This camera does not show the view model.';
+    else if (!status.shown) status.reason = 'This presentation has no view-model pose.';
+    return status;
   }
 
   /** Per worker frame: advances the controllers by `dt` simulated seconds and shows the result.
@@ -272,16 +344,17 @@ export class PlayerView {
     this.vmOrientation[0] = rel.x; this.vmOrientation[1] = rel.y; this.vmOrientation[2] = rel.z; this.vmOrientation[3] = rel.w;
   }
 
-  /** Shows a presentation: the body (third person only, as Source never draws the local body in
-   * first person) and the current tool's view model (first person only). Pure. */
+  /** Shows a presentation: the body (third person, or any presentation when an external camera sets
+   * showBody; Source never draws the local body through the first-person eye) and the current
+   * tool's view model (first person only, when showViewModel). Pure. */
   apply(frame: PlayerSimFrame, presentation: PlayerPresentation, clock: number): void {
     const third = presentation.thirdPerson, body = this.body;
     this.appliedThird = third; this.appliedTool = frame.tool;
     if (body) {
       if (presentation.body !== this.emptyPose) body.apply(frame, presentation, clock, this.sourceFrame);
-      body.object.visible = third && presentation.body !== this.emptyPose;
+      body.object.visible = (third || this.showBody) && presentation.body !== this.emptyPose;
     }
-    let active: ViewModelRig | null = null;
+    let active: PlayerViewModelRig | null = null;
     for (const [tool, rig] of this.viewModels) {
       const current = tool === frame.tool && !!presentation.viewModel;
       if (current) rig.apply(presentation.viewModel!, clock);
@@ -306,12 +379,15 @@ export class PlayerView {
     this.cam.update(camera, frame, this.sourceFrame, look, thirdPerson, dt, thirdPerson ? this.world : null);
   }
 
-  /** The view-model pass, called after the world inside the Source post-process. */
+  /** The view-model pass, called after the world inside the Source post-process. The view-model
+   * FOV is hor+ for screens at least 4:3 wide; narrower (portrait) screens keep its 4:3 horizontal
+   * extent instead, so the model stays in view rather than being cropped off the right edge. */
   drawViewModel(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera): void {
     const rig = this.activeViewModel;
     if (!rig || !rig.object.visible || !(camera instanceof THREE.PerspectiveCamera)) return;
     camera.updateMatrixWorld();
-    const vm = this.vmCamera, fov = horPlusVerticalFov(this.viewModelFov);
+    const vm = this.vmCamera, fov = camera.aspect >= 4 / 3 ? horPlusVerticalFov(this.viewModelFov)
+      : 2 * Math.atan(Math.tan(this.viewModelFov * DEG / 2) / camera.aspect) / DEG;
     camera.matrixWorld.decompose(vm.position, vm.quaternion, this.v2);
     if (vm.fov !== fov || vm.aspect !== camera.aspect) { vm.fov = fov; vm.aspect = camera.aspect; vm.updateProjectionMatrix(); }
     vm.updateMatrixWorld();
@@ -333,7 +409,7 @@ export class PlayerView {
   async actors(take: PlayerTake, times: Float32Array, t0: number): Promise<{ root: THREE.Object3D; tracks: THREE.KeyframeTrack[]; limitations: string[] }> {
     await this.waitForVisuals();
     const root = new THREE.Group(), tracks: THREE.KeyframeTrack[] = [], n = times.length, used = new Set<string>();
-    const limitations = ['The first-person view model is not exported (game files are never re-exported; it is a screen-space overlay).'];
+    const limitations = ['The first-person view model is not exported: it is a screen-space overlay, and game files are never re-exported.'];
     root.name = 'player_actor';
     const unique = (base: string) => {
       const b = THREE.PropertyBinding.sanitizeNodeName(`player_${base}`) || 'player_node';
@@ -380,16 +456,19 @@ export class PlayerView {
       tracks.push(new THREE.VectorKeyframeTrack(`${bone.name}.position`, times, bonePos[b]),
         new THREE.QuaternionKeyframeTrack(`${bone.name}.quaternion`, times, continuous(boneQuat[b])));
     });
-    if (copy) limitations.push('The player body is exported for the whole range; the app shows it only while third person is held.', ...body.limitations);
+    if (copy) limitations.push('The player body is exported for the whole range; the app shows it in third person and from cameras outside the eye.', ...body.limitations);
     else limitations.push(`The player body ${body.path} comes from your game files and is not re-exported; the "${node.name}" node carries its placement and facing.`);
     return { root, tracks, limitations };
   }
 
   dispose(): void {
-    ++this.bodyGeneration; ++this.viewModelGeneration;
+    ++this.bodyGeneration;
     this.body?.dispose(); this.body = null;
+    // Pending loads find their entries gone and discard what they load.
+    this.viewModelLoads.clear(); this.viewModelErrors.clear();
     for (const rig of this.viewModels.values()) rig.dispose();
-    this.viewModels.clear(); this.viewModelLoads.clear();
+    this.viewModels.clear(); this.activeViewModel = null;
+    this.defaultKit?.dispose(); this.defaultKit = null;
     for (const library of this.libraries.values()) library.dispose();
     this.libraries.clear();
     this.world = null;
