@@ -250,7 +250,7 @@ class App {
   private playerEyeZ = 0;
   private readonly playerFeet = new Float64Array(3);
   /** Copy of the last input sent, recorded with each frame (the controller lends its frame). */
-  private readonly playerSentInput: PlayerInputFrame = { sequence: 0, yaw: 0, pitch: 0, forward: 0, side: 0, held: 0, pressed: 0, wheelJump: false, thirdPerson: false };
+  private readonly playerSentInput: PlayerInputFrame = { sequence: 0, yaw: 0, pitch: 0, forward: 0, side: 0, held: 0, pressed: 0, reset: false, thirdPerson: false };
   private playerInputSent = false;
   /** A tool the person chose that the worker has not yet confirmed; older statuses must not undo it. */
   private playerToolPending: PlayerTool | null = null;

@@ -11,8 +11,8 @@ import type { RenderModel } from '../sim/protocol';
 import type { SceneEntity } from '../sim/entities';
 import { GEOM_STRIDE, GeometryTrack, matToQuat, nlerp, quatToMat, validGeometryData, validGeometryPartition,
   type GeometryPartition } from '../core/geometry';
-import type { PlayerAnimationLayer, PlayerAnimationPose, PlayerEntityState, PlayerGrabState, PlayerInputFrame,
-  PlayerPresentation, PlayerSimFrame, PlayerTool } from '../player/types';
+import { PLAYER_BUTTON, type PlayerAnimationLayer, type PlayerAnimationPose, type PlayerEntityState,
+  type PlayerGrabState, type PlayerInputFrame, type PlayerPresentation, type PlayerSimFrame, type PlayerTool } from '../player/types';
 import { sourceToAppPoint } from '../player/source-frame';
 import type { LocalGameContent } from '../player/assets/local-content';
 import { validLocalMap, type LocalMapIdentity } from '../maps/source';
@@ -79,7 +79,8 @@ export interface PlayerTracks {
 export interface PlayerTables { entityStates: PlayerEntityState[][]; grabEntities: string[] }
 export interface PlayerEpoch { start: number; model: RenderModel; geometry: GeometryTrack; qpos: Float32Array }
 
-const INPUT_WHEEL_JUMP = 1, INPUT_THIRD_PERSON = 2, INPUT_PRESENT = 4;
+/** Older takes set INPUT_LEGACY_WHEEL_JUMP for a knife wheel jump; it reads back as a pressed jump. */
+const INPUT_LEGACY_WHEEL_JUMP = 1, INPUT_THIRD_PERSON = 2, INPUT_PRESENT = 4, INPUT_RESET = 8;
 const STATE_GROUNDED = 1, STATE_DUCKED = 2, STATE_THIRD_PERSON = 4;
 const POSE_THIRD_PERSON = 1, POSE_VIEW = 2, POSE_VIEW_POSITION = 4, POSE_VIEW_ORIENTATION = 8, POSE_VIEW_FOV = 16;
 
@@ -187,7 +188,7 @@ export function validPlayerTracks(v: unknown, frames: number, tables: PlayerTabl
     if (!Number.isFinite(t[i]) || i > 0 && t[i] <= t[i - 1]) return false;
     const q = i * 4;
     if (Math.hypot(camOrientation[q], camOrientation[q + 1], camOrientation[q + 2], camOrientation[q + 3]) < 1e-8) return false;
-    if (inputBits[q + 3] & ~(INPUT_WHEEL_JUMP | INPUT_THIRD_PERSON | INPUT_PRESENT)) return false;
+    if (inputBits[q + 3] & ~(INPUT_LEGACY_WHEEL_JUMP | INPUT_THIRD_PERSON | INPUT_PRESENT | INPUT_RESET)) return false;
     const s = i * 10, b = i * 6, grab = stateBits[b + 4];
     for (let k = 0; k < 4; k++) if (!Number.isFinite(state[s + k])) return false;
     if (grab < -1 || grab >= tables.grabEntities.length || stateBits[b + 3] < 0 || stateBits[b + 3] >= PLAYER_TOOLS.length
@@ -273,7 +274,7 @@ export class PlayerTake {
   private readonly viewOrientation: [number, number, number, number] = [0, 0, 0, 1];
   private readonly grab: { entity: string; body: number; point: Float64Array; target: Float64Array } =
     { entity: '', body: 0, point: new Float64Array(3), target: new Float64Array(3) };
-  private readonly inputOut: PlayerInputFrame = { sequence: 0, yaw: 0, pitch: 0, forward: 0, side: 0, held: 0, pressed: 0, wheelJump: false, thirdPerson: false };
+  private readonly inputOut: PlayerInputFrame = { sequence: 0, yaw: 0, pitch: 0, forward: 0, side: 0, held: 0, pressed: 0, reset: false, thirdPerson: false };
 
   constructor(readonly meta: PlayerTakeMeta, readonly tracks: PlayerTracks, readonly tables: PlayerTables,
               readonly epochs: readonly PlayerEpoch[], readonly events: PlayerTakeEvent[]) {
@@ -487,8 +488,9 @@ export class PlayerTake {
     if (!(flags & INPUT_PRESENT)) { this.out.input = null; return; }
     const out = this.inputOut;
     out.forward = I[near * 4]; out.side = I[near * 4 + 1]; out.yaw = I[near * 4 + 2]; out.pitch = I[near * 4 + 3];
-    out.sequence = B[near * 4]; out.held = B[near * 4 + 1]; out.pressed = B[near * 4 + 2];
-    out.wheelJump = !!(flags & INPUT_WHEEL_JUMP); out.thirdPerson = !!(flags & INPUT_THIRD_PERSON);
+    out.sequence = B[near * 4]; out.held = B[near * 4 + 1];
+    out.pressed = B[near * 4 + 2] | (flags & INPUT_LEGACY_WHEEL_JUMP ? PLAYER_BUTTON.jump : 0);
+    out.reset = !!(flags & INPUT_RESET); out.thirdPerson = !!(flags & INPUT_THIRD_PERSON);
     this.out.input = out;
   }
 
@@ -682,7 +684,7 @@ export class PlayerTakeRecorder {
     if (input) {
       I[o] = input.forward; I[o + 1] = input.side; I[o + 2] = input.yaw; I[o + 3] = input.pitch;
       IB[bits] = input.sequence; IB[bits + 1] = input.held; IB[bits + 2] = input.pressed;
-      IB[bits + 3] = INPUT_PRESENT | (input.wheelJump ? INPUT_WHEEL_JUMP : 0) | (input.thirdPerson ? INPUT_THIRD_PERSON : 0);
+      IB[bits + 3] = INPUT_PRESENT | (input.reset ? INPUT_RESET : 0) | (input.thirdPerson ? INPUT_THIRD_PERSON : 0);
     } else { I.fill(0, o, o + 4); IB.fill(0, bits, bits + 4); }
     o = c.motion.reserve(6);
     const M = c.motion.buf;
