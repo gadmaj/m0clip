@@ -1,7 +1,7 @@
 /** Consumer regression: deliberate head intent, native geometry, launch precedence and recovery.
  * BASE_URL=<immutable candidate> PLAYWRIGHT_MODULE=<playwright> node scripts/test_head_preferences.cjs
  * HEADLESS=0 CHROME_EXECUTABLE=/usr/bin/google-chrome DISPLAY=:<private Xvfb> enables headed QA.
- * Only response instrumentation exposes App; rendering, assets and worker failures remain real.
+ * The release chunk stays byte-identical: the real App is attached through CDP; rendering, assets and worker failures remain real.
  */
 'use strict';
 const assert = require('node:assert/strict');
@@ -9,7 +9,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const { launchScene } = require('./launch-scene.cjs');
-const exposeApp = require('./expose-app.cjs');
+const { readyApp, attachApp } = require('./attach-ready-app.cjs');
 const base = process.env.BASE_URL || 'http://127.0.0.1:5176';
 const timeout = 240000;
 const ghostURL = '**/assets/source-robots/neotokyo-girlbot/girlbot_head.glb';
@@ -33,8 +33,7 @@ async function picturedChoice(page, id, value) {
   await dialog.waitFor({ state: 'hidden' });
 }
 async function ready(page) {
-  await page.waitForFunction(() => window.__app?.lastFrame &&
-    document.querySelector('#overlay').classList.contains('hidden'), null, { timeout });
+  await readyApp(page, { timeout });
 }
 async function enter(page) {
   await page.waitForFunction(() => {
@@ -95,10 +94,6 @@ async function fixture(browser, heads = {}) {
   page.on('console', m => { if (m.type() === 'error' && /shader|WebGLProgram|context lost/i.test(m.text())) errors.push(m.text()); });
   page.on('request', r => { if (r.url().includes('/source-robots/')) requests.push(new URL(r.url()).pathname); });
   page.on('response', r => { if (r.status() >= 400) failed.push({ url: new URL(r.url()).pathname, status: r.status() }); });
-  await page.route('**/{src/main.ts*,assets/main-*.js}', async route => {
-    const response = await route.fetch();
-    await route.fulfill({ response, body: exposeApp(await response.text()) });
-  });
   await page.bringToFront();
   return { context, page, errors, requests, failed };
 }
@@ -177,7 +172,7 @@ async function load(page, terrain = 'flat', character) {
       await page.route(ghostURL, route => route.fulfill({ status: 503, contentType: 'text/plain', body: 'native-head-503' }));
       await load(page);
       await page.locator('#launch-original').waitFor({ state: 'visible', timeout });
-      const before = await proof(page);
+      await attachApp(page, { timeout }); const before = await proof(page);
       await page.evaluate(() => { window.__sceneIdentity = window.__app; window.__rendererIdentity = window.__app.view.renderer; });
       assert.equal(before.applied, 'stock'); assert.equal(before.desired, 'ghost');
       assert.equal(await page.locator('#launch-enter').isDisabled(), true);
@@ -237,7 +232,7 @@ async function load(page, terrain = 'flat', character) {
       await page.goto(receiverURL.href, { waitUntil: 'domcontentloaded' });
       await page.locator('#launch-next').click(); await page.locator('#launch-load').click();
       await page.locator('#launch-original').waitFor({ state: 'visible', timeout });
-      await page.evaluate(() => {
+      await attachApp(page, { timeout }); await page.evaluate(() => {
         window.__sceneIdentity = window.__app;
         window.__rendererIdentity = window.__app.view.renderer;
         document.querySelector('#launch-original').addEventListener('pointerup', e => {

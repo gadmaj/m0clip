@@ -1,12 +1,11 @@
 /** Ghost restore waits for both simulation navigation and the actual map / native-body assets. */
-const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict');
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),{readyApp}=require('./attach-ready-app.cjs');
 (async()=>{
-  const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});
+  const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});
   try{
     const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
-    await page.route('**/{src/main.ts*,assets/main-*.js}',async r=>{const response=await r.fetch();await r.fulfill({response,body:require('./expose-app.cjs')(await response.text())});});
-    await page.route('**/assets/main-*.js',async r=>{const response=await r.fetch(),original=await response.text(),body=require('./expose-app.cjs')(original);await r.fulfill({response,body});});
-    await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain').then(() => require('./launch-scene.cjs').launchScene(page,{terrain:'flat'}));await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});
+    // The release chunk stays byte-identical; the real Ready App is attached through CDP.
+    await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain').then(() => require('./launch-scene.cjs').launchScene(page,{terrain:'flat'}));await readyApp(page);
     let release,held;const gate=new Promise(resolve=>release=resolve),intercepted=new Promise(resolve=>held=resolve);
     await page.route('**/assets/maps/nt_ghost_ctg/visual.glb',async r=>{held();await gate;await r.continue();});
     await page.evaluate(()=>{

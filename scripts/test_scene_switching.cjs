@@ -1,12 +1,10 @@
 /** Chromium: recorded-map review/export and restoration of the live world. */
-const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict');
+const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),{readyApp}=require('./attach-ready-app.cjs');
 const {unzipSync}=require('fflate');
-(async()=>{const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});try{
+(async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{
  const page=await browser.newPage({deviceScaleFactor:.5}),errors=[];page.on('pageerror',e=>errors.push(e.message));
- for(const pattern of ['**/src/main.ts*','**/assets/main-*.js'])await page.route(pattern,async route=>{
-  const response=await route.fetch();await route.fulfill({response,body:require('./expose-app.cjs')(await response.text())});
- });
- await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page,{terrain:'flat'}));await page.waitForFunction(()=>window.__app?.lastFrame&&document.getElementById('overlay').classList.contains('hidden'),null,{timeout:120000});
+ // The release chunk stays byte-identical; the real Ready App is attached through CDP.
+ await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page,{terrain:'flat'}));await readyApp(page);
  // Real Ghost assets / worker compilation: record there, leave, reopen the old take.
  await page.evaluate(()=>window.__app.changeTerrain('map:nt_ghost_ctg'));
  await page.waitForFunction(()=>window.__app.model?.terrain==='map:nt_ghost_ctg'&&window.__app.view.terrainObject&&document.getElementById('overlay').classList.contains('hidden'),null,{timeout:180000});

@@ -1,6 +1,7 @@
 /** Compare imported materials with actual noclip GLSL on nonunit/interpolated normals. */
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const {readyApp}=require('./attach-ready-app.cjs');
 const {fixture,png}=require('./source_material_fixture.cjs');
 const root=process.env.NOCLIP_REFERENCE||path.resolve('../noclip.website');
 const base=fs.readFileSync(path.join(root,'src/SourceEngine/Materials/MaterialBase.ts'),'utf8');
@@ -35,18 +36,18 @@ function materialFixture(config){
  return data;
 }
 (async()=>{
- const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});
+ const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});
  try{
   const page=await browser.newPage({deviceScaleFactor:.25}),errors=[];
   page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
-  const expose=source=>require('./expose-app.cjs')(source).replaceAll('this.renderLoop()','void 0');
-  for(const pattern of['**/src/main.ts*','**/assets/main-*.js'])await page.route(pattern,async route=>{const response=await route.fetch();await route.fulfill({response,body:expose(await response.text())})});
+  await require('./render-on-demand.cjs')(page);
   await page.addInitScript(()=>localStorage.setItem('ume-prefs',JSON.stringify({robot:'r1',terrain:'flat'})));
   await page.route('**/assets/source/flashlight.png',route=>route.fulfill({contentType:'image/png',body:png([64,64,64,255])}));
   let config=cases[0];await page.route('**/nt_ghost_ctg/visual.glb*',route=>route.fulfill({contentType:'model/gltf+json',body:JSON.stringify(materialFixture(config))}));
   await page.route('**/nt_ghost_ctg/manifest.json',route=>route.fulfill({json:{}}));
   for(const file of['lighting.json','lightstyles.json'])await page.route('**/nt_ghost_ctg/'+file,route=>route.fulfill({status:404,body:''}));
-  await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page));await page.waitForFunction(()=>window.__app?.lastFrame&&window.__app.view.flashlight.ready,null,{timeout:120000});
+  // The release chunk stays byte-identical; the real Ready App is attached through CDP.
+  await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page));await readyApp(page,{until:()=>window.__app.view.flashlight.ready});
   const results=[];
   for(config of cases){
    const result=await page.evaluate(async({config,native,projected,projectedSpecular})=>{

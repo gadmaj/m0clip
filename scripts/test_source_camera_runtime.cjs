@@ -1,20 +1,20 @@
 /** Chromium: geometry beyond 100m survives live, shot, PNG and animated glTF cameras. */
-const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),fs=require('node:fs');
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),fs=require('node:fs'),{readyApp}=require('./attach-ready-app.cjs');
 const positions=new Float32Array([-30,150,-30,30,150,-30,30,150,30,-30,150,-30,30,150,30,-30,150,30]);
 const fixture={asset:{version:'2.0'},scene:0,scenes:[{nodes:[0]}],nodes:[{mesh:0}],
  buffers:[{uri:'data:application/octet-stream;base64,'+Buffer.from(positions.buffer).toString('base64'),byteLength:positions.byteLength}],bufferViews:[{buffer:0,byteLength:positions.byteLength}],
  accessors:[{bufferView:0,componentType:5126,count:6,type:'VEC3',min:[-30,150,-30],max:[30,150,30]}],meshes:[{primitives:[{attributes:{POSITION:0},material:0}]}],
  materials:[{pbrMetallicRoughness:{baseColorFactor:[1,0,0,1]},extras:{sourceVertexLighting:1,sourceUnlit:true}}]};
-(async()=>{const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});try{
+(async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{
  const page=await browser.newPage({deviceScaleFactor:.25}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
- const expose=source=>require('./expose-app.cjs')(source).replaceAll('this.renderLoop()','void 0');
- for(const pattern of['**/src/main.ts*','**/assets/main-*.js'])await page.route(pattern,async route=>{const response=await route.fetch();await route.fulfill({response,body:expose(await response.text())})});
+ await require('./render-on-demand.cjs')(page);
  const manifest=JSON.parse(fs.readFileSync('public/assets/maps/nt_ghost_ctg/manifest.json'));delete manifest.props;delete manifest.visibility;
  await page.route('**/nt_ghost_ctg/visual.glb',route=>route.fulfill({contentType:'model/gltf+json',body:JSON.stringify(fixture)}));
  await page.route('**/nt_ghost_ctg/manifest.json',route=>route.fulfill({json:manifest}));
  for(const file of ['lighting.json','lightstyles.json'])await page.route('**/nt_ghost_ctg/'+file,route=>route.fulfill({status:404,body:''}));
  await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&map=nt_ghost_ctg&body=stock').then(() => require('./launch-scene.cjs').launchScene(page));
- await page.waitForFunction(()=>window.__app?.lastFrame&&window.__app.view.terrainObject&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:180000});
+ // The release chunk stays byte-identical; the real Ready App is attached through CDP.
+ await readyApp(page,{until:()=>window.__app.view.terrainObject,timeout:180000});
  const proof=await page.evaluate(()=>{
   const a=window.__app,v=a.view,camera=v.camera;v.setDisplay({...v.display,robot:false});
   camera.position.set(0,0,0);camera.up.set(0,0,1);v.controls.target.set(0,150,0);camera.lookAt(v.controls.target);camera.aspect=1.5;camera.fov=60;camera.updateProjectionMatrix();

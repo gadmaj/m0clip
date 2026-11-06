@@ -4,9 +4,22 @@
 const assert = require('node:assert/strict');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const { chooseVisual } = require('./choose-visual.cjs');
+const { readyApp } = require('./attach-ready-app.cjs');
+
+// The live noclip tick recomputes the flight target from the camera basis, so restored vectors
+// match like saved-view restoration (1e-6); up, lens and flight/physics settings stay exact.
+function assertSameCamera(actual, expected, message) {
+  const { position, target, orientation, ...exact } = actual;
+  const { position: expectedPosition, target: expectedTarget, orientation: expectedOrientation, ...expectedExact } = expected;
+  assert.deepEqual(exact, expectedExact, message);
+  for (const [key, values, wanted] of [['position', position, expectedPosition], ['target', target, expectedTarget], ['orientation', orientation, expectedOrientation]]) {
+    assert.equal(values.length, wanted.length, `${message}: ${key}`);
+    values.forEach((value, index) => assert.ok(Math.abs(value - wanted[index]) < 1e-6, `${message}: ${key}[${index}] ${value} != ${wanted[index]}`));
+  }
+}
 
 (async () => {
-  const browser = await chromium.launch({ headless: false, args: ['--no-sandbox', '--ozone-platform=x11'] });
+  const browser = await chromium.launch({ headless: process.env.HEADLESS === '1', executablePath: process.env.CHROMIUM_PATH, args: ['--no-sandbox', '--ozone-platform=x11'] });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     const errors = [];
@@ -14,15 +27,10 @@ const { chooseVisual } = require('./choose-visual.cjs');
     page.on('console', message => {
       if (message.type() === 'error' && /WebGLProgram|shader/.test(message.text())) errors.push(message.text());
     });
-    for (const pattern of ['**/src/main.ts*', '**/assets/main-*.js']) {
-      await page.route(pattern, async route => {
-        const response = await route.fetch();
-        await route.fulfill({ response, body: require('./expose-app.cjs')(await response.text()) });
-      });
-    }
     await page.goto((process.env.BASE_URL || 'http://127.0.0.1:5176') + '/?plain&body=stock');
     await require('./launch-scene.cjs').launchScene(page, { terrain: 'flat' });
-    await page.waitForFunction(() => window.__app?.lastFrame && document.getElementById('overlay').classList.contains('hidden'), null, { timeout: 120000 });
+    // The release chunk stays byte-identical; the real Ready App is attached through CDP.
+    await readyApp(page);
     const setupBaseline = await page.evaluate(() => {
       const app = window.__app;
       app.setNoclip(true);
@@ -94,7 +102,7 @@ const { chooseVisual } = require('./choose-visual.cjs');
         orientation: camera.quaternion.toArray(), up: camera.up.toArray(), fov: camera.fov,
         noclip: app.noclip, speed: app.flight.speed, hover: app.flight.hover };
     });
-    assert.deepEqual(escapedCamera, setupBaseline, 'Escape restores the exact live camera, not the static shot preview');
+    assertSameCamera(escapedCamera, setupBaseline, 'Escape restores the exact live camera, not the static shot preview');
     const setupRestored = await page.evaluate(() => {
       const app = window.__app;
       app.openExport('video');
@@ -109,7 +117,7 @@ const { chooseVisual } = require('./choose-visual.cjs');
     });
     assert.equal(setupRestored.preparing, true, 'The consumer regression exercises pending real visual preparation');
     assert.equal(setupRestored.setupOpen, false, 'Recording closes static setup and cannot reopen it during preparation');
-    assert.deepEqual(setupRestored.restored, setupBaseline, 'Recording starts from the restored presented live camera');
+    assertSameCamera(setupRestored.restored, setupBaseline, 'Recording starts from the restored presented live camera');
     assert.deepEqual(setupRestored.shot, liveShot, 'Beginning recording preserves pre-record output shot settings');
     await page.waitForFunction(() => window.__app.rec?.frames >= 10, null, { timeout: 120000 });
     await page.evaluate(() => window.__app.openExport('video'));
@@ -192,7 +200,7 @@ const { chooseVisual } = require('./choose-visual.cjs');
       app.openExport('video');
       return restored;
     });
-    assert.deepEqual(reviewRestored, reviewBaseline, 'Leaving review restores the exact live camera and flight/physics settings');
+    assertSameCamera(reviewRestored, reviewBaseline, 'Leaving review restores the exact live camera and flight/physics settings');
     assert.equal(await root.getByRole('button', { name: 'Render video', exact: true }).isDisabled(), true);
     assert.deepEqual(await page.evaluate(() => ({ ...window.__app.shot })), liveShot, 'leaving review restores the live shot');
     assert.deepEqual(await page.evaluate(() => {
