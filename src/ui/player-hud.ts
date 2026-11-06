@@ -215,8 +215,8 @@ export class PlayerHud {
   private renderContext() {
     const { locked, tool, holding, spawnLabel } = this.state;
     const text = this.notice || (!locked ? ''
-      : tool === 'knife' ? 'F Inspect · Wheel ↓ Jump'
-      : tool === 'physgun' ? holding ? 'Wheel Nearer / farther' : ''
+      : tool === 'knife' ? 'F Inspect'
+      : tool === 'physgun' ? holding ? 'Alt+Wheel Nearer / farther' : ''
       : tool === 'spawn' ? spawnLabel ? `${spawnLabel} · Q Change robot` : 'Q Choose robot'
       : '');
     if (this.context.textContent !== text) this.context.textContent = text;

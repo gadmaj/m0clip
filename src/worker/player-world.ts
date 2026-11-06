@@ -235,7 +235,6 @@ export class PlayerWorld {
   private held = 0;
   private prevHeld = 0;
   private pulse = 0;
-  private wheelJump = false;
   private thirdPerson = false;
 
   private available: PlayerTool[] = [];
@@ -324,7 +323,9 @@ export class PlayerWorld {
     this.knife = knife;
     const requested: readonly PlayerTool[] = tools.tools ?? ['physgun', 'spawn', 'knife'];
     this.available = [...new Set(requested)].filter(t => t === 'physgun' || t === 'spawn' || (t === 'knife' && knife !== null));
-    if (!this.available.includes(this.tool)) this.tool = 'none';
+    // A new world starts with its first tool out (the physics gun by default); a tool that is still
+    // available is kept across map changes.
+    if (!this.available.includes(this.tool)) this.tool = this.available[0] ?? 'none';
     this.nextKnife = this.simTime;
     this.knifeHitAt = -1;
     this.simFrame = this.makeSimFrame();
@@ -393,8 +394,9 @@ export class PlayerWorld {
     this.forward = Math.max(-1, Math.min(1, forward));
     this.side = Math.max(-1, Math.min(1, side));
     this.held = held;
+    // A release frame also drops presses the ticks have not simulated yet.
+    if (frame.reset) this.pulse = 0;
     this.pulse |= pressed;
-    if (frame.wheelJump && this.tool === 'knife') this.wheelJump = true;
     this.thirdPerson = frame.thirdPerson;
   }
 
@@ -407,7 +409,6 @@ export class PlayerWorld {
     if (tool !== this.tool) {
       this.releaseGrab();
       this.knifeHitAt = -1;
-      this.wheelJump = false;
       this.pulse &= ~(PLAYER_BUTTON.attack | PLAYER_BUTTON.attack2);
       this.tool = tool;
     }
@@ -450,7 +451,6 @@ export class PlayerWorld {
 
   private clearInput() {
     this.forward = this.side = this.held = this.prevHeld = this.pulse = 0;
-    this.wheelJump = false;
   }
 
   postStatus() {
@@ -522,12 +522,13 @@ export class PlayerWorld {
 
   private async tick(scene: PlayerScene) {
     const pulse = this.pulse, held = this.held;
-    let buttons = held | pulse;
+    const buttons = held | pulse;
     const pressed = pulse | (held & ~this.prevHeld);
-    if (this.wheelJump && this.tool === 'knife') buttons |= PLAYER_BUTTON.jump;
     this.pulse = 0;
-    this.wheelJump = false;
     this.prevHeld = held;
+    // A jump pressed since the last tick (Space or a wheel click) is a new press even if that tick
+    // also jumped: the button went up in between. Held Space alone keeps its edge and never rejumps.
+    if (pressed & PLAYER_BUTTON.jump) this.move.oldButtons &= ~PLAYER_BUTTON.jump;
 
     const cmd = this.cmd;
     cmd.yaw = this.yaw; cmd.forward = this.forward; cmd.side = this.side; cmd.buttons = buttons;
