@@ -33,7 +33,7 @@ import { GMOD_MOVE_PROFILE } from './player/movement';
 import { PLAYER_BUTTON, type PlayerInputFrame, type PlayerSimFrame, type PlayerTool, type SceneMode } from './player/types';
 import { playerGameContent, studioBodyPath } from './player/content-session';
 import type { LocalGameContent } from './player/assets/local-content';
-import type { PlayerBodySource, PlayerView } from './render/player';
+import { isDefaultViewModelPath, type PlayerBodySource, type PlayerView } from './render/player';
 import { decodeGoldSrcScene, type GoldSrcSource } from './render/characters/goldsrc';
 import { decodePmodelId, loadPmodel, pmodelId, type PmodelRef } from './characters/pmodels';
 import { SPECS } from './robots';
@@ -587,7 +587,11 @@ class App {
       discardPreparedPmodelCharacters();
       storageConsent.sceneEntered();
       // Enter scene is the trusted gesture that may capture the mouse.
-      if (this.player) { this.player.input.setEnabled(true); this.player.input.requestLock(); }
+      if (this.player) {
+        this.player.input.setEnabled(true);
+        this.player.input.requestLock();
+        this.reportPlayerViewModelError(this.player.input.tool);
+      }
     });
     launch.onFailure(() => {
       this.send({ t: 'loadingFinished', generation: launch.loadingId });
@@ -819,7 +823,7 @@ class App {
         // A Player world changes maps by compiling a new world; the worker keeps the old one until it
         // succeeds, so once sent the change cannot be withdrawn. A recording ends with its map.
         if(this.playerRec)this.stopRecording('Stopped when the map changed.');
-        pending.committing=true;onCommit?.();this.playerLookPending=true;
+        pending.committing=true;onCommit?.();
         this.worker.postMessage({t:'init',mode:'player',terrain,localMap:source?.payload,playerTools:PLAYER_RUNTIME_TOOLS});
       }else this.worker.postMessage({t:'terrain',terrain,robot,request:id,localMap:source?.payload});
       await promise;
@@ -961,8 +965,7 @@ class App {
       tool: tool => {
         this.playerToolPending = true;
         this.send({ t: 'playerTool', tool, request: ++this.playerToolRequest });
-        const failed = this.playerViewModelErrors.get(tool);
-        if (failed) hud.showNotice(`Imported viewmodel unavailable · ${failed}`);
+        this.reportPlayerViewModelError(tool);
       },
       unavailable: tool => hud.unavailable(tool),
       inspect: () => {
@@ -980,6 +983,11 @@ class App {
     hud.setMode('player');
     hud.setSpawnRobots(SPAWN_ROBOTS, null);
     this.player = { input, hud };
+  }
+
+  private reportPlayerViewModelError(tool: PlayerTool) {
+    const failed = this.playerViewModelErrors.get(tool);
+    if (failed) this.player?.hud.showNotice(`Imported viewmodel unavailable · ${failed}`);
   }
 
   /** Change-driven HUD state; nothing is allocated per frame. */
@@ -1025,6 +1033,7 @@ class App {
     this.playerClock = m.clock;
     // Output setup previews a static shot camera, which must not carry the player's view model.
     view.showViewModel = !this.dialog.isOpen || this.shot.mode === 'viewport';
+    view.showBody = !view.showViewModel;
     const presentation = view.present(frame, m.clock, delta);
     const rec = this.playerRec;
     if (!rec) return;
@@ -1720,6 +1729,12 @@ class App {
       .catch(error => { if (!this.timeline.isOpen && this.view.getHeadVisual() === head) this.showOverlay(`Head visual could not load: ${error instanceof Error ? error.message : error}`, 'error'); });
     this.followZ = this.model?.mode === 'player' ? PLAYER_FOLLOW_Z : this.model?.robot?.startsWith("go2") ? 0.35 : 0.7;
     if (live) this.restoreWorkspaceCamera(live.camera);
+    const playerView = this.view.player;
+    if (playerView) {
+      playerView.showViewModel = true;
+      playerView.showBody = false;
+      if (this.playerFrame && this.lastFrame) playerView.present(this.playerFrame, this.playerClock ?? 0, 0);
+    }
     this.flight.setActive(this.noclip);
     document.getElementById('flight-hud')!.hidden = !this.noclip;
     this.send({ t: "pause", on: false });
@@ -1878,6 +1893,7 @@ class App {
       // The view model belongs to the player's own camera: the recorded view, or a shot that replays it.
       player.showViewModel = this.exporting ? this.shot.mode === 'viewport'
         : this.timeline.mode === 'recorded' || this.timeline.mode === 'shot' && this.shot.mode === 'viewport';
+      player.showBody = !player.showViewModel;
       player.apply(pose.player, pose.presentation, (take.meta.clockStart ?? 0) + t);
     }
     const base = take.basePosAt(t);
@@ -1985,6 +2001,7 @@ class App {
 
   private async loadPlayerActors(view: PlayerView, actors: PlayerActors, signal: AbortSignal): Promise<void> {
     const { body: id, content, views } = actors;
+    const recorded = actors !== this.playerLiveActors;
     let body: PlayerBodySource | null = null;
     if (id !== null) {
       if (decodePmodelId(id)) body = (await this.playerBodySource(id, null)).source;
@@ -1992,13 +2009,20 @@ class App {
       else throw new Error(`${id} comes from game content that isn't attached.`);
     }
     signal.throwIfAborted();
-    // A failed imported tool keeps the bundled model; the failure is still reported when equipped.
+    // Live tools can use the bundled model after a failed import; recorded native poses cannot.
     this.playerViewModelErrors.clear();
-    await Promise.all([view.setBody(body, signal), ...PLAYER_TOOL_SLOTS.map(tool => {
-      const path = views[tool];
-      return view.setViewModel(tool, path && content ? { content, path } : null, signal).catch((error: unknown) => {
-        if (!signal.aborted) this.playerViewModelErrors.set(tool, `${path}: ${error instanceof Error ? error.message : String(error)}`);
-      });
+    await Promise.all([view.setBody(body, signal), ...PLAYER_TOOL_SLOTS.map(async tool => {
+      const path = views[tool], native = path && !isDefaultViewModelPath(path);
+      if (native && !content) throw new Error(`${path} comes from game content that isn't attached.`);
+      try {
+        await view.setViewModel(tool, native && content ? { content, path, onError: recorded ? 'clear' : 'default' } : null, signal);
+      } catch (error) {
+        if (!signal.aborted) {
+          this.playerViewModelErrors.set(tool, `${path}: ${error instanceof Error ? error.message : String(error)}`);
+          if (!recorded && !launch.active && this.player?.input.tool === tool) this.reportPlayerViewModelError(tool);
+        }
+        if (recorded || signal.aborted) throw error;
+      }
     })]);
   }
 
@@ -2465,6 +2489,8 @@ class App {
         if (this.rec) this.stopRecording("Stopped when the scene was rebuilt.");
         if(this.pendingMap&&m.desc.terrain===this.pendingMap.terrain){
           const pending=this.pendingMap;this.pendingMap=null;
+          // Only the new world's model can arm spawn-angle adoption; old-world frames keep arriving during compilation.
+          if (m.desc.mode === 'player') this.playerLookPending = true;
           if(this.timeline.isOpen)pending.stage?.dispose();
           else{pending.stage?.commit();this.mapVisualTerrain=pending.terrain;++this.mapVisualGeneration;document.getElementById('map-loading')!.hidden=true;}
           this.liveMapSource=pending.source;
