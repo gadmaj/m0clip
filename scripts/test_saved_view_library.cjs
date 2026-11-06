@@ -1,11 +1,11 @@
 /** Chromium: searchable view library, editing, reversible deletion and storage failures. */
-const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),attachReadyApp=require('./attach-ready-app.cjs');
+const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),{readyApp}=require('./attach-ready-app.cjs');
 (async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{
  const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:1}),errors=[];page.on('pageerror',e=>errors.push(e.message));
  await require('./render-on-demand.cjs')(page);await page.addInitScript(()=>localStorage.setItem('ume-prefs',JSON.stringify({robot:'r1',terrain:'flat'})));
  const base=process.env.BASE_URL||'http://127.0.0.1:5176';
  // The release chunk stays byte-identical; the real Ready App is attached through CDP after launch.
- const ready=async()=>{await page.waitForFunction(()=>document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});await attachReadyApp(page.context(),page);await page.waitForFunction(()=>window.__app?.lastFrame,null,{timeout:120000});};
+ const ready=()=>readyApp(page);
  // Compact layouts show one advanced panel at a time; wide layouts may keep Scene collapsed.
  const showScene=async()=>{const compact=page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}),expand=page.getByRole('button',{name:'Expand Scene panel',exact:true});if(await compact.isVisible())await compact.click();else if(await expand.isVisible())await expand.click();};
  await page.goto(base+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await ready();

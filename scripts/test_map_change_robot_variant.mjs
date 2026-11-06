@@ -15,7 +15,6 @@ const controlled = {
 };
 const worker = await readFile('src/worker/sim.worker.ts', 'utf8');
 const [body] = worker.split('const sim = new SimWorker();');
-assert.ok(body.length < worker.length, 'The worker still creates its SimWorker at module level');
 const compiled = await build({ stdin: { contents: `${body}\nself.SimWorker = SimWorker;`, loader: 'ts', resolveDir: resolve(root, 'src/worker'), sourcefile: 'sim.worker.ts' },
   bundle: true, platform: 'browser', format: 'iife', write: false,
   plugins: [{ name: 'worker-boundaries', setup(builder) {

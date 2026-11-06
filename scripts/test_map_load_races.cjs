@@ -1,6 +1,7 @@
 /** Chromium regression: concurrent loads of one map source retain only the current scene. */
 const assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const {readyApp}=require('./attach-ready-app.cjs');
 const {buildSync}=require('esbuild');
 const pngModule={exports:{}};
 new Function('module','exports','require',buildSync({entryPoints:['src/record/png.ts'],bundle:true,platform:'node',format:'cjs',write:false}).outputFiles[0].text)(pngModule,pngModule.exports,require);
@@ -18,12 +19,9 @@ function fixture(id){
   textures:[{source:0},{source:1}],images:[{uri:'base-'+id+'.png'},{uri:'frame-'+id+'.png'}]};
 }
 (async()=>{
- const browser=await chromium.launch({headless:false,executablePath:process.env.CHROMIUM_PATH||undefined,args:['--no-sandbox','--ozone-platform=x11']});
+ const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH||undefined,args:['--no-sandbox','--ozone-platform=x11']});
  try{
   const page=await browser.newPage({deviceScaleFactor:.25}),errors=[];page.on('pageerror',e=>errors.push(e.message));
-  for(const pattern of ['**/src/main.ts*','**/assets/main-*.js'])await page.route(pattern,async route=>{
-   const response=await route.fetch();await route.fulfill({response,body:require('./expose-app.cjs')(await response.text())});
-  });
   await page.addInitScript(()=>localStorage.setItem('ume-prefs',JSON.stringify({robot:'r1',terrain:'flat'})));
   if(process.env.DIRECT_SCENE){
    await page.route('**/__map-race-test',route=>route.fulfill({contentType:'text/html',body:'<style>html,body,#view{width:100%;height:100%;margin:0}</style><div id="view"></div><script type="module">import {SceneView} from "/src/render/scene.ts";import {mapSource} from "/src/maps/source.ts";window.__app={view:new SceneView(document.querySelector("#view")),sourceForTerrain:mapSource};</script>'}));
@@ -31,7 +29,8 @@ function fixture(id){
   }else{
    await page.goto(base+'/?plain&body=stock');
    await require('./launch-scene.cjs').launchScene(page);
-   await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});
+   // The release chunk stays byte-identical; the real Ready App is attached through CDP.
+   await readyApp(page);
   }
   let request=0,holdWorld=false,holdFrame=false,fail=false,rejectCurrent=false,held,notifyHeld;
   let waiting=new Promise(resolve=>notifyHeld=resolve);

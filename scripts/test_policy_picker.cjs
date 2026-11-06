@@ -1,7 +1,7 @@
 /** Chromium: policy gallery retains canonical checkpoints, search and input isolation. */
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert = require('node:assert/strict');
-const attachReadyApp = require('./attach-ready-app.cjs');
+const { readyApp } = require('./attach-ready-app.cjs');
 
 (async () => {
   const browser = await chromium.launch({
@@ -15,9 +15,8 @@ const attachReadyApp = require('./attach-ready-app.cjs');
     page.on('pageerror', error => errors.push(error.message));
     await page.goto((process.env.BASE_URL || 'http://127.0.0.1:5176') + '/?plain&body=stock');
     await require('./launch-scene.cjs').launchScene(page, { terrain: 'flat', controls: true });
-    await attachReadyApp(page.context(), page);
-    await page.waitForFunction(() => window.__app?.lastFrame &&
-      document.getElementById('overlay').classList.contains('hidden'), null, { timeout: 120000 });
+    // The release chunk stays byte-identical; the real Ready App is attached through CDP.
+    await readyApp(page);
 
     const policy = page.locator('#policy-trigger');
     const gallery = page.locator('dialog[data-visual-picker="policy"]');

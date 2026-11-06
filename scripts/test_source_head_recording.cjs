@@ -5,14 +5,15 @@
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert=require('node:assert/strict');
 const {chooseVisual}=require('./choose-visual.cjs');
+const {readyApp}=require('./attach-ready-app.cjs');
 (async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS === '1',...(process.env.CHROME_EXECUTABLE?{executablePath:process.env.CHROME_EXECUTABLE}:{}),args:['--no-sandbox','--ozone-platform=x11']});try{const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:process.env.LOW_DPR ? 0.5 : 1});const errors=[];page.on('pageerror',e=>{errors.push(String(e));console.error('Head fixture browser error:',String(e))});
 page.on('framenavigated',frame=>{if(frame===page.mainFrame())console.log('Head fixture navigation:',frame.url())});
 page.on('response',response=>{if(response.status()>=400)console.error('Head fixture HTTP:',response.status(),response.url())});
-await page.route('**/{src/main.ts*,assets/main-*.js}',async r=>{const response=await r.fetch();await r.fulfill({response,body:require('./expose-app.cjs')(await response.text())});});
 // Keep this native-head export regression independent of the fresh default map;
 // GLB export always includes terrain, even when its optional floor plane is off.
 console.log('Head fixture: launching real scene');
-await page.goto(`${process.env.BASE_URL || 'http://127.0.0.1:5176'}/?plain`).then(() => require('./launch-scene.cjs').launchScene(page, { terrain: 'flat', controls: true }));await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});
+// The release chunk stays byte-identical; the real Ready App is attached through CDP.
+await page.goto(`${process.env.BASE_URL || 'http://127.0.0.1:5176'}/?plain`).then(() => require('./launch-scene.cjs').launchScene(page, { terrain: 'flat', controls: true }));await readyApp(page);
 console.log('Head fixture: scene ready');
 await page.getByText('Robot appearance',{exact:true}).click();const head=page.locator('#source-head-visual-trigger');
 const gate=Promise.withResolvers(),started=Promise.withResolvers();
@@ -92,7 +93,7 @@ await page.evaluate(()=>window.__app.closeReview());
 await page.waitForFunction(()=>window.__app.view.getSourceHead()==='stock');
 await page.reload();
 await require('./launch-scene.cjs').launchScene(page, { controls: true });
-await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});
+await readyApp(page);
 assert.equal(await page.evaluate(()=>window.__app.view.getSourceHead()),'stock');
 assert.deepEqual(errors,[]);
 console.log(JSON.stringify({takeProof,glbProof,pngProof,oldProof,stockRestored:true,reloadPreference:'stock',errors}));

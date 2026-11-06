@@ -2,7 +2,7 @@
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const assert=require('node:assert/strict');
 const {chooseVisual}=require('./choose-visual.cjs');
-const attachReadyApp=require('./attach-ready-app.cjs');
+const {readyApp}=require('./attach-ready-app.cjs');
 (async()=>{
   const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});
   const errors=[];
@@ -13,7 +13,7 @@ const attachReadyApp=require('./attach-ready-app.cjs');
   }
   const base=process.env.BASE_URL||'http://127.0.0.1:5176';
   // The release chunk stays byte-identical; the real Ready App is attached through CDP after launch.
-  async function ready(page){await page.waitForFunction(()=>document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});await attachReadyApp(page.context(),page);await page.waitForFunction(()=>window.__app?.lastFrame,null,{timeout:120000});}
+  const ready=page=>readyApp(page);
   async function restored(page){await page.waitForFunction(()=>!window.__app.pendingViewRestore,null,{timeout:120000});}
   async function matches(page,view){
     const actual=await page.evaluate(()=>window.__app.captureView());

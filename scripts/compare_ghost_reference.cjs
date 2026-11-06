@@ -12,6 +12,7 @@ const { createInterface } = require('node:readline');
 const { build } = require('esbuild');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const shaderDiagnostics = require('./source_reflection_diagnostics.cjs');
+const { readyApp } = require('./attach-ready-app.cjs');
 
 const reference = path.resolve(process.env.NOCLIP_REFERENCE || '../noclip.website');
 const output = path.resolve(process.env.GHOST_COMPARISON_OUTPUT || path.join(os.homedir(), '.local/state/unitree-renderer/comparison'));
@@ -37,11 +38,6 @@ async function main() {
     const diagnosticMaterial = process.env.GHOST_DIAGNOSTIC_MATERIAL;
     const diagnosticShader = process.env.GHOST_SHADER_DIAGNOSTIC;
     if (diagnosticShader) assert.ok(shaderDiagnostics[diagnosticShader], 'Unknown shader diagnostic');
-    const patchCandidate = body => {
-        if (!diagnosticShader) return body;
-        if(shaderDiagnostics[diagnosticShader].flatBump)body=body.replace('bump = texture2D(sourceEffectNormal, vSourceEffectUv);','bump = vec4(.31,.63,.87,1.);');
-        return body.replace('return result + specular * sourceExposure;', `return ${shaderDiagnostics[diagnosticShader].app};`);
-    };
     await build({ entryPoints: ['scripts/ghost_reference_browser.ts'], bundle: true, format: 'esm', outfile: bundle,
         tsconfig: path.join(reference, 'tsconfig.json'), loader: { '.png': 'dataurl' },
         alias: { noclip: path.join(reference, 'src'), 'noclip-rust-support': path.join(reference, 'rust/pkg/index.js'),
@@ -68,7 +64,7 @@ async function main() {
             server.once('exit', code => reject(new Error(`Reference transport exited: ${code}`)));
             server.once('error', reject);
         });
-        browser = await chromium.launch({ headless: false, args: ['--no-sandbox','--ozone-platform=x11'] });
+        browser = await chromium.launch({ headless: process.env.HEADLESS === '1', executablePath: process.env.CHROMIUM_PATH, args: ['--no-sandbox','--ozone-platform=x11'] });
         const failures = [];
         const observe = (page, label) => {
             page.on('pageerror', error => failures.push(`${label}: ${error.stack || error}`));
@@ -79,20 +75,35 @@ async function main() {
         const captureApp = async (url, label) => {
             const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: .25 });
             observe(page, label);
-            for (const pattern of ['**/src/main.ts*', '**/assets/main-*.js']) await page.route(pattern, async route => {
-                const response = await route.fetch(), original = await response.text();
-                const body = patchCandidate(require('./expose-app.cjs')(original).replaceAll('this.renderLoop()', 'void 0'));
-                
-                await route.fulfill({ response, body });
-            });
-            if (diagnosticShader) await page.route('**/src/render/source-materials.ts*', async route => {
-                const response=await route.fetch(),original=await response.text(),body=patchCandidate(original);
-                assert.notEqual(body,original,'Source shader diagnostic must match the material module');
-                await route.fulfill({response,body});
-            });
+            await require('./render-on-demand.cjs')(page);
             await page.goto(url + '/?plain&map='+mapId+'&body=stock');
             await require('./launch-scene.cjs').launchScene(page);
-            await page.waitForFunction(() => window.__app?.lastFrame && window.__app.view.terrainObject && document.querySelector('#overlay').classList.contains('hidden'), null, { timeout: 180000 });
+            // The release chunk stays byte-identical; the real Ready App is attached through CDP.
+            await readyApp(page, { until: () => window.__app.view.terrainObject, timeout: 180000 });
+            if (diagnosticShader) {
+                // Rewrite the compiled Source effect shader of the loaded materials, not the release files.
+                const { app, flatBump } = shaderDiagnostics[diagnosticShader];
+                const patched = await page.evaluate(({ app, flatBump, name }) => {
+                    const materials = new Set();
+                    window.__app.view.scene.traverse(object => { for (const material of [object.material].flat()) if (material?.customProgramCacheKey?.().includes('-source-effects-')) materials.add(material); });
+                    window.__diagnosticShaderMisses = 0;
+                    for (const material of materials) {
+                        const previous = material.onBeforeCompile, key = material.customProgramCacheKey();
+                        material.onBeforeCompile = (shader, renderer) => {
+                            previous.call(material, shader, renderer);
+                            let source = shader.fragmentShader;
+                            if (flatBump) source = source.replace('bump = texture2D(sourceEffectNormal, vSourceEffectUv);', 'bump = vec4(.31,.63,.87,1.);');
+                            const next = source.replace('return result + specular * sourceExposure;', `return ${app};`);
+                            if (next === source) window.__diagnosticShaderMisses++;
+                            shader.fragmentShader = next;
+                        };
+                        material.customProgramCacheKey = () => `${key}-diagnostic-${name}`;
+                        material.needsUpdate = true;
+                    }
+                    return materials.size;
+                }, { app, flatBump: !!flatBump, name: diagnosticShader });
+                assert.ok(patched > 0, 'Source shader diagnostic must match the material module');
+            }
             const captures = [];
             for (const view of views) {
                 const result = await page.evaluate(async ({ view, diagnosticEnvmapScale, diagnosticMaterial, antialiasing, label }) => {
@@ -143,6 +154,7 @@ async function main() {
                 if (diagnosticEnvmapScale === 0) assert.ok(result.diagnosticMaterials>0,'Candidate diagnostic must change material parameters');
                 captures.push(result);
             }
+            if (diagnosticShader) assert.equal(await page.evaluate(() => window.__diagnosticShaderMisses), 0, 'Source shader diagnostic must match every compiled effect shader');
             await page.close();
             return captures;
         };

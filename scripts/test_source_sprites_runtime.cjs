@@ -1,10 +1,9 @@
 /** Actual Ghost sprites: original tint pixels, noclip distance fade, all cameras and cleanup. */
-const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict');
-(async()=>{const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});try{
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),{readyApp}=require('./attach-ready-app.cjs');
+(async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{
  const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
- await page.route('**/{src/main.ts*,assets/main-*.js}',async r=>{const response=await r.fetch();await r.fulfill({response,body:require('./expose-app.cjs')(await response.text())})});
- await page.route('**/assets/main-*.js',async r=>{const response=await r.fetch(),original=await response.text(),body=require('./expose-app.cjs')(original);await r.fulfill({response,body})});
- await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&map=nt_ghost_ctg&body=stock').then(() => require('./launch-scene.cjs').launchScene(page));await page.waitForFunction(()=>window.__app?.view.terrainObject&&window.__app.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:180000});
+ // The release chunk stays byte-identical; the real Ready App is attached through CDP.
+ await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&map=nt_ghost_ctg&body=stock').then(() => require('./launch-scene.cjs').launchScene(page));await readyApp(page,{until:()=>window.__app.view.terrainObject,timeout:180000});
  const proof=await page.evaluate(()=>{
   const v=window.__app.view,sprites=v.sourceSprites,chosen=sprites.find(s=>s.material.color.b<.6),camera=v.camera.clone();camera.up.set(0,1,0);camera.aspect=1;camera.fov=5;camera.updateProjectionMatrix();
   const display={...v.display};v.setDisplay({...display,robot:false});const visible=new Map();v.scene.traverse(o=>{if(o.isMesh){visible.set(o,o.visible);o.visible=o===chosen}});
