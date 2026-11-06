@@ -12,7 +12,6 @@ const fixture=await buildFixture({
   root:path.resolve(__dirname,'..'),
   source:`
     export { saveTake, loadTake } from './src/record/take';
-    export { exportGlb } from './src/record/export-blender';
     export { renderVideo } from './src/record/export-video';
     export { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     export { unzipSync } from 'fflate';
@@ -49,8 +48,14 @@ const takeProof=await page.evaluate(async()=>{const a=window.__app;const {saveTa
 console.log('Head fixture: native recording and ZIP passed');
 const glbProof=await page.evaluate(async()=>{
   const a=window.__app;
-  const {exportGlb}=window.HeadRecordingFixture;
-  const blob=await exportGlb(a.take,a.view,a.takeModel,{fps:10,t0:0,t1:Math.min(.4,a.take.duration),camera:null,floor:false});
+  // Export live objects through their release-owned Three instance, not the parsing fixture.
+  const previousRange=[a.timeline.rangeIn,a.timeline.rangeOut];let blob;
+  try{
+    a.timeline.rangeIn=0;a.timeline.rangeOut=Math.min(.4,a.take.duration);
+    blob=await a.dialog.host.glb(10,false,false);
+  }finally{
+    [a.timeline.rangeIn,a.timeline.rangeOut]=previousRange;
+  }
   const binary=await blob.arrayBuffer();
   const {GLTFLoader}=window.HeadRecordingFixture;
   const loaded=await new GLTFLoader().parseAsync(binary,'');

@@ -7,7 +7,6 @@ const fixture=await buildFixture({
   root:path.resolve(__dirname,'..'),
   source:`
     export { saveTake, loadTake } from './src/record/take';
-    export { exportGlb } from './src/record/export-blender';
     export { renderVideo } from './src/record/export-video';
     export { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     export { AnimationMixer, Matrix4, Vector3 } from 'three';
@@ -22,13 +21,21 @@ if(fixture.css)await page.addStyleTag({content:fixture.css});
 await page.getByText('Robot appearance',{exact:true}).click();const body=page.locator('#character-trigger');
 let release,requested;const gate=new Promise(r=>release=r),started=new Promise(r=>requested=r);await page.route('**/assets/source-robots/halflife2-dog/dog.glb',async r=>{requested();await gate;await r.continue()});await chooseVisual(page,'character','dog');await started;
 await page.getByRole('button',{name:'Record V',exact:true}).click();assert.equal(await body.isDisabled(),true);assert.deepEqual(await page.evaluate(()=>({starting:window.__app.recordStarting,recording:!!window.__app.rec,applied:window.__app.view.getBodyVisualState().applied})),{starting:true,recording:false,applied:'stock'});release();await page.waitForFunction(()=>window.__app.rec&&window.__app.view.getBodyVisualState().applied==='dog');await page.waitForTimeout(1200);await page.getByTitle('Stop recording and open the timeline (V)',{exact:true}).click();await page.waitForFunction(()=>window.__app.timeline.isOpen);assert.equal(await body.isDisabled(),true);
-const proof=await page.evaluate(async()=>{const a=window.__app,v=a.view,rig=v.sourceBody;const {saveTake,loadTake,exportGlb,GLTFLoader,renderVideo}=window.BodyRecordingFixture,THREE=window.BodyRecordingFixture;const saved=await loadTake(await(await saveTake(a.take)).arrayBuffer());
+const proof=await page.evaluate(async()=>{const a=window.__app,v=a.view,rig=v.sourceBody;const {saveTake,loadTake,GLTFLoader,renderVideo}=window.BodyRecordingFixture,THREE=window.BodyRecordingFixture;const saved=await loadTake(await(await saveTake(a.take)).arrayBuffer());
 const initial={frames:a.take.n,body:a.take.meta.appearance.sourceBody,savedBody:saved.meta.appearance.sourceBody,triangles:rig.meshes.reduce((n,m)=>n+m.geometry.index.count/3,0),bones:rig.bones.length,parts:rig.partNames(),stockVisible:v.geomMeshes.filter(m=>m?.userData.robotGeom&&m.visible).length};
 const displayBefore=v.getDisplay(),flashlightBefore=v.getFlashlight();
 const exportDisplay={...displayBefore,wireframe:true,characterWireframe:true,decals:false};
 v.setDisplay(exportDisplay);v.setFlashlight(true);
 const liveMaterials=rig.materials.map(({material})=>({material,wireframe:material.wireframe,map:material.map,normalMap:material.normalMap}));
-const blob=await exportGlb(a.take,v,a.takeModel,{fps:10,t0:0,t1:Math.min(.4,a.take.duration),camera:null,floor:false});const binary=await blob.arrayBuffer();window.__bodyExport=binary;const loaded=await new GLTFLoader().parseAsync(binary,'');const meshes=[];loaded.scene.traverse(o=>{if(o.isSkinnedMesh)meshes.push(o)});const mixer=new THREE.AnimationMixer(loaded.scene);mixer.clipAction(loaded.animations[0]).play();mixer.setTime(.2);loaded.scene.updateMatrixWorld(true);
+// Export live objects through their release-owned Three instance, not the parsing fixture.
+const previousRange=[a.timeline.rangeIn,a.timeline.rangeOut];let blob;
+try{
+  a.timeline.rangeIn=0;a.timeline.rangeOut=Math.min(.4,a.take.duration);
+  blob=await a.dialog.host.glb(10,false,false);
+}finally{
+  [a.timeline.rangeIn,a.timeline.rangeOut]=previousRange;
+}
+const binary=await blob.arrayBuffer();window.__bodyExport=binary;const loaded=await new GLTFLoader().parseAsync(binary,'');const meshes=[];loaded.scene.traverse(o=>{if(o.isSkinnedMesh)meshes.push(o)});const mixer=new THREE.AnimationMixer(loaded.scene);mixer.clipAction(loaded.animations[0]).play();mixer.setTime(.2);loaded.scene.updateMatrixWorld(true);
 const expected=rig.retarget.createPose();rig.retarget.fromRecorded(a.take.sampleGeometry([.2]),0,expected);
 const rootMatrix=new THREE.Matrix4().compose(expected.position,expected.quaternion,new THREE.Vector3().setScalar(rig.retarget.scale));const expectedWorld=[],up=new THREE.Matrix4().makeRotationX(-Math.PI/2);let poseError=0;
 for(let i=0;i<rig.retarget.native.bones.length;i++){const bone=rig.retarget.native.bones[i],local=new THREE.Matrix4().compose(new THREE.Vector3(...bone.position),expected.bones[i],new THREE.Vector3(1,1,1));const world=(bone.parent<0?rootMatrix:expectedWorld[bone.parent]).clone().multiply(local);expectedWorld.push(world);const matrix=up.clone().multiply(world);poseError=Math.max(poseError,...matrix.elements.map((v,j)=>Math.abs(v-meshes[0].skeleton.bones[i].matrixWorld.elements[j])));}
