@@ -167,10 +167,10 @@ export class Timeline {
     const seg = h("div", "dk-seg");
     seg.setAttribute("role", "radiogroup");
     seg.setAttribute("aria-label", "Viewport camera");
-    for (const [m, label, title] of [["free", "Free", "Orbit freely around the robot"],
+    for (const [m, label, title] of [["free", "Free", "Orbit around the player or robot"],
                                      ["recorded", "Recorded", "The camera as it moved while recording"],
                                      ["shot", "Shot", "Through the export camera, letterboxed to the output frame"]] as const) {
-      const b = tbtn(label, title, () => { this.setMode(m); this.host.viewMode(m); }, "");
+      const b = tbtn(label, title, () => this.host.viewMode(m), "");
       b.setAttribute("role", "radio");
       seg.append(b);
       this.modeBtns.set(m, b);

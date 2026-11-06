@@ -7,10 +7,21 @@ const MOVEMENT_KEYS: Readonly<Record<string, true>> = {KeyW: true, KeyA: true, K
 const TOOL_SLOTS = ['knife', 'physgun', 'spawn'] as const;
 const LOOK_DEGREES = .022 * 3;
 
-/** Chrome merges fast wheel clicks into one event; its legacy wheelDeltaY stays 120 per click. */
-function wheelNotches(event: WheelEvent): number {
-  const legacy = (event as WheelEvent & { wheelDeltaY?: number }).wheelDeltaY;
-  return typeof legacy === 'number' && legacy !== 0 ? Math.max(1, Math.round(Math.abs(legacy) / 120)) : 1;
+/** Signed wheel clicks, positive downward. Chrome merges fast clicks into one event; its legacy
+ * wheelDelta stays 120 per click. With Shift held (running), Chrome on Windows and Linux reports
+ * a vertical wheel on the horizontal axis. */
+function wheelClicks(event: WheelEvent): number {
+  const horizontal = event.deltaY === 0 && event.shiftKey;
+  const delta = horizontal ? event.deltaX : event.deltaY;
+  if (delta === 0) return 0;
+  const legacyEvent = event as WheelEvent & { wheelDeltaX?: number; wheelDeltaY?: number };
+  const legacy = horizontal ? legacyEvent.wheelDeltaX : legacyEvent.wheelDeltaY;
+  const clicks = typeof legacy === 'number' && legacy !== 0 ? Math.max(1, Math.round(Math.abs(legacy) / 120)) : 1;
+  return delta > 0 ? clicks : -clicks;
+}
+
+function mouseBit(button: number): number {
+  return button === 0 ? PLAYER_BUTTON.attack : button === 2 ? PLAYER_BUTTON.attack2 : 0;
 }
 
 export interface PlayerInputActions {
@@ -29,32 +40,38 @@ export interface PlayerInputActions {
   lockRequested(): void;
 }
 
-/** Owns Player input only. App's central keyboard gate calls key() after modal routing. */
+/** Owns Player input only. App's central keyboard gate calls key() after modal routing.
+ * Every change is sent once, in a microtask after the event that caused it, so controls do not
+ * wait for the next rendered frame. */
 export class PlayerInputController {
   private enabled = false;
   private dirty = false;
+  private flushQueued = false;
+  /** Something was sent since the last release frame: a press may still be queued in the worker
+   * even after a neutral frame, so only a release frame clears this. */
+  private live = false;
   private readonly keys = new Set<string>();
   private mouseButtons = 0;
   private pendingPressed = 0;
-  private pendingWheelJump = false;
   private available: readonly PlayerTool[] = [];
   private selected: PlayerTool = 'none';
   private holdingObject = false;
   private third = false;
   private readonly frame: PlayerInputFrame = {sequence: 0, yaw: 0, pitch: 0,
-    forward: 0, side: 0, held: 0, pressed: 0, wheelJump: false, thirdPerson: false};
+    forward: 0, side: 0, held: 0, pressed: 0, reset: false, thirdPerson: false};
 
   constructor(private readonly canvas: HTMLCanvasElement,
       private readonly actions: PlayerInputActions) {
     canvas.addEventListener('pointerdown', this.pointerDown);
-    window.addEventListener('pointerup', this.pointerUp);
+    canvas.addEventListener('mousedown', this.mouseDown);
+    window.addEventListener('mouseup', this.mouseUp);
     window.addEventListener('pointercancel', this.pointerCancel);
     window.addEventListener('mousemove', this.mouseMove);
     window.addEventListener('wheel', this.wheel, {passive: false});
-    window.addEventListener('contextmenu', this.contextMenu);
     document.addEventListener('pointerlockchange', this.lockChange);
     window.addEventListener('blur', this.blur);
     document.addEventListener('visibilitychange', this.visibility);
+    canvas.addEventListener('contextmenu', this.contextMenu);
   }
 
   get active() { return this.enabled; }
@@ -71,35 +88,46 @@ export class PlayerInputController {
       if (document.pointerLockElement === this.canvas) document.exitPointerLock();
     }
     this.enabled = enabled;
-    if (enabled) this.dirty = true;
+    if (enabled) this.changed();
   }
 
   setLook(yaw: number, pitch: number) {
     this.frame.yaw = ((yaw + 180) % 360 + 360) % 360 - 180;
     this.frame.pitch = Math.max(-89, Math.min(89, pitch));
-    this.dirty = true;
+    this.changed();
   }
 
+  /** The worker's tool list; it reports its own tool, so nothing is requested here. */
   setAvailableTools(tools: readonly PlayerTool[]) {
     this.available = tools;
-    if (!tools.includes(this.selected)) this.selectTool('none');
+    if (!tools.includes(this.selected)) this.confirmTool('none');
   }
 
   setHoldingObject(holding: boolean) { this.holdingObject = holding; }
 
+  /** The person's choice: asks the worker for the tool. */
   selectTool(tool: PlayerTool) {
     if (tool !== 'none' && !this.available.includes(tool)) {
       this.actions.unavailable(tool);
       return;
     }
     if (tool === this.selected) return;
+    this.adopt(tool);
+    this.actions.tool(tool);
+  }
+
+  /** Adopt the tool the worker reports without requesting it again. */
+  confirmTool(tool: PlayerTool) {
+    if (tool !== this.selected) this.adopt(tool);
+  }
+
+  /** A new tool starts with its buttons up; movement and a queued jump are kept. */
+  private adopt(tool: PlayerTool) {
     this.selected = tool;
-    this.pendingWheelJump = false;
     this.pendingPressed &= ~(PLAYER_BUTTON.attack | PLAYER_BUTTON.attack2);
     this.mouseButtons = 0;
     this.holdingObject = false;
-    this.dirty = true;
-    this.actions.tool(tool);
+    this.changed();
   }
 
   /** Call within Enter scene or the canvas's trusted pointer gesture. */
@@ -119,7 +147,7 @@ export class PlayerInputController {
     if (!down) {
       const had = this.keys.delete(code);
       if (code === 'KeyX') this.setThird(false);
-      if (had) this.dirty = true;
+      if (had) this.changed();
       return MOVEMENT_KEYS[code] === true || code === 'KeyX';
     }
     if (this.actions.blocked() || !this.locked) return false;
@@ -129,7 +157,7 @@ export class PlayerInputController {
       if (!this.keys.has(code)) {
         this.keys.add(code);
         if (code === 'Space') this.pendingPressed |= PLAYER_BUTTON.jump;
-        this.dirty = true;
+        this.changed();
       }
       event.preventDefault();
       return true;
@@ -149,10 +177,12 @@ export class PlayerInputController {
     return true;
   }
 
-  /** At most one changed sample per presentation frame; held input persists in the worker. */
+  /** Send the input if it changed. App also calls this every animation frame: while input is
+   * blocked it releases everything once. Held input persists in the worker between sends. */
   update() {
-    if (!this.enabled || !this.dirty) return;
+    if (!this.enabled) return;
     if (this.actions.blocked()) { this.reset(); return; }
+    if (!this.dirty) return;
     const keys = this.keys, frame = this.frame;
     frame.forward = Number(keys.has('KeyW')) - Number(keys.has('KeyS'));
     frame.side = Number(keys.has('KeyD')) - Number(keys.has('KeyA'));
@@ -161,49 +191,77 @@ export class PlayerInputController {
       | (keys.has('KeyC') ? PLAYER_BUTTON.duck : 0)
       | (keys.has('ShiftLeft') || keys.has('ShiftRight') ? PLAYER_BUTTON.run : 0);
     frame.pressed = this.pendingPressed;
-    frame.wheelJump = this.pendingWheelJump;
     frame.thirdPerson = this.third;
-    frame.sequence++;
-    this.actions.input(frame);
     this.pendingPressed = 0;
-    this.pendingWheelJump = false;
     this.dirty = false;
+    this.send();
   }
 
-  /** One release path for focus, lock, modal, review, scene and mode transitions. */
+  /** One release path for focus, lock, modal, review, scene and mode transitions. The worker drops
+   * held buttons and any press it has not simulated yet; nothing is sent if nothing was sent since
+   * the last release. */
   reset() {
     this.keys.clear();
     this.mouseButtons = 0;
     this.pendingPressed = 0;
-    this.pendingWheelJump = false;
     this.holdingObject = false;
     this.setThird(false);
-    this.frame.forward = this.frame.side = this.frame.held = this.frame.pressed = 0;
-    this.frame.wheelJump = this.frame.thirdPerson = false;
     this.dirty = false;
-    if (this.enabled) { this.frame.sequence++; this.actions.input(this.frame); }
+    const frame = this.frame;
+    frame.forward = frame.side = frame.held = frame.pressed = 0;
+    frame.thirdPerson = false;
+    if (!this.enabled || !this.live) return;
+    frame.reset = true;
+    this.send();
+    frame.reset = false;
+    this.live = false;
   }
+
+  private send() {
+    const frame = this.frame;
+    frame.sequence++;
+    this.actions.input(frame);
+    this.live ||= frame.forward !== 0 || frame.side !== 0 || frame.held !== 0 || frame.pressed !== 0 || frame.thirdPerson;
+  }
+
+  private changed() {
+    this.dirty = true;
+    if (this.flushQueued) return;
+    this.flushQueued = true;
+    queueMicrotask(this.flush);
+  }
+
+  private readonly flush = () => {
+    this.flushQueued = false;
+    this.update();
+  };
 
   private setThird(held: boolean) {
     if (held === this.third) return;
     this.third = held;
-    this.dirty = true;
+    this.changed();
     this.actions.thirdPerson(held);
   }
 
+  /** A left click captures the mouse; buttons count once it is captured. */
   private readonly pointerDown = (event: PointerEvent) => {
-    if (!this.enabled || this.actions.blocked()) return;
-    if (!this.locked) { this.requestLock(); return; }
-    const bit = event.button === 0 ? PLAYER_BUTTON.attack : event.button === 2 ? PLAYER_BUTTON.attack2 : 0;
+    if (event.button === 0 && this.enabled && !this.actions.blocked() && !this.locked) this.requestLock();
+  };
+  /** mousedown/mouseup, unlike pointerdown/pointerup, fire for a button pressed or released while
+   * another is held, so chorded clicks cannot leave one stuck down. */
+  private readonly mouseDown = (event: MouseEvent) => {
+    if (!this.locked || this.actions.blocked()) return;
+    const bit = mouseBit(event.button);
     if (!bit) return;
+    event.preventDefault();
+    if (this.mouseButtons & bit) return;
     this.mouseButtons |= bit;
     this.pendingPressed |= bit;
-    this.dirty = true;
-    event.preventDefault();
+    this.changed();
   };
-  private readonly pointerUp = (event: PointerEvent) => {
-    const bit = event.button === 0 ? PLAYER_BUTTON.attack : event.button === 2 ? PLAYER_BUTTON.attack2 : 0;
-    if (this.mouseButtons & bit) { this.mouseButtons &= ~bit; this.dirty = true; }
+  private readonly mouseUp = (event: MouseEvent) => {
+    const bit = mouseBit(event.button);
+    if (this.mouseButtons & bit) { this.mouseButtons &= ~bit; this.changed(); }
   };
   private readonly pointerCancel = () => { if (this.enabled) this.reset(); };
   private readonly mouseMove = (event: MouseEvent) => {
@@ -212,22 +270,26 @@ export class PlayerInputController {
       this.frame.pitch + event.movementY * LOOK_DEGREES);
   };
   private readonly wheel = (event: WheelEvent) => {
-    if (!this.locked || this.actions.blocked() || event.deltaY === 0) return;
+    if (!this.locked || this.actions.blocked()) return;
+    const clicks = wheelClicks(event);
+    if (clicks === 0) return;
     event.preventDefault();
-    const notches = wheelNotches(event), down = event.deltaY > 0;
-    if (this.selected === 'physgun' && this.holdingObject) {
-      this.actions.holdDistance(down ? -notches : notches);
-    } else if (this.selected === 'knife' && down) {
-      // Several clicks inside one tick still make one jump, as in Source.
-      this.pendingWheelJump = true;
-      this.dirty = true;
-    } else if (this.available.length) {
-      const choices = this.available, step = (down ? notches : -notches) % choices.length;
-      const at = choices.indexOf(this.selected);
-      this.selectTool(choices[(at + step + choices.length) % choices.length]);
+    if (event.altKey) {
+      // Alt+wheel sets the physics gun's reach: up pushes a held object farther.
+      if (this.selected === 'physgun' && this.holdingObject) this.actions.holdDistance(-clicks);
+    } else if (clicks > 0) {
+      // Down is a jump press with every tool. Clicks inside one tick make one jump, as in Source.
+      this.pendingPressed |= PLAYER_BUTTON.jump;
+      this.changed();
+    } else if (!this.holdingObject && this.available.length) {
+      // Up steps back through the tools; while an object is held it would drop it instead.
+      const choices = this.available, at = Math.max(0, choices.indexOf(this.selected));
+      this.selectTool(choices[((at + clicks) % choices.length + choices.length) % choices.length]);
     }
   };
-  private readonly contextMenu = (event: Event) => { if (this.locked) event.preventDefault(); };
+  /** The scene's right button is the secondary action, never the browser menu; other UI keeps it.
+   * While locked, every mouse event targets the canvas. */
+  private readonly contextMenu = (event: Event) => { if (this.enabled) event.preventDefault(); };
   private readonly lockChange = () => {
     if (!this.enabled) return;
     if (!this.locked) this.reset();
@@ -239,11 +301,12 @@ export class PlayerInputController {
   dispose() {
     this.setEnabled(false);
     this.canvas.removeEventListener('pointerdown', this.pointerDown);
-    window.removeEventListener('pointerup', this.pointerUp);
+    this.canvas.removeEventListener('mousedown', this.mouseDown);
+    window.removeEventListener('mouseup', this.mouseUp);
     window.removeEventListener('pointercancel', this.pointerCancel);
     window.removeEventListener('mousemove', this.mouseMove);
     window.removeEventListener('wheel', this.wheel);
-    window.removeEventListener('contextmenu', this.contextMenu);
+    this.canvas.removeEventListener('contextmenu', this.contextMenu);
     document.removeEventListener('pointerlockchange', this.lockChange);
     window.removeEventListener('blur', this.blur);
     document.removeEventListener('visibilitychange', this.visibility);

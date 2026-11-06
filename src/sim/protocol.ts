@@ -30,7 +30,7 @@ export type ToWorker =
   | { t: 'cancelTerrain' }
   | { t: "command"; cmd: Command }
   | { t: 'playerInput'; input: PlayerInputFrame }
-  | { t: 'playerTool'; tool: PlayerTool }
+  | { t: 'playerTool'; tool: PlayerTool; request: number }
   | { t: 'playerInspect' }
   | { t: 'playerWheel'; direction: number }   // signed wheel clicks: wheel up (positive) pushes a held object farther
   | { t: 'playerSpawnRobot'; robot: string }
@@ -162,6 +162,7 @@ export type FromWorker =
       spawnRobots: string[];
       /** Cumulative simulated seconds the real-time accumulator dropped because the worker fell behind. */
       lostTime?: number }
+  | { t: 'playerToolSettled'; request: number }
   | StatusMsg
   | InspectMsg
   | { t: "busy"; msg: string }

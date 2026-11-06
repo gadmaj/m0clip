@@ -44,10 +44,14 @@ Download anything you want to keep before clearing site data.
 On the character step, choose **Player** to walk a map yourself instead of
 driving a robot. Click the scene to capture the mouse; **Esc** releases it.
 
-- **W A S D** move, **Shift** runs, **C** crouches and **Space** jumps.
+The physics gun starts equipped. Physics and spawn guns include original
+first-person models and gloved hands; no game files are needed for these tools.
+
+- **W A S D** move, **Shift** runs, **C** crouches, and **Space** or scrolling
+  down jumps. Scrolling up selects the previous tool.
 - Hold **X** for third person.
 - **2** selects the physics gun. Hold the left button on a robot to pick it up;
-  scroll to move it nearer or farther.
+  hold **Alt** and scroll to move it nearer or farther.
 - **3** selects the spawn gun. Left-click places the robot chosen with **Q**;
   right-click removes the one under the crosshair. Only robots with an installed
   policy are offered.

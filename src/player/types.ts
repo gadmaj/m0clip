@@ -9,7 +9,8 @@ export interface PlayerInputFrame {
   side: number;
   held: number;
   pressed: number;
-  wheelJump: boolean;
+  /** Release frame: the worker also drops presses it has not simulated yet. */
+  reset: boolean;
   thirdPerson: boolean;
 }
 

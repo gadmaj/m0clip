@@ -412,7 +412,9 @@ class SimWorker {
   private async onPlayerMessage(world: PlayerWorld, m: ToWorker) {
     switch (m.t) {
       case 'playerInput': return world.input(m.input);
-      case 'playerTool': return world.selectTool(m.tool);
+      case 'playerTool':
+        try { return world.selectTool(m.tool); }
+        finally { post({ t: 'playerToolSettled', request: m.request }); }
       case 'playerWheel': return world.wheel(m.direction);
       case 'playerSpawnRobot': return world.selectSpawnRobot(m.robot);
       case 'playerUndo': return world.undo();

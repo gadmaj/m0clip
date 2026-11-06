@@ -1,9 +1,9 @@
 /** First-person view models from the person's own game files: the weapon model (and, for c_
  * models, the separate arms model bonemerged onto it by bone name, as Source's EF_BONEMERGE does)
  * animated by activity like CBaseCombatWeapon::SendWeaponAnim: draw on equip, idle when an
- * animation finishes, attack/inspect on request. Nothing is drawn for a tool without a real view
- * model. Behavioural reference: Source SDK basecombatweapon_shared.cpp / bone_merge_cache.cpp;
- * independent implementation. */
+ * animation finishes, attack/inspect on request. Tools without one use the bundled models in
+ * default-viewmodel.ts. Behavioural reference: Source SDK basecombatweapon_shared.cpp /
+ * bone_merge_cache.cpp; independent implementation. */
 import * as THREE from 'three';
 import { createStudioPose, StudioPoseSampler, type StudioModelData, type StudioPose } from '../../player/studio';
 import type { SourceMaterialLibrary } from '../../player/materials/library';
@@ -32,7 +32,26 @@ export function isViewModel(model: StudioModelData): boolean {
   return hasActivity(model, ACTIVITIES.idle) && hasActivity(model, ACTIVITIES.draw);
 }
 
-export class ViewModelRig {
+/** What PlayerView needs from a first-person model: a game-file Studio rig or a bundled default. */
+export interface PlayerViewModelRig {
+  /** Canonical game-file path, or a bundled id (see isDefaultViewModelPath). */
+  readonly path: string;
+  /** True for a bundled m0clip model; false for one read from the person's game files. */
+  readonly builtin: boolean;
+  /** Camera-relative node; its matrix is set by the view-model pass. */
+  readonly object: THREE.Group;
+  /** Live animation state; recorded as the presentation's viewModel pose. */
+  readonly pose: PlayerAnimationPose;
+  readonly limitations: readonly string[];
+  start(action: ViewModelAction | 'idle'): boolean;
+  advance(dt: number): void;
+  /** Poses the model from a presentation pose. Pure. */
+  apply(pose: PlayerAnimationPose, clock: number): void;
+  dispose(): void;
+}
+
+export class ViewModelRig implements PlayerViewModelRig {
+  readonly builtin = false;
   /** Camera-relative node; its matrix is set by the view-model pass. */
   readonly object = new THREE.Group();
   readonly pose: { sequence: number; cycle: number; poseParameters: Float32Array; layers: PlayerAnimationLayer[] };

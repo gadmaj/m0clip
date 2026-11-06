@@ -219,6 +219,11 @@ function clampMagnitude(v: Float64Array, max: number) {
   if (n > max) { const k = max / n; v[0] *= k; v[1] *= k; v[2] *= k; }
 }
 
+/** A body's compiled name; attached robots carry their `${id}/` prefix, so it is stable across rebuilds. */
+function bodyNameOf(engine: Engine, body: number): string {
+  return engine.mj.mj_id2name(engine.model, engine.mj.mjtObj.mjOBJ_BODY.value, body) ?? '';
+}
+
 export class PlayerWorld {
   private scene: PlayerScene | null = null;
   private runtimes: EntityRuntime[] = [];
@@ -235,7 +240,6 @@ export class PlayerWorld {
   private held = 0;
   private prevHeld = 0;
   private pulse = 0;
-  private wheelJump = false;
   private thirdPerson = false;
 
   private available: PlayerTool[] = [];
@@ -324,7 +328,9 @@ export class PlayerWorld {
     this.knife = knife;
     const requested: readonly PlayerTool[] = tools.tools ?? ['physgun', 'spawn', 'knife'];
     this.available = [...new Set(requested)].filter(t => t === 'physgun' || t === 'spawn' || (t === 'knife' && knife !== null));
-    if (!this.available.includes(this.tool)) this.tool = 'none';
+    // A new world starts with its first tool out (the physics gun by default); a tool that is still
+    // available is kept across map changes.
+    if (!this.available.includes(this.tool)) this.tool = this.available[0] ?? 'none';
     this.nextKnife = this.simTime;
     this.knifeHitAt = -1;
     this.simFrame = this.makeSimFrame();
@@ -393,8 +399,9 @@ export class PlayerWorld {
     this.forward = Math.max(-1, Math.min(1, forward));
     this.side = Math.max(-1, Math.min(1, side));
     this.held = held;
+    // A release frame also drops presses the ticks have not simulated yet.
+    if (frame.reset) this.pulse = 0;
     this.pulse |= pressed;
-    if (frame.wheelJump && this.tool === 'knife') this.wheelJump = true;
     this.thirdPerson = frame.thirdPerson;
   }
 
@@ -407,8 +414,10 @@ export class PlayerWorld {
     if (tool !== this.tool) {
       this.releaseGrab();
       this.knifeHitAt = -1;
-      this.wheelJump = false;
-      this.pulse &= ~(PLAYER_BUTTON.attack | PLAYER_BUTTON.attack2);
+      // The new tool starts with its buttons up, even before the controller's release arrives;
+      // movement, jump, duck and run are kept.
+      const keep = ~(PLAYER_BUTTON.attack | PLAYER_BUTTON.attack2);
+      this.pulse &= keep; this.held &= keep; this.prevHeld &= keep;
       this.tool = tool;
     }
     this.postStatus();
@@ -450,7 +459,7 @@ export class PlayerWorld {
 
   private clearInput() {
     this.forward = this.side = this.held = this.prevHeld = this.pulse = 0;
-    this.wheelJump = false;
+    this.thirdPerson = false;
   }
 
   postStatus() {
@@ -522,12 +531,13 @@ export class PlayerWorld {
 
   private async tick(scene: PlayerScene) {
     const pulse = this.pulse, held = this.held;
-    let buttons = held | pulse;
+    const buttons = held | pulse;
     const pressed = pulse | (held & ~this.prevHeld);
-    if (this.wheelJump && this.tool === 'knife') buttons |= PLAYER_BUTTON.jump;
     this.pulse = 0;
-    this.wheelJump = false;
     this.prevHeld = held;
+    // A jump pressed since the last tick (Space or a wheel click) is a new press even if that tick
+    // also jumped: the button went up in between. Held Space alone keeps its edge and never rejumps.
+    if (pressed & PLAYER_BUTTON.jump) this.move.oldButtons &= ~PLAYER_BUTTON.jump;
 
     const cmd = this.cmd;
     cmd.yaw = this.yaw; cmd.forward = this.forward; cmd.side = this.side; cmd.buttons = buttons;
@@ -703,10 +713,25 @@ export class PlayerWorld {
     const grab = this.grab;
     if (!grab) return;
     this.grab = null;
+    this.removeWrench(grab);
+  }
+
+  /** Take the grab's wrench off the engine it was applied to; the next substep applies it anew. */
+  private removeWrench(grab: Grab) {
     const scene = this.scene;
     if (!scene || grab.runtime.scope.engine !== scene.engine) return;
     const xf = scene.engine.xfrcApplied, o = 6 * grab.body;
     for (let i = 0; i < 6; i++) xf[o + i] -= grab.applied[i];
+    grab.applied.fill(0);
+  }
+
+  /** The held body of the same robot in the rebuilt scene; null when that robot left it. */
+  private rebindGrab(held: Grab, bodyName: string, engine: Engine): Grab | null {
+    const runtime = this.runtimes.find(r => r.id === held.runtime.id);
+    if (!runtime) return null;
+    const entity = runtime.scope.entity, body = entity.bodyStart + held.body - held.runtime.scope.entity.bodyStart;
+    if (body >= entity.bodyEnd || bodyNameOf(engine, body) !== bodyName) return null;
+    return { ...held, runtime, body, view: { ...held.view, body } };
   }
 
   private appYaw(scene: PlayerScene): number { return (this.yaw - scene.frame.yawDeg) * DEG; }
@@ -847,7 +872,6 @@ export class PlayerWorld {
   private async compose(planned: PlannedEntity[], recompile: boolean) {
     const scene = this.scene;
     if (!scene) throw new Error('The Player world is not loaded.');
-    this.releaseGrab();
     const old = scene.engine;
     const saved = planned.map(p => p.prior ? snapshot(old, p.prior.scope.entity) : null);
     let engine = old, next = scene;
@@ -859,6 +883,11 @@ export class PlayerWorld {
       const prepared = await Engine.prepareScene(spec);
       engine = await Engine.createScene(spec, scene.transform, prepared);
     }
+    // A held robot that stays stays held. Its wrench leaves the current engine now; afterwards the
+    // grab moves to the same body of the rebuilt robot unless it was released meanwhile. Removing
+    // the held robot releases it, and a failed rebuild keeps it on the current engine.
+    const held = this.grab, heldBody = held ? bodyNameOf(old, held.body) : '';
+    if (held) this.removeWrench(held);
     let runtimes: EntityRuntime[];
     try {
       if (engine.entities.length !== planned.length || engine.entities.some((entity, i) => entity.id !== planned[i].id))
@@ -898,6 +927,7 @@ export class PlayerWorld {
     this.simFrame = this.makeSimFrame();
     this.updateShadow();
     engine.forward();
+    if (held && this.grab === held) this.grab = this.rebindGrab(held, heldBody, engine);
     if (recompile) this.postModel();
   }
 
