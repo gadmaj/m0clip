@@ -68,10 +68,10 @@ export class PlayerInputController {
     window.addEventListener('pointercancel', this.pointerCancel);
     window.addEventListener('mousemove', this.mouseMove);
     window.addEventListener('wheel', this.wheel, {passive: false});
-    window.addEventListener('contextmenu', this.contextMenu);
     document.addEventListener('pointerlockchange', this.lockChange);
     window.addEventListener('blur', this.blur);
     document.addEventListener('visibilitychange', this.visibility);
+    canvas.addEventListener('contextmenu', this.contextMenu);
   }
 
   get active() { return this.enabled; }
@@ -243,9 +243,9 @@ export class PlayerInputController {
     this.actions.thirdPerson(held);
   }
 
-  /** The first click captures the mouse; buttons count once it is captured. */
-  private readonly pointerDown = () => {
-    if (this.enabled && !this.actions.blocked() && !this.locked) this.requestLock();
+  /** A left click captures the mouse; buttons count once it is captured. */
+  private readonly pointerDown = (event: PointerEvent) => {
+    if (event.button === 0 && this.enabled && !this.actions.blocked() && !this.locked) this.requestLock();
   };
   /** mousedown/mouseup, unlike pointerdown/pointerup, fire for a button pressed or released while
    * another is held, so chorded clicks cannot leave one stuck down. */
@@ -287,7 +287,9 @@ export class PlayerInputController {
       this.selectTool(choices[((at + clicks) % choices.length + choices.length) % choices.length]);
     }
   };
-  private readonly contextMenu = (event: Event) => { if (this.locked) event.preventDefault(); };
+  /** The scene's right button is the secondary action, never the browser menu; other UI keeps it.
+   * While locked, every mouse event targets the canvas. */
+  private readonly contextMenu = (event: Event) => { if (this.enabled) event.preventDefault(); };
   private readonly lockChange = () => {
     if (!this.enabled) return;
     if (!this.locked) this.reset();
@@ -304,7 +306,7 @@ export class PlayerInputController {
     window.removeEventListener('pointercancel', this.pointerCancel);
     window.removeEventListener('mousemove', this.mouseMove);
     window.removeEventListener('wheel', this.wheel);
-    window.removeEventListener('contextmenu', this.contextMenu);
+    this.canvas.removeEventListener('contextmenu', this.contextMenu);
     document.removeEventListener('pointerlockchange', this.lockChange);
     window.removeEventListener('blur', this.blur);
     document.removeEventListener('visibilitychange', this.visibility);

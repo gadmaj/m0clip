@@ -41,7 +41,8 @@ try {
 
   /** One Player world wired as App and the worker wire it; `raf()` stands for App's frame loop. */
   async function session(tools = ['physgun', 'spawn', 'knife']) {
-    const s = Object.setPrototypeOf({ frames: [], status: null, sent: [], toolRequests: [], distances: [], errors: [], blocked: false, now: 0, models: [] }, proto);
+    const s = Object.setPrototypeOf({ frames: [], status: null, sent: [], toolRequests: [], distances: [], errors: [], lockRequests: 0,
+      blocked: false, now: 0, models: [] }, proto);
     s.world = new PlayerWorld({ post(m) {
       if (m.t === 'frame') {
         const p = m.player;
@@ -67,7 +68,7 @@ try {
       unavailable: () => {}, inspect: () => {}, spawnMenu: () => {},
       holdDistance: direction => { s.distances.push(direction); s.world.wheel(direction); },
       locked: locked => { if (!locked) s.world.stop(); },
-      thirdPerson: () => {}, lockError: error => { throw error; }, lockRequested: () => {},
+      thirdPerson: () => {}, lockError: error => { throw error; }, lockRequested: () => { s.lockRequests++; },
     });
     s.world.postStatus();
     s.input.setEnabled(true);
@@ -271,6 +272,26 @@ try {
     await s.ticks(40);
     assert.equal(s.last().tool, 'spawn');
     assert.ok(s.last().speed > 150, 'W still walks after the tool swap');
+  });
+
+  await run('the right button never captures the mouse; only the scene suppresses the browser menu', async s => {
+    doc.exitPointerLock(); await s.settle();
+    const requests = s.lockRequests;
+    const menu = target => { const e = event('contextmenu', { button: 2 }); target.dispatchEvent(e); return e.defaultPrevented; };
+    s.mouse(['pointerdown', 2], ['mousedown', 2]);
+    assert.equal(menu(canvas), true, 'no browser menu over the unlocked scene');
+    s.mouse(['pointerup', 2], ['mouseup', 2]); await s.settle();
+    assert.equal(doc.pointerLockElement, null, 'right click left the mouse free');
+    assert.equal(s.lockRequests, requests);
+    // Panels and other page UI keep their menu.
+    const panel = new EventTarget();
+    assert.equal(menu(panel), false);
+    assert.equal(menu(window), false);
+    s.mouse(['pointerdown', 0], ['mousedown', 0], ['pointerup', 0], ['mouseup', 0]); await s.settle();
+    assert.equal(doc.pointerLockElement, canvas, 'left click captures the mouse');
+    assert.equal(menu(canvas), true, 'no browser menu while captured');
+    s.input.setEnabled(false);
+    assert.equal(menu(canvas), false, 'review and other modes keep the browser menu');
   });
 
   await run('a tool swap does not carry a held attack into the new tool', async s => {
