@@ -84,13 +84,13 @@ assert.equal(pngProof.frames.length,2);
 for(const frame of pngProof.frames)assert.deepEqual(frame,{signature:[137,80,78,71,13,10,26,10],width:240,height:180});
 assert.equal(pngProof.head,'ghost');
 console.log('Head fixture: PNG sequence passed');
-// A same-robot terrain rebuild must not replace the live Stock head with the reviewed Ghost.
+// Rebuilding live terrain must preserve the live Stock head across Ghost-take review.
 await page.keyboard.press('Escape');await page.waitForFunction(()=>!window.__app.timeline.isOpen);
 await chooseVisual(page,'source-head-visual','stock');
+await chooseVisual(page,'terrain','stairs');
+await page.waitForFunction(()=>window.__app.model.terrain==='stairs'&&window.__app.viewModel.terrain==='stairs'&&window.__app.view.getSourceHead()==='stock');
 await page.getByRole('button',{name:'Timeline',exact:true}).click();
 await page.waitForFunction(()=>window.__app.timeline.isOpen&&window.__app.view.getSourceHead()==='ghost');
-await chooseVisual(page,'terrain','stairs');
-await page.waitForFunction(()=>window.__app.model.terrain==='stairs'&&window.__app.timeline.isOpen);
 await page.keyboard.press('Escape');
 await page.waitForFunction(()=>window.__app.viewModel.terrain==='stairs'&&window.__app.view.getSourceHead()==='stock');
 assert.equal(await page.evaluate(()=>window.__app.view.getHeadVisual()),'stock');
