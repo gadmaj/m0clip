@@ -200,7 +200,7 @@ for (const [flags, collides, requirement] of [[0x80000000 | 0xe, false, false], 
     place('entity-model', 'prop_dynamic', 6), place('entity-model', 'prop_physics', 6),
     place('static-prop', 'prop_static', 6, { modelPath: 'models/missing.mdl' }),
   ];
-  const result = await assembleSourceEntityCollision({ decodeModelCollision: async () => assert.fail('No brush entities') },
+  const result = await assembleSourceEntityCollision({ decodeModelCollision: async () => assert.fail('No brush entities'), reserveGeometry() {} },
     { brushes: [], placements, models: new Map([['models/a.mdl', { path: 'models/a.mdl' }]]) });
   assert.deepEqual(placements.map(p => result.props.get(p)), [
     { mode: 'none', reason: 'solid-none' }, undefined, undefined, undefined,
@@ -366,6 +366,25 @@ async function smallestAdmitted(fails, passes, attempt) {
   assert.ok(bothBytes > worldBytes, 'Late entity hulls are charged to the same geometry lifetime');
   await assert.rejects(entityCollision(await decodeSourceWorld(bsp, { maxGeometryBytes: worldBytes })), RangeError);
   assert.equal((await entityCollision(await decodeSourceWorld(bsp, { maxGeometryBytes: bothBytes }))).collision.length, 1);
+}
+{
+  // Every func_wall placement, a repeated alias of one entity included, owns its own placed
+  // hull: distinct transforms survive and each copy pays the shared geometry lifetime.
+  const bsp = await readSourceBsp(thinFixture(0.25).blob());
+  const shifted = { ...funcWall, entityIndex: 8, matrix: new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1]) };
+  const assemble = (world, brushes) => assembleSourceEntityCollision(world, { brushes, placements: [], models: new Map() });
+  const result = await assemble(await decodeSourceWorld(bsp), [funcWall, shifted, funcWall]);
+  assert.deepEqual(result.collision.map(c => c.entity), [7, 8, 7]);
+  const extents = result.collision.map(c => zExtent(c.vertices));
+  assert.ok(Math.abs(extents[1][1] - 1) < 1e-12 && Math.abs(extents[1][0] - (1 - 0.25 * 0.0254)) < 1e-12, 'A distinct placement keeps its own transform');
+  assert.deepEqual(extents[2], extents[0]);
+  assert.notStrictEqual(result.collision[2].vertices, result.collision[0].vertices, 'A repeated alias owns its own placed vertices');
+  const minimum = brushes => smallestAdmitted(0, 1 << 24, async limit => admitted(assemble(await decodeSourceWorld(bsp, { maxGeometryBytes: limit }), brushes)));
+  const one = await minimum([funcWall]), two = await minimum([funcWall, funcWall]), three = await minimum([funcWall, shifted, funcWall]);
+  assert.ok(two - one >= result.collision[0].vertices.byteLength, 'A repeated placement pays at least its placed vertices');
+  assert.equal(three - two, two - one, 'Aliased and distinct placements each pay the same independent quota');
+  await assert.rejects(assemble(await decodeSourceWorld(bsp, { maxGeometryBytes: two }), [funcWall, funcWall, funcWall]), RangeError,
+    'A third placement beyond the shared quota is refused before its copy is allocated');
 }
 {
   const bsp = await readSourceBsp(fixture({ displacement: true }).blob());

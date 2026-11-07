@@ -3,7 +3,7 @@
  * absent; every other authored collision is a blocking requirement, never a
  * guessed shape and never silently non-solid. */
 import { sourceAbort } from './raw-source-lzma';
-import { unrepresentableBrushDetail, type SourceCollision, type SourceModelCollision, type SourceWorld } from './raw-source-geometry';
+import { SOURCE_COLLISION_RECORD_BYTES, unrepresentableBrushDetail, type SourceCollision, type SourceModelCollision, type SourceWorld } from './raw-source-geometry';
 import type { SourceProps, SourcePropPlacement } from './raw-source-props';
 import type { SourceLightingRequirement } from './raw-source-lighting';
 
@@ -32,13 +32,19 @@ function placed(matrix: Float64Array, local: Float64Array): Float64Array {
   return out;
 }
 
-export async function assembleSourceEntityCollision(world: Pick<SourceWorld, 'decodeModelCollision'>,
+/** Every placement, including repeated aliases of one brush model, owns its own placed
+ * vertices and records; each is charged to the world's geometry lifetime before allocation. */
+export async function assembleSourceEntityCollision(world: Pick<SourceWorld, 'decodeModelCollision' | 'reserveGeometry'>,
   props: Pick<SourceProps, 'brushes' | 'placements' | 'models'>, options: { signal?: AbortSignal } = {}): Promise<SourceEntityCollision> {
   const { signal } = options;
   sourceAbort(signal);
   const collision: SourceCollision[] = [], requirements: SourceLightingRequirement[] = [];
   const records = new Map<SourcePropPlacement, SourcePropCollision>();
-  const block = (code: string, detail: string, path?: string) => requirements.push({ code, detail, blocking: true, ...(path === undefined ? {} : { path }) });
+  const block = (code: string, detail: string, path?: string) => {
+    world.reserveGeometry(SOURCE_COLLISION_RECORD_BYTES + (code.length + detail.length + (path?.length ?? 0)) * 2);
+    requirements.push({ code, detail, blocking: true, ...(path === undefined ? {} : { path }) });
+  };
+  let placedHulls = 0;
 
   const models = new Map<number, SourceModelCollision>();
   for (const brush of props.brushes) {
@@ -48,8 +54,17 @@ export async function assembleSourceEntityCollision(world: Pick<SourceWorld, 'de
     if (brush.classname === 'func_wall' || brush.classname === 'func_detail') {
       let model = models.get(brush.model);
       if (!model) { model = await world.decodeModelCollision(brush.model, signal); models.set(brush.model, model); }
-      for (const hull of model.hulls) collision.push({ kind: 'entity-brush', entity: brush.entityIndex, model: brush.model,
-        brush: hull.brush, contents: hull.contents, vertices: placed(brush.matrix, hull.vertices) });
+      for (const hull of model.hulls) {
+        if ((++placedHulls & 255) === 0) {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          setTimeout(resolve, 0);
+          await promise;
+          sourceAbort(signal);
+        }
+        world.reserveGeometry(hull.vertices.byteLength + SOURCE_COLLISION_RECORD_BYTES);
+        collision.push({ kind: 'entity-brush', entity: brush.entityIndex, model: brush.model,
+          brush: hull.brush, contents: hull.contents, vertices: placed(brush.matrix, hull.vertices) });
+      }
       for (const thin of model.unrepresentableBrushes) block('brush-collision-unrepresentable',
         unrepresentableBrushDetail(`Entity ${brush.entityIndex} (${brush.classname}) model *${brush.model} brush ${thin.brush}`, thin.contents, thin.widthUnits));
     } else if (brush.classname === 'func_clip_vphysics') {
@@ -81,6 +96,7 @@ export async function assembleSourceEntityCollision(world: Pick<SourceWorld, 'de
       block('prop-vphysics-collision-unsupported', `${label}: solid ${placement.solid} collision (model hull or .phy) is not converted yet.`, placement.modelPath);
       continue;
     }
+    world.reserveGeometry(SOURCE_COLLISION_RECORD_BYTES);
     records.set(placement, { mode: 'none', reason });
   }
   return { collision, requirements, props: records };

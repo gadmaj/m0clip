@@ -198,14 +198,23 @@ async function finishGlb(s: { scene: THREE.Scene; world: THREE.Group; view: Scen
   }
 
   const clip = new THREE.AnimationClip("take", job.t1 - job.t0, tracks);
+  try {
+    return await encodeSceneGlb(scene, view.renderer, tracks.length ? [clip] : []);
+  } finally { for(const dispose of detailCleanup)dispose(); }
+}
+
+/** The single binary glTF encoder of every DCC export: lossless export copies of the
+ * live materials, then the native image, camera, eight-influence skin and Source
+ * base-UV writers. Live materials and textures are restored before returning. */
+export async function encodeSceneGlb(scene: THREE.Object3D, renderer: THREE.WebGLRenderer, animations: THREE.AnimationClip[]): Promise<Blob> {
   const { GLTFExporter } = await import("three/examples/jsm/exporters/GLTFExporter.js");
-  const cleanup = prepareLosslessTextures(scene),images=losslessImageWriter(view.renderer);
+  const cleanup = prepareLosslessTextures(scene),images=losslessImageWriter(renderer);
   try {
     const glb = await new GLTFExporter().register(images.plugin).register(infiniteCameraWriter).register(extraSkinningWriter).register(sourceBaseTransformWriter).parseAsync(scene, {
-      binary: true, trs: true, onlyVisible: true, animations: tracks.length ? [clip] : [],
+      binary: true, trs: true, onlyVisible: true, animations,
     });
     return new Blob([glb as ArrayBuffer], { type: "model/gltf-binary" });
-  } finally { images.dispose();cleanup();for(const dispose of detailCleanup)dispose(); }
+  } finally { images.dispose();cleanup(); }
 }
 
 /** Main's render adapter for a Player take. Each epoch's recorded model is shown in `view` before its parts

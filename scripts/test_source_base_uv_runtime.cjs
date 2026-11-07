@@ -4,7 +4,10 @@
  * identity-UV twin whose textures are resampled on the CPU at independently computed
  * Source coordinates (SDK 2013: bump, envmap mask, self-illum mask and Phong exponent at
  * the base matrix; detail at $detailscale × base matrix; LightmappedGeneric envmap mask at
- * $envmapmasktransform·uv). Pixels must match. Not a full-map or native-asset qualification.
+ * $envmapmasktransform·uv). Pixels must match. Then the production DCC encoder
+ * (encodeSceneGlb: lossless native-texture copies + exporter plugins) must write the
+ * same static matrix on the Studio base/normal and Source base textures, leaving live
+ * materials untouched. Not a full-map or native-asset qualification.
  * Run once after integration: CHROME_PATH=/path/to/chrome HEADLESS=1 node scripts/test_source_base_uv_runtime.cjs */
 'use strict';
 const assert=require('node:assert/strict');
@@ -15,7 +18,8 @@ const buildFixture=require('./build-fixture.cjs');
   const {code}=await buildFixture({root:path.resolve(__dirname,'..'),platform:'browser',format:'iife',globalName:'SourceBaseUvFixture',source:`
     export * as THREE from 'three';
     export { SourceMaterials, patchSourceMaterial } from './src/render/source-materials';
-    export { sourceVertexMaterial } from './src/render/source-lighting';`});
+    export { sourceVertexMaterial } from './src/render/source-lighting';
+    export { encodeSceneGlb } from './src/record/export-blender';`});
   const browser=await chromium.launch({headless:process.env.HEADLESS==='1',
     ...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{}),args:['--no-sandbox','--ozone-platform=x11']});
   try{
@@ -130,7 +134,48 @@ const buildFixture=require('./build-fixture.cjs');
       if(result.raw)assert.deepEqual(result.actual,result.untransformed,`${label}: authored-UV sampler moved`);
       else assert.notDeepEqual(result.actual,result.untransformed,`${label}: fixture cannot distinguish coordinates`);
     }
+    // Production DCC encoder with native (lossless-copied) textures and a static matrix.
+    const exported=await page.evaluate(async()=>{
+      const {THREE,SourceMaterials,patchSourceMaterial,sourceVertexMaterial,encodeSceneGlb}=window.SourceBaseUvFixture;
+      const renderer=new THREE.WebGLRenderer({antialias:false}),owner=new SourceMaterials();
+      const native=seed=>{
+        const data=new Uint8Array(64);for(let i=0;i<64;i++)data[i]=(seed*37+i*11)&255;
+        const texture=new THREE.DataTexture(data,4,4);texture.userData.sourceNativeTexture={format:0};texture.needsUpdate=true;return texture;
+      };
+      const map=native(1),normalMap=native(2);
+      const original=new THREE.MeshStandardMaterial({name:'studio',map,normalMap});
+      // Row-major Source ParameterMatrix of "scale 2 .5 rotate 90 translate .35 .1".
+      original.userData.sourceMaterial={shader:'vertexlitgeneric',unlit:true,nocull:false,basetexturetransform:[0,-.5,.35,2,0,.1,0,0,1]};
+      original.userData.sourceUnlit=true;
+      const source=sourceVertexMaterial(original,1,{value:1},{value:1});source.name='source';
+      patchSourceMaterial(source,original,{normal:normalMap},undefined,undefined,undefined,0,false,owner);
+      const scene=new THREE.Scene(),geometry=new THREE.PlaneGeometry(1,1);
+      const studioMesh=new THREE.Mesh(geometry,original),sourceMesh=new THREE.Mesh(geometry,source);scene.add(studioMesh,sourceMesh);
+      const blob=await encodeSceneGlb(scene,renderer,[]);
+      const bytes=new DataView(await blob.arrayBuffer()),length=bytes.getUint32(12,true);
+      const json=JSON.parse(new TextDecoder().decode(new Uint8Array(bytes.buffer,20,length)));
+      const live=studioMesh.material===original&&sourceMesh.material===source&&original.map===map&&original.normalMap===normalMap&&source.map===map;
+      owner.clear();renderer.dispose();renderer.forceContextLoss();
+      return {json,live};
+    });
+    const {json}=exported,byName=Object.fromEntries(json.materials.map(material=>[material.name,material]));
+    assert(exported.live,'export restores the live materials and native textures');
+    assert(json.images?.length&&json.textures.every(texture=>!texture.extensions?.M0CLIP_texture_vtf),'native textures went through lossless export copies');
+    assert(json.extensionsUsed.includes('KHR_texture_transform'));
+    // Spec semantics (verified against the KHR_texture_transform README example):
+    // uv' = offset + R·S·uv with R rows [cos sin; -sin cos].
+    const authored=(u,v)=>[.35-.5*v,2*u+.1];
+    const infos=[['studio base',byName.studio?.pbrMetallicRoughness?.baseColorTexture],['studio normal',byName.studio?.normalTexture],
+      ['source base',byName.source?.pbrMetallicRoughness?.baseColorTexture]];
+    for(const [label,info] of infos){
+      const t=info?.extensions?.KHR_texture_transform;assert(t,`${label}: no exported static transform`);
+      for(const [u,v] of [[0,0],[1,0],[0,1],[.3,.8]]){
+        const c=Math.cos(t.rotation),s=Math.sin(t.rotation),x=t.scale[0]*u,y=t.scale[1]*v,expected=authored(u,v);
+        const actual=[c*x+s*y+t.offset[0],-s*x+c*y+t.offset[1]];
+        actual.forEach((value,i)=>assert(Math.abs(value-expected[i])<1e-6,`${label} (${u},${v}): ${actual} != ${expected}`));
+      }
+    }
     assert.deepEqual(errors,[]);
-    console.log(`Source base-UV companions: ${results.length} WebGL cases (static, TextureScroll, converter scroll) match independent CPU-resampled twins.`);
+    console.log(`Source base-UV companions: ${results.length} WebGL cases (static, TextureScroll, converter scroll) match independent CPU-resampled twins; encodeSceneGlb exports the static matrix on Studio base/normal and Source base textures.`);
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -5,6 +5,7 @@ import { sourceTextureControl,sourceTextureShader,SOURCE_TEXTURE_FALLBACK } from
 import { MAX_SHOT_LIGHTS } from '../record/post';
 import { SourceTemporalProxyState, type SourceTemporalProxies } from './source-material-proxies';
 import type { GLTFExporterPlugin, GLTFWriter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import { losslessExportSource } from '../record/lossless-textures';
 
 
 type V = number[];
@@ -100,23 +101,29 @@ export function bindSourceTemporalShadows(mesh: THREE.Mesh, materials: readonly 
 }
 
 const KHR_TEXTURE_TRANSFORM = 'KHR_texture_transform';
-/** Live authored static base matrix of a displayed material (TextureScroll's
- * time-varying matrix is not a static texture transform and is excluded). */
+/** Live authored static base matrix of a displayed material, or of the live material a
+ * lossless export copy stands for (TextureScroll's time-varying matrix is not a static
+ * texture transform and is excluded). */
 function sourceStaticBaseTransform(material: THREE.Material): THREE.Matrix3 | undefined {
-  const patch = temporalTransformPatches.get(material);
+  const patch = temporalTransformPatches.get(losslessExportSource(material));
   return patch?.fixed && patch.owner ? patch.uniform.value : undefined;
 }
 
 /** Register with exporter.register(sourceBaseTransformWriter). Writes the exact
- * static base matrix the renderer applies as standard KHR_texture_transform
- * (spec order T(offset)·R(rotation)·S(scale), R = [cos sin; -sin cos]). Source's
+ * static base matrix the renderer applies (base map and, on Studio materials, the
+ * normal map) as standard KHR_texture_transform (spec order T(offset)·R(rotation)·S(scale),
+ * R = [cos sin; -sin cos]). The renderer's base matrix replaces any Three texture
+ * offset/repeat, so it also replaces the exporter's texture-level transform. Source's
  * R(θ)·S matrices never shear; a non-decomposable matrix is refused, not approximated. */
 export function sourceBaseTransformWriter(writer: GLTFWriter): GLTFExporterPlugin {
+  type Info = { extensions?: Record<string, unknown> } | undefined;
   return {
     async writeMaterialAsync(material, definition) {
       const matrix = sourceStaticBaseTransform(material);
-      const info = (definition.pbrMetallicRoughness as { baseColorTexture?: { extensions?: Record<string, unknown> } } | undefined)?.baseColorTexture;
-      if (!matrix || !info) return;
+      if (!matrix) return;
+      const infos = [(definition.pbrMetallicRoughness as { baseColorTexture?: Info } | undefined)?.baseColorTexture,
+        definition.normalTexture as Info].filter((info): info is NonNullable<Info> => info !== undefined);
+      if (!infos.length) return;
       const e = matrix.elements, m00 = e[0], m10 = e[1], m01 = e[3], m11 = e[4];
       const sx = Math.hypot(m00, m10);
       let rotation: number, sy: number;
@@ -125,8 +132,10 @@ export function sourceBaseTransformWriter(writer: GLTFWriter): GLTFExporterPlugi
       const c = Math.cos(rotation), s = Math.sin(rotation), scale = Math.max(1, Math.abs(m00), Math.abs(m10), Math.abs(m01), Math.abs(m11));
       if (Math.max(Math.abs(c * sx - m00), Math.abs(-s * sx - m10), Math.abs(s * sy - m01), Math.abs(c * sy - m11)) > 1e-6 * scale)
         throw new Error('A Source base texture transform cannot be represented as KHR_texture_transform');
-      info.extensions ??= {};
-      info.extensions[KHR_TEXTURE_TRANSFORM] = { offset: [e[6], e[7]], rotation, scale: [sx, sy] };
+      for (const info of infos) {
+        info.extensions ??= {};
+        info.extensions[KHR_TEXTURE_TRANSFORM] = { offset: [e[6], e[7]], rotation, scale: [sx, sy] };
+      }
       writer.extensionsUsed[KHR_TEXTURE_TRANSFORM] = true;
     },
   };
@@ -275,7 +284,9 @@ export function patchSourceMaterial(material: THREE.MeshBasicMaterial, original:
   // Make Three expose authored tangents to this Basic-material shader when present.
   const custom = material as THREE.MeshBasicMaterial & { defines?: Record<string, string> };
   if (hasTangent) custom.defines = { ...custom.defines, USE_TANGENT: '' };
-  if (meta.additive) { material.blending = THREE.AdditiveBlending; material.depthWrite = false; }
+  // SDK BT_BLENDADD/BT_ADD is a blend state of the material itself: both the Source
+  // variant and the Studio (PBR) original draw additively without depth writes.
+  if (meta.additive) for (const entry of [material, original]) { entry.blending = THREE.AdditiveBlending; entry.depthWrite = false; }
   // Converter metadata keeps TextureScroll as its rate vector: the same SDK proxy
   // (texturescale 1), so it drives the shared base matrix and every pass using it.
   let temporal = meta.temporalProxies;

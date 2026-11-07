@@ -160,9 +160,9 @@ const LUMP_SCHEMA: readonly (readonly [index: number, stride: number, versions: 
   [12, 4, [0]], [13, 4, [0]], [14, 48, [0]], [17, 2, [0]], [18, 12, [0]], [19, 8, [0]], [26, 176, [0]],
   [30, 12, [0]], [31, 2, [0]], [33, 20, [0]], [39, 2, [0]], [44, 4, [0]], [48, 2, [0]], [53, 4, [1]], [58, 56, [1]],
 ];
-/** Mandatory bounded evidence for one structurally valid descriptor order: entity
- * text, worldmodel 0, record schemas/versions and Valve LZMA headers. Reads at
- * most 256 entity bytes, 48 model bytes and 17 bytes per compressed lump. */
+/** Mandatory bounded evidence for one structurally valid descriptor order:
+ * entity descriptor, worldmodel 0, record schemas/versions and Valve LZMA
+ * headers. The full bounded entity parser, not a prefix guess, validates text. */
 async function variantEvidence(version: number, lumps: readonly SourceLump[], maxEntityBytes: number, signal?: AbortSignal): Promise<boolean> {
   const size = (lump: SourceLump) => lump.uncompressedSize || lump.length;
   const read = async (lump: SourceLump, bytes: number) => {
@@ -182,11 +182,6 @@ async function variantEvidence(version: number, lumps: readonly SourceLump[], ma
     const header = await read(lump, 17);
     if (header.byteLength !== 17 || header.getUint32(0, true) !== 0x414d5a4c || header.getUint32(4, true) !== lump.uncompressedSize
       || header.getUint32(8, true) !== lump.length - 17 || header.getUint8(12) >= 225) return false;
-  }
-  if (!entities.uncompressedSize) {
-    const head = new Uint8Array((await read(entities, 256)).buffer);
-    const first = head.findIndex(byte => byte !== 0x20 && (byte < 9 || byte > 13));
-    if (first < 0 || (head[first] !== 0x7b && (head[first] !== 0x2f || head[first + 1] !== 0x2f))) return false;
   }
   if (!models.uncompressedSize) {
     const model = await read(models, 48), faces = lumps[7].length ? lumps[7] : lumps[58];

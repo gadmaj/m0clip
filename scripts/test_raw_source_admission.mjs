@@ -79,6 +79,16 @@ const widest = file => Math.max(0, ...file.slices.map(([start, end]) => end - st
   assert.equal(auto.variant, 'standard');
   assert.deepEqual(auto.entities.map(e => e.values.classname), ['worldspawn', 'info_player_start']);
 }
+{
+  const expected = (await readSourceBsp(new Blob([vbsp(world())]))).entities;
+  for (const prefix of [' '.repeat(256), `${' '.repeat(255)}// leading comment\n`]) {
+    const entries = world();
+    entries[0][1] = Buffer.concat([Buffer.from(prefix), ENTITIES]);
+    const parsed = await readSourceBsp(new Blob([vbsp(entries)]));
+    assert.equal(parsed.variant, 'standard');
+    assert.deepEqual(parsed.entities, expected, 'Legal entity whitespace and comments preserve layout and entity data');
+  }
+}
 for (const [label, entries] of [
   // Planes version 1 is no layout this importer decodes; left4dead2 has no entities.
   ['impossible lump version', world([[1, Buffer.alloc(1040), 1]])],

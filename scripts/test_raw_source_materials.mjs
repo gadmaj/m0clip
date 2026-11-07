@@ -206,6 +206,7 @@ const stateFs=await filesystem({
   'materials/scalartested.vmt':'VertexLitGeneric { "$basetexture" "alpha" "$alpha" ".5" "$alphatest" "1" "$alphatestreference" ".4" }',
   'materials/scalarglow.vmt':'VertexLitGeneric { "$basetexture" "alpha" "$alpha" ".5" "$translucent" "1" "$selfillum" "1" }',
   'materials/scalaradd.vmt':'VertexLitGeneric { "$basetexture" "opaque" "$alpha" ".5" "$additive" "1" }',
+  'materials/scalarmaskedadd.vmt':'VertexLitGeneric { "$basetexture" "alpha" "$alpha" ".5" "$additive" "1" "$alphatest" "1" "$alphatestreference" ".4" }',
   'materials/rotated.vmt':`LightmappedGeneric { "$basetexture" "opaque" "$basetexturetransform" "${ROTATED}" }`,
   'materials/cutout.vmt':`VertexLitGeneric { "$basetexture" "alpha" "$alphatest" "1" "$basetexturetransform" "${ROTATED}" }`,
   'materials/scrolled.vmt':`VertexLitGeneric { "$basetexture" "opaque" "$basetexturetransform" "${ROTATED}" ${SCROLL} }`,
@@ -218,7 +219,7 @@ const stateFs=await filesystem({
 const stateGlb=new SourceGlb(),stateExporter=new SourceMaterialExport(stateGlb,stateFs);
 // Companions follow the effective base UVs in the renderer (WebGL coordinates:
 // scripts/test_source_base_uv_runtime.cjs), so these combinations are now accepted.
-const stateNames=['before','scalar','scalartested','scalarglow','scalaradd','rotated','cutout','scrolled','animated','detailed','bumped'];
+const stateNames=['before','scalar','scalartested','scalarglow','scalaradd','scalarmaskedadd','rotated','cutout','scrolled','animated','detailed','bumped'];
 const stateIndex=Object.fromEntries(await Promise.all(stateNames.map(async name=>[name,await stateExporter.material(name)])));
 assert.deepEqual(stateExporter.requirements,[],'common static transforms, companions and scalar alpha are bound, not blocked');
 // Still explicit: per-axis detail scale and an independent authored detail matrix.
@@ -243,8 +244,17 @@ async function patched(name,resources={}){
   assert.equal(tested.transparent,false,'alpha test keeps precedence over scalar alpha');assert.equal(tested.alphaTest,.4);assert.equal(tested.opacity,.5);
   const glow=await state.material(stateIndex.scalarglow);
   assert.equal(glow.transparent,true,'selfillum suppresses texture-alpha blending, not constant alpha modulation');
+  // BT_BLENDADD is the material's own blend state: the Studio (PBR) original and the
+  // Source variant both add alpha-weighted colour without depth writes.
   const add=await patched('scalaradd');
-  assert.equal(add.original.transparent,true);assert.equal(add.source.transparent,true);assert.equal(add.source.blending,THREE.AdditiveBlending);
+  for(const material of [add.original,add.source]){
+    assert.equal(material.transparent,true);assert.equal(material.blending,THREE.AdditiveBlending);assert.equal(material.depthWrite,false);
+  }
+  const masked=await patched('scalarmaskedadd');
+  for(const material of [masked.original,masked.source]){
+    assert.equal(material.alphaTest,.4,'alpha test keeps precedence');assert.equal(material.transparent,false);
+    assert.equal(material.blending,THREE.NormalBlending,'alpha test suppresses additive state in every variant');assert.equal(material.depthWrite,true);
+  }
 }
 // Main's before-control: alpha .25, tint .5, static scale 2 was OPAQUE, gamma factor, metadata-only.
 {
@@ -271,6 +281,10 @@ let rotatedSource;
   const t=definition.pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform;
   const specUv=(u,v)=>{const c=Math.cos(t.rotation),s=Math.sin(t.rotation),x=t.scale[0]*u,y=t.scale[1]*v;return [c*x+s*y+t.offset[0],-s*x+c*y+t.offset[1]];};
   for(const [u,v] of samples)near(specUv(u,v),authoredUv(ROTATED,u,v),`exported KHR_texture_transform (${u},${v})`);
+  // A Studio normal map follows the same base matrix at runtime, so it is exported too.
+  const normalOnly={normalTexture:{index:1}};
+  await sourceBaseTransformWriter({extensionsUsed:{}}).writeMaterialAsync(original,normalOnly);
+  assert.deepEqual(normalOnly.normalTexture.extensions.KHR_texture_transform,t);
 }
 {
   const {original,source}=await patched('cutout');

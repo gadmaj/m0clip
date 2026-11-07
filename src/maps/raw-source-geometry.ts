@@ -20,6 +20,8 @@ const HULL_PLANE_SLACK_UNITS = 0.01;
 const HULL_POINT_WORKING_BYTES = 128;
 /** Surface and lightmap records with their small front/mins/styles arrays. */
 const SURFACE_RECORD_BYTES = 256;
+/** Logical bytes of one collision or blocking-brush record (object, small tuples, typed-array header). */
+export const SOURCE_COLLISION_RECORD_BYTES = 128;
 
 type Vec3 = [number, number, number];
 export interface SourceFrame {
@@ -108,6 +110,9 @@ export interface SourceWorld {
   decodeModelSurfaces(modelIndex: number, signal?: AbortSignal): Promise<SourceSurface[]>;
   /** Colliding brushes reachable from a brush model's own headnode. */
   decodeModelCollision(modelIndex: number, signal?: AbortSignal): Promise<SourceModelCollision>;
+  /** Charges caller-derived geometry (placed entity hulls, their records and requirements)
+   * to this world's import-owned geometry lifetime before allocation; never released. */
+  reserveGeometry(bytes: number): void;
 }
 
 class Table {
@@ -460,9 +465,11 @@ export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptio
     if (!(contents & SOURCE_COLLISION_CONTENTS)) continue;
     const firstSide = brushes.i(bi), sideCount = brushes.i(bi, 4);
     const result = await brushHull(planes, sides, firstSide, sideCount, budget, signal);
-    if (result.kind === 'degenerate') { skippedDegenerateBrushes.push(bi); continue; }
+    if (result.kind === 'degenerate') { budget.reserve(8); skippedDegenerateBrushes.push(bi); continue; }
     if (result.kind === 'unrepresentable') {
-      requirements.push({ code: 'brush-collision-unrepresentable', blocking: true, detail: unrepresentableBrushDetail(`World brush ${bi}`, contents, result.widthUnits) });
+      const detail = unrepresentableBrushDetail(`World brush ${bi}`, contents, result.widthUnits);
+      budget.reserve(SOURCE_COLLISION_RECORD_BYTES + detail.length * 2);
+      requirements.push({ code: 'brush-collision-unrepresentable', blocking: true, detail });
       continue;
     }
     const hull = result.vertices;
@@ -523,8 +530,12 @@ export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptio
         const bi = reachableModel.brushes[at], contents = brushes.i(bi, 8);
         if (!(contents & SOURCE_COLLISION_CONTENTS)) continue;
         const hull = await brushHull(planes, sides, brushes.i(bi), brushes.i(bi, 4), budget, activeSignal);
-        if (hull.kind === 'degenerate') { result.skippedDegenerateBrushes.push(bi); continue; }
-        if (hull.kind === 'unrepresentable') { result.unrepresentableBrushes.push({ brush: bi, contents, widthUnits: hull.widthUnits }); continue; }
+        if (hull.kind === 'degenerate') { budget.reserve(8); result.skippedDegenerateBrushes.push(bi); continue; }
+        if (hull.kind === 'unrepresentable') {
+          budget.reserve(SOURCE_COLLISION_RECORD_BYTES);
+          result.unrepresentableBrushes.push({ brush: bi, contents, widthUnits: hull.widthUnits });
+          continue;
+        }
         const vertices = hull.vertices;
         for (let j = 0; j < vertices.length; j++) vertices[j] *= scale;
         result.hulls.push({ brush: bi, contents, vertices });
@@ -535,7 +546,7 @@ export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptio
   budget.reserve((reachable.brushes.length + reachable.leaves.length) * 4);
   const reachableBrushes = Uint32Array.from(reachable.brushes), reachableLeaves = Uint32Array.from(reachable.leaves);
   budget.release(reachableWorking);
-  return { bsp, frame, surfaces, collision, decodeModelSurfaces, decodeModelCollision, reachableBrushes, reachableLeaves,
+  return { bsp, frame, surfaces, collision, decodeModelSurfaces, decodeModelCollision, reserveGeometry: (bytes: number) => budget.reserve(bytes), reachableBrushes, reachableLeaves,
     requirements, skippedDegenerateBrushes,
     limitations: [
       'World-model collision only; brush-entity collision is assembled from entities by raw-source-collision, and studio-prop collision other than documented non-solid placements is refused there.',
@@ -652,7 +663,8 @@ async function brushHull(planes: Table, sides: Table, first: number, count: numb
     let width = vertexCount ? Infinity : 0;
     for (let n = 0; vertexCount && n < count; n++) width = Math.min(width, extent[n * 2 + 1] - extent[n * 2]);
     if (vertexCount < 4 || !(width >= SOURCE_MIN_HULL_WIDTH_UNITS)) return { kind: 'unrepresentable', widthUnits: width };
-    budget.reserve(points.length * 8);
+    // Vertices plus the box, convex or model-hull record that will own them.
+    budget.reserve(points.length * 8 + SOURCE_COLLISION_RECORD_BYTES);
     return { kind: 'hull', vertices: Float64Array.from(points) };
   } finally { budget.release(working); }
 }
@@ -749,6 +761,7 @@ function appendFramedDisplacementCollision(surface: SourceSurface, frame: Source
     if (lateral <= tolerance && planarity <= tolerance) {
       const span = Math.max(hi - lo, 0.001);
       for (let i = 0; i < elevations.length; i++) elevations[i] = Math.max(0, Math.min(1, (elevations[i] - lo) / span));
+      budget.reserve(SOURCE_COLLISION_RECORD_BYTES);
       output.push({ kind: 'heightfield', face: surface.face, rows: side, columns: side, size: [width / 2, height / 2, span, 0.1], position: [center[0] + z[0] * lo, center[1] + z[1] * lo, center[2] + z[2] * lo], quaternion: quaternion(x, y, z), elevations,
         approximation: { maxLateralErrorMetres: lateral, baseRectangleErrorMetres: rectangleError, maxCellPlanarityErrorMetres: planarity } });
       return;
@@ -765,7 +778,7 @@ function appendFramedDisplacementCollision(surface: SourceSurface, frame: Source
     const ids = new Set<number>();
     for (const t of triangles) for (let k = 0; k < 3; k++) ids.add(indices[t + k]);
     if (!exactDisplacementGroup(points, indices, triangles, loop, ids, front)) return false;
-    budget.reserve(ids.size * 48);
+    budget.reserve(ids.size * 48 + SOURCE_COLLISION_RECORD_BYTES);
     const vertices = new Float64Array(ids.size * 6);
     let at = 0;
     for (const id of ids) {
@@ -785,7 +798,7 @@ function appendFramedDisplacementCollision(surface: SourceSurface, frame: Source
       for (const t of triangles) {
         const n = triangleNormal(points, indices[t], indices[t + 1], indices[t + 2]);
         if (!n) continue;
-        budget.reserve(144);
+        budget.reserve(144 + SOURCE_COLLISION_RECORD_BYTES);
         const vertices = new Float64Array(18);
         for (let k = 0; k < 3; k++) for (let axis = 0; axis < 3; axis++) {
           const value = points[indices[t + k] * 3 + axis];
