@@ -1,14 +1,13 @@
 /** Chromium: the lean production runtime drives a real R1 policy inside the simulation worker. */
 const assert=require('node:assert/strict'),{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),{readyApp}=require('./attach-ready-app.cjs');
 (async()=>{const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox']});try{
- const page=await browser.newPage({deviceScaleFactor:.25}),errors=[],wasm=[],downloads=[];
+ const page=await browser.newPage({deviceScaleFactor:1}),errors=[],wasm=[],downloads=[];
  page.on('pageerror',e=>errors.push(e.message));page.on('response',r=>{if(new URL(r.url()).pathname.endsWith('.wasm'))downloads.push(r.body().then(body=>wasm.push({url:r.url(),bytes:body.length,encoding:r.headers()['content-encoding']??'identity'})))});
  await page.goto((process.env.BASE_URL||'http://127.0.0.1:4179')+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page));
- // The release chunk stays byte-identical; the real Ready App is attached through CDP. Only the App's
- // own viewport draws (SceneView.render from the live tick) are skipped; the simulation keeps running.
+ // Observe the real worker without changing App rendering or simulation ticks.
  await readyApp(page);
  await page.evaluate(()=>{
-  const a=window.__app;a.view.render=()=>{};window.__proof={frames:0,finite:true,workerErrors:[],inspect:null};
+  const a=window.__app;window.__proof={frames:0,finite:true,workerErrors:[],inspect:null};
   a.worker.addEventListener('message',({data:m})=>{
    const p=window.__proof;if(m.t==='error')p.workerErrors.push(m.msg);
    if(m.t==='inspect'&&m.state==='policy')p.inspect=m;

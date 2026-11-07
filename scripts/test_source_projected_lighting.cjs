@@ -1,21 +1,16 @@
 /** Chromium pixels: Source projected lighting and independent native masks. */
 const assert=require('node:assert/strict'),{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
-const {fixture,png}=require('./source_material_fixture.cjs'),{readyApp}=require('./attach-ready-app.cjs');
+const {fixture,materialView,install}=require('./source_material_fixture.cjs');
 (async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{
- const page=await browser.newPage({deviceScaleFactor:.25}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
- await require('./render-on-demand.cjs')(page);
- await page.addInitScript(()=>localStorage.setItem('ume-prefs',JSON.stringify({robot:'r1',terrain:'flat'})));
- await page.route('**/assets/source/flashlight.png',route=>route.fulfill({contentType:'image/png',body:png([64,64,64,255])}));
- // The release chunk stays byte-identical; the real Ready App is attached through CDP.
- await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page));await readyApp(page,{until:()=>window.__app.view.flashlight.ready});
- let mode='flat';await page.route('**/nt_ghost_ctg/visual.glb*',route=>route.fulfill({contentType:'model/gltf+json',body:JSON.stringify(fixture(mode))}));
- await page.route('**/nt_ghost_ctg/manifest.json',route=>route.fulfill({json:{}}));for(const file of['lighting.json','lightstyles.json'])await page.route('**/nt_ghost_ctg/'+file,route=>route.fulfill({status:404,body:''}));
+ // Component-only: each owned mode is a verified local bundle installed in the real renderer.
+ const errors=[],page=await materialView(browser,errors);
  const results={};
- for(mode of['flat','world','sideways','frame-positive','frame-negative','bump-flat','bump-tilted','bump-disabled','phong','phong-point-falloff','phong-spot-falloff','phong-interpolated-falloff','phong-specular-falloff','phong-skinned-falloff','phong-masked','phong-base-mask','phong-mask-invert','phong-albedo','phong-exponent','emissive-full','emissive-partial','unlit','reflect-base','reflect-detail','reflect-detail-clear','reflect-secondary','reflect-cutout-detail','reflect-cutout-detail-clear','emissive-detail','phong-detail']){
+ for(const mode of['flat','world','sideways','frame-positive','frame-negative','bump-flat','bump-tilted','bump-disabled','phong','phong-point-falloff','phong-spot-falloff','phong-interpolated-falloff','phong-specular-falloff','phong-skinned-falloff','phong-masked','phong-base-mask','phong-mask-invert','phong-albedo','phong-exponent','emissive-full','emissive-partial','unlit','reflect-base','reflect-detail','reflect-detail-clear','reflect-secondary','reflect-cutout-detail','reflect-cutout-detail-clear','emissive-detail','phong-detail']){
+  await install(page,`Source material ${mode}`,fixture(mode));
   results[mode]=await page.evaluate(async mode=>{
-   const v=window.__app.view;await v.setTerrainVisual(null);await v.setTerrainVisual(window.__app.sourceForTerrain('map:nt_ghost_ctg'));v.setDisplay({...v.display,robot:false});v.setSourceLighting(true);
+   const v=window.__view;v.setSourceLighting(true);
    // Read linear pixels directly, excluding the independently tested final color LUT.
-   v.sourceColorMap=false;v.sourceAmbient.linearOutput.value=1;v.flashlight.cookie.value.colorSpace='';v.flashlight.cookie.value.needsUpdate=true;
+   v.sourceColorMap=false;v.sourceAmbient.linearOutput.value=1;
    const camera=v.camera;camera.position.set(0,0,0);camera.quaternion.set(0,0,0,1);camera.aspect=1;camera.fov=60;camera.updateProjectionMatrix();
    const canvas=document.createElement('canvas');canvas.width=64;canvas.height=64;const ctx=canvas.getContext('2d');const read=()=>{ctx.clearRect(0,0,64,64);ctx.drawImage(v.renderer.domElement,0,0);return Array.from(ctx.getImageData(32,32,1,1).data)};
    v.beginOffscreen(64,64,{transparent:true,floor:false});v.setFlashlight(false);v.renderWith(camera);const off=read();v.setFlashlight(true);v.renderWith(camera);const on=read();

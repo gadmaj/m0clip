@@ -11,18 +11,9 @@ const {readyApp}=require('./attach-ready-app.cjs');
  const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});
  const results=[],errors=[];
  try {
-  const page=await browser.newPage({viewport:{width:1280,height:800},deviceScaleFactor:.25});
+  const page=await browser.newPage({viewport:{width:1280,height:800},deviceScaleFactor:1});
   page.on('pageerror',e=>errors.push(e.message));
   page.on('console',m=>{if(m.type()==='error')console.log('Browser error: '+m.text());if(m.text().startsWith('[physics]'))console.log(m.text());if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
-  if(process.env.TRACE_WORKER)await page.context().route('**/assets/sim.worker-*.js',async route=>{
-   const response=await route.fetch(),body=await response.text();
-   const engine=body.match(/this\.eng\s*=\s*await\s+([\w$]+)\.create/)?.[1];
-   const sim=[...body.matchAll(/([\w$]+)\.onMessage\(/g)].at(-1)?.[1];assert.ok(engine&&sim,'Worker trace must match');
-   const hook=`\nconst traceCreate=${engine}.create.bind(${engine});${engine}.create=async(...args)=>{console.log('[physics] create start');try{const result=await traceCreate(...args);console.log('[physics] create done');return result;}catch(e){console.error('[physics] create failed',e,e?.stack);throw e;}};
-   for(const name of ['buildEngine','renderModel']){const original=${sim}[name].bind(${sim});${sim}[name]=function(...args){console.log('[physics] '+name+' start '+this.terrain);try{const result=original(...args);if(result?.then)return result.then(value=>{console.log('[physics] '+name+' done');return value},e=>{console.error('[physics] '+name+' failed',e,e?.stack);throw e;});console.log('[physics] '+name+' done');return result;}catch(e){console.error('[physics] '+name+' failed',e,e?.stack);throw e;}};}`;
-   await route.fulfill({response,body:body+hook});
-  });
-  await require('./render-on-demand.cjs')(page);
   await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page));
   // The release chunk stays byte-identical; the real Ready App is attached through CDP.
   await readyApp(page,{timeout:180000});

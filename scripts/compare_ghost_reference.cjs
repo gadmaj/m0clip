@@ -73,9 +73,8 @@ async function main() {
             });
         };
         const captureApp = async (url, label) => {
-            const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: .25 });
+            const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
             observe(page, label);
-            await require('./render-on-demand.cjs')(page);
             await page.goto(url + '/?plain&map='+mapId+'&body=stock');
             await require('./launch-scene.cjs').launchScene(page);
             // The release chunk stays byte-identical; the real Ready App is attached through CDP.

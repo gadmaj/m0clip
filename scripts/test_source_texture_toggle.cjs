@@ -1,37 +1,42 @@
 /** Chromium: diffuse-only mode preserves alpha, masks, animation and lossless exports. */
-const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),fs=require('node:fs');
-const{fixture,png}=require('./source_material_fixture.cjs'),{readyApp}=require('./attach-ready-app.cjs');
+const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict');
+const{fixture,materialView,install}=require('./source_material_fixture.cjs'),{bundle}=require('./source_map_fixture.cjs'),{readyApp}=require('./attach-ready-app.cjs');
 (async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{
- const page=await browser.newPage({deviceScaleFactor:.25}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
- await require('./render-on-demand.cjs')(page);
- await page.addInitScript(()=>localStorage.setItem('ume-prefs',JSON.stringify({robot:'r1',terrain:'flat'})));
- await page.route('**/assets/source/flashlight.png',route=>route.fulfill({contentType:'image/png',body:png([64,64,64,255])}));
- let mode='cutout-bare';await page.route('**/nt_ghost_ctg/visual.glb*',route=>route.fulfill({contentType:'model/gltf+json',body:JSON.stringify(fixture(mode))}));
- const manifest=JSON.parse(fs.readFileSync('public/assets/maps/nt_ghost_ctg/manifest.json'));delete manifest.props;delete manifest.visibility;
- await page.route('**/nt_ghost_ctg/manifest.json',route=>route.fulfill({json:manifest}));for(const file of['lighting.json','lightstyles.json'])await page.route('**/nt_ghost_ctg/'+file,route=>route.fulfill({status:404,body:''}));
- // The release chunk stays byte-identical; the real Ready App is attached through CDP.
- const base=process.env.BASE_URL||'http://127.0.0.1:5176';await page.goto(base+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await readyApp(page,{until:()=>window.__app.view.flashlight.ready});
+ // Component-only material matrix: each owned mode is a verified local bundle installed in the real renderer.
+ const errors=[],harness=await materialView(browser,errors);
  const results={};
- for(mode of['cutout-bare','cutout-generic','animated','animated-cutout','reflect-detail','emissive-detail','phong-base-mask']){
-  results[mode]=await page.evaluate(async mode=>{
-   const a=window.__app,v=a.view;await v.setTerrainVisual(null);await v.setTerrainVisual(window.__app.sourceForTerrain('map:nt_ghost_ctg'));v.setSourceLighting(true);v.sourceColorMap=false;v.sourceAmbient.linearOutput.value=1;v.setSourceTime(0);
-   v.flashlight.cookie.value.colorSpace='';v.flashlight.cookie.value.needsUpdate=true;v.setFlashlight(false);a.explore.setDisplay({...a.explore.getDisplay(),textures:true,robot:false});
+ for(const mode of['cutout-bare','cutout-generic','animated','animated-cutout','reflect-detail','emissive-detail','phong-base-mask']){
+  await install(harness,`Source texture ${mode}`,fixture(mode));
+  results[mode]=await harness.evaluate(async mode=>{
+   const v=window.__view;v.setSourceLighting(true);v.sourceColorMap=false;v.sourceAmbient.linearOutput.value=1;v.setSourceTime(0);
+   v.setFlashlight(false);v.setDisplay({...v.getDisplay(),textures:true});
    const camera=v.camera;camera.position.set(0,0,0);camera.quaternion.set(0,0,0,1);camera.fov=60;camera.aspect=1;camera.updateProjectionMatrix();
    const material=[v.terrainMaterials[0].source].flat()[0],map=material.map,canvas=document.createElement('canvas');canvas.width=64;canvas.height=64;const ctx=canvas.getContext('2d');
    const read=()=>{v.renderWith(camera);ctx.clearRect(0,0,64,64);ctx.drawImage(v.renderer.domElement,0,0);return[8,32,56].map(x=>Array.from(ctx.getImageData(x,32,1,1).data))};
    v.beginOffscreen(64,64,{transparent:true,floor:false});const normal=read(),version=material.version;
-   a.explore.setDisplay({...a.explore.getDisplay(),textures:false});const gray=read(),mapRetained=material.map===map,sameVersion=material.version===version;
+   v.setDisplay({...v.getDisplay(),textures:false});const gray=read(),mapRetained=material.map===map,sameVersion=material.version===version;
    v.setSourceTime(.5);const next=read();if(mode==='phong-base-mask')v.setFlashlight(true);const lit=read();v.setFlashlight(false);
-   a.explore.setDisplay({...a.explore.getDisplay(),textures:true});const restored=read();v.endOffscreen();return{normal,gray,next,lit,restored,mapRetained,sameVersion};
+   v.setDisplay({...v.getDisplay(),textures:true});const restored=read();v.endOffscreen();return{normal,gray,next,lit,restored,mapRetained,sameVersion};
   },mode);
  }
+ await harness.close();
  const close=(actual,expected,label)=>{for(let i=0;i<4;i++)assert.ok(Math.abs(actual[i]-expected[i])<=1,`${label}: ${actual} vs ${expected}`)};
  for(const mode of['cutout-bare','cutout-generic']){const r=results[mode];close(r.normal[0],[0,0,0,0],mode+' original hole');close(r.gray[0],[0,0,0,0],mode+' gray hole');close(r.gray[1],[128,128,128,255],mode+' gray center');close(r.restored[1],r.normal[1],mode+' restored')}
  for(const mode of['animated','animated-cutout']){const r=results[mode];close(r.gray[1],mode==='animated'?[128,128,128,255]:[0,0,0,0],mode+' first frame');close(r.next[1],[128,128,128,255],mode+' next gray frame');close(r.restored[1],[0,255,0,255],mode+' latest colored frame')}
  close(results['reflect-detail'].gray[1],[32,16,8,255],'reflection mask');close(results['emissive-detail'].gray[1],[16,8,4,255],'glow mask');close(results['phong-base-mask'].lit[1],[40,20,10,255],'Phong mask');
  assert.ok(Object.values(results).every(r=>r.mapRetained&&r.sameVersion));
- // Drive the real checkbox, record a take in Ghost and export the diagnostic map.
- mode='cutout-bare';await page.goto(base+'/?plain&map=nt_ghost_ctg&body=stock').then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await readyApp(page,{until:()=>window.__app.view.terrainObject,timeout:180000});
+ // Real App: install the owned cutout map through the real local-bundle UI, drive the real checkbox,
+ // record a take and export it. Native Ghost requests are never substituted.
+ const page=await browser.newPage({deviceScaleFactor:1});page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
+ await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page,{terrain:'flat',controls:true}));
+ await readyApp(page);
+ await page.locator('#terrain-trigger').click();
+ await page.locator('dialog[data-visual-picker="terrain"]').getByRole('button',{name:'Open local map…',exact:true}).click();
+ const local=page.locator('dialog[data-local-map="true"]');
+ await local.locator('input[type="file"]:visible').setInputFiles({name:'source-texture-toggle.map.zip',mimeType:'application/zip',buffer:bundle(fixture('cutout-bare'),{name:'Source texture toggle fixture'})});
+ await local.getByRole('button',{name:'Load map',exact:true}).click();
+ await local.waitFor({state:'detached',timeout:180000});
+ await readyApp(page,{until:()=>window.__app.view.terrainObject&&window.__app.model.terrain.startsWith('map:local-'),timeout:180000});
  await page.getByText('Render controls',{exact:true}).click();await page.getByLabel('Textures',{exact:true}).uncheck();
  await page.evaluate(()=>window.__app.startRecording());await page.waitForFunction(()=>window.__app.rec?.frames>=10);await page.evaluate(()=>window.__app.stopRecording());await page.waitForFunction(()=>window.__app.timeline.isOpen);
  const exported=await page.evaluate(async()=>{
