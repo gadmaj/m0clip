@@ -76,13 +76,15 @@ class MaterialExport:
                 images, textures = self.glb.json['images'], self.glb.json['textures']
                 images[textures[previous]['source']] = dict(images[textures[base]['source']])
             record['pbrMetallicRoughness']['baseColorTexture'] = dict(index=base)
-        record['pbrMetallicRoughness']['baseColorFactor'] = [*meta['color'], 1]
+        record['pbrMetallicRoughness']['baseColorFactor'] = [
+            (a * b) ** 2.2 for a, b in zip(meta['color'], meta['color2'])
+        ] + [meta['alpha']]
         record['doubleSided'] = meta['nocull']
         if meta.get('envmap') and meta['envmap'] != 'env_cubemap':
             faces = [self.texture(meta['envmap'], face=i) for i in range(6)]
             if all(i is not None for i in faces): meta['envmapFaces'] = faces
         if meta['alphatest']: record.update(alphaMode='MASK', alphaCutoff=meta['alphatestreference'])
-        elif meta['translucent'] or meta['additive']: record.update(alphaMode='BLEND')
+        elif meta['translucent'] or meta['additive'] or meta['alpha'] < 1: record.update(alphaMode='BLEND')
         else: record['alphaMode'] = 'OPAQUE'
         if meta.get('detail') and meta['detailblendmode'] != 0:
             raise ValueError(f'Unsupported Source detail blend mode {meta["detailblendmode"]} on {name}')
