@@ -46,11 +46,16 @@ function pointerGeometry(element) {
   return { x: r.x, y: r.y, width: r.width, height: r.height, hit: element.contains(target), disabled: !!element.disabled,
     viewportWidth: innerWidth, viewportHeight: innerHeight, clipped };
 }
-async function hit(locator) {
+async function pointerTarget(locator) {
   let actual = await locator.evaluate(pointerGeometry);
   if (actual.clipped) { await locator.scrollIntoViewIfNeeded(); actual = await locator.evaluate(pointerGeometry); }
-  assert.ok(actual.width > 0 && actual.height > 0 && actual.hit && !actual.disabled, `Real pointer target must be reachable: ${JSON.stringify(actual)}`);
+  assert.ok(actual.width > 0 && actual.height > 0 && actual.hit, `Real pointer target must be reachable: ${JSON.stringify(actual)}`);
   assert.ok(actual.x >= -1 && actual.y >= -1 && actual.x + actual.width <= actual.viewportWidth + 1 && actual.y + actual.height <= actual.viewportHeight + 1, 'Actual control must fit the consumer viewport');
+  return actual;
+}
+async function hit(locator) {
+  const actual = await pointerTarget(locator);
+  assert.equal(actual.disabled, false, `The action must be enabled: ${JSON.stringify(actual)}`);
   return actual;
 }
 async function dockProof(page) {
@@ -59,7 +64,7 @@ async function dockProof(page) {
   assert.ok(rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= view.width + 1 && rect.y + rect.height <= view.height + 1, 'Core actions dock must fit the viewport');
   assert.ok(view.scroll <= view.width + 1, 'Workspace must not require horizontal document scrolling');
   const targets = [];
-  for (const selector of core) targets.push({ selector, ...await hit(page.locator(selector)) });
+  for (const selector of core) targets.push({ selector, ...await pointerTarget(page.locator(selector)) });
   for (const title of ["Record the robot's motion and your inputs (V)", 'Open the last take on the timeline', 'Open a saved take (.take.zip)']) {
     const control = page.getByTitle(title, { exact: true });
     if (await control.isEnabled()) targets.push({ title, ...await hit(control) });
@@ -181,6 +186,8 @@ async function timeline(page, directory, { touch = false, small = false, smoke =
   await page.locator('#deck').waitFor({ state: 'visible' });
   const takeStatus = await page.locator('#record-status').textContent();
   assert.equal(await page.locator('#record-status').isVisible(), true);
+  // Dock content changes with recording state; let its ResizeObserver finish before measuring placement.
+  await raf(page, 2);
   const deck = await page.locator('#deck').boundingBox(), dock = await page.locator('#scene-actions').boundingBox();
   assert.ok(deck.y >= 0 && deck.y + deck.height <= dock.y + 1, 'Actual timeline must stay above core actions, including old bottom-edge placement');
   const play = page.getByTitle('Play / pause (Space)', { exact: true }); await hit(play);
