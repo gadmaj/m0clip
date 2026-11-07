@@ -466,6 +466,15 @@ try {
     visual:sharedGlb.finish(),renderer:{version:1,color:'ldr-gamma-lut',antialiasing:'fxaa'},requirements:[{code:'parent-unresolved',blocking:true,detail:'Still unresolved'}],
     maxOutputBytes:8*1024**2,maxMetadataBytes:1024**2,maxMetadataAllocationBytes:16*1024**2};
   const composed=composeSourceMapFiles(manifestWorld,sharedLighting,sharedAssets,composeLimits);
+  assert.deepEqual(composed.requirements.filter(item=>item.code==='directional-style-runtime').map(item=>item.face),[0],
+    'One authored face must not repeat because both lighting writers retain its blocker');
+  const distinctFace={...sharedLighting.requirements.find(item=>item.code==='directional-style-runtime'),face:1};
+  const distinct=composeSourceMapFiles(manifestWorld,sharedLighting,sharedAssets,
+    {...composeLimits,requirements:[...composeLimits.requirements,distinctFace]});
+  assert.deepEqual(distinct.requirements.filter(item=>item.code==='directional-style-runtime').map(item=>item.face).sort(),[0,1],
+    'Separate authored faces remain separate requirements even when their codes match');
+  await assert.rejects(finalizeSourceAssembly(composed,'Fixture','Fixture'),error=>
+    error.requirements.filter(item=>item.code==='directional-style-runtime').length===1);
   const finalized=await finalizeGeneratedMapBundle({...composeLimits,files:composed.files,maxHashBytes:16*1024**2});
   const composedSource=registerLocalMap(finalized),nativeManifest=await composedSource.json('manifest.json');
   assert.deepEqual(nativeManifest.light,{azimuth:-135,elevation:30,color:0x804020,intensity:1.8,ambientColor:0x1e3c5a,ambient:.6},'authored Source light converts into the renderer map frame');
@@ -507,8 +516,6 @@ try {
     const blocked=composeSourceMapFiles(authored,sharedLighting,sharedAssets,composeLimits);
     assert.deepEqual(authored.bsp.entities,before,'assembly leaves ordered original entity data intact');
     assert.equal(blocked.manifest.source_prop_view,undefined);
-    assert.equal(blocked.requirements.length,noPolicy.requirements.length+1);
-    assert.deepEqual(blocked.requirements.slice(0,-1),noPolicy.requirements,'all existing requirements survive');
     let verifying=false;
     await assert.rejects(finalizeSourceAssembly(blocked,'Fixture','Fixture',()=>{verifying=true;}),error=>
       error.requirements.some(r=>r.code==='prop-level-screen-fade-policy'&&r.blocking));

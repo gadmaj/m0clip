@@ -52,6 +52,7 @@ const { readyApp } = require('./attach-ready-app.cjs');
     const mapCards = gallery.locator('button[data-value^="map:"]');
     assert.ok((await mapCards.allTextContents()).every(label => label.includes('.bsp')), 'Map filenames remain visible');
     // Previews are progressive: bring every card into view, then require an actual decoded image.
+    let renderedPreviews = 0;
     for (let index = 0; index < await cards.count(); index++) {
       const card = cards.nth(index);
       await card.scrollIntoViewIfNeeded();
@@ -62,6 +63,8 @@ const { readyApp } = require('./attach-ready-app.cjs');
         const image = card?.querySelector('img');
         return image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
       }, await card.getAttribute('data-value'));
+      await card.locator('img').evaluate(image => image.decode());
+      renderedPreviews++;
     }
     await search.fill('nt_ghost_ctg.bsp');
     assert.equal(await visibleCards.count(), 1, 'Full filename search finds the matching card');
@@ -105,6 +108,8 @@ const { readyApp } = require('./attach-ready-app.cjs');
         await card.scrollIntoViewIfNeeded();
         const image = card.locator('img');
         await image.waitFor({ state: 'attached' });
+        await page.waitForFunction(image => image.isConnected && image.currentSrc && image.complete
+          && image.naturalWidth > 0 && image.naturalHeight > 0, await image.elementHandle());
         await image.evaluate(image => image.decode());
         const picture = await image.boundingBox(), tile = await card.boundingBox();
         assert.equal(await image.isVisible(), true,
@@ -121,12 +126,12 @@ const { readyApp } = require('./attach-ready-app.cjs');
     }
     await page.keyboard.press('Escape');
     await chooseVisual(page, 'terrain', 'map:nt_ghost_ctg');
-    assert.equal(await page.evaluate(() => window.__app.panel.terrain), 'map:nt_ghost_ctg');
     await page.waitForFunction(() => window.__app.model?.terrain === 'map:nt_ghost_ctg' && document.getElementById('overlay').classList.contains('hidden'), null, { timeout: 120000 });
+    assert.equal(await page.evaluate(() => window.__app.panel.terrain), 'map:nt_ghost_ctg');
     assert.match(await trigger.textContent(), /nt_ghost_ctg\.bsp/);
     assert.equal(await gallery.isVisible(), false);
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ cards: labels.length, renderedPreviews: 29, filenameSearch: true, gameMatches, keyboardCancel: true, keyboardSelection: true, mapSelection: true, actualMapLoaded: true, mobileBounds, errors }));
+    console.log(JSON.stringify({ cards: labels.length, renderedPreviews, filenameSearch: true, gameMatches, keyboardCancel: true, keyboardSelection: true, mapSelection: true, actualMapLoaded: true, mobileBounds, errors }));
   } finally {
     await browser.close();
   }

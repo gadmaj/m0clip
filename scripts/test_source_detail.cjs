@@ -1,15 +1,19 @@
 /** Chromium GPU regression for native Source detail blending, scale and linear sampling. */
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert=require('node:assert/strict');
-(async()=>{const b=await chromium.launch({headless:true,args:['--no-sandbox']});try{
+const path=require('node:path'),buildFixture=require('./build-fixture.cjs');
+(async()=>{const {code,css}=await buildFixture({root:path.resolve(__dirname,'..'),platform:'browser',format:'iife',globalName:'SourceDetailFixture',source:`
+  export * as THREE from 'three';
+  export {sourceMaterial} from './src/render/source-lighting';
+  export {patchSourceMaterial} from './src/render/source-materials';`});
+const b=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{}),args:['--no-sandbox']});try{
   const page=await b.newPage(),errors=[];
   page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
   const origin=process.env.BASE_URL || 'http://127.0.0.1:5176';
   await page.route('**/__source-material-test',r=>r.fulfill({contentType:'text/html',body:'<!doctype html><html><body></body></html>'}));await page.goto(origin+'/__source-material-test');
+  await page.addScriptTag({content:code});if(css)await page.addStyleTag({content:css});
   const proof=await page.evaluate(async()=>{
-    const T=await import('/node_modules/.vite/deps/three.js');
-    const {sourceMaterial}=await import('/src/render/source-lighting.ts');
-    const {patchSourceMaterial}=await import('/src/render/source-materials.ts');
+    const {THREE:T,sourceMaterial,patchSourceMaterial}=window.SourceDetailFixture;
     const texture=(pixels,w=1)=>{const t=new T.DataTexture(new Uint8Array(pixels),w,1);t.minFilter=t.magFilter=T.NearestFilter;t.wrapS=t.wrapT=T.RepeatWrapping;t.needsUpdate=true;return t;};
     const base=texture([64,64,64,255]),lightmap=texture([32,32,32,255]),detail=texture([0,0,0,255,128,128,128,255,192,192,192,255,255,255,255,255],4);
     const scene=new T.Scene(),camera=new T.OrthographicCamera(-1,1,1,-1,.1,10);camera.position.z=1;
