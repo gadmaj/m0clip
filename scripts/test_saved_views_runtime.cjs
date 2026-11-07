@@ -8,7 +8,6 @@ const {readyApp}=require('./attach-ready-app.cjs');
   const errors=[];
   async function pageIn(context){
     const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
-    if(process.env.RENDER_ON_DEMAND)await require('./render-on-demand.cjs')(page);
     return page;
   }
   const base=process.env.BASE_URL||'http://127.0.0.1:5176';
@@ -23,7 +22,7 @@ const {readyApp}=require('./attach-ready-app.cjs');
     assert.equal(actual.fov,view.fov);
   }
   try{
-    const context=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:Number(process.env.TEST_DPR||1)}),page=await pageIn(context);
+    const context=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:1}),page=await pageIn(context);
     await page.goto(base+'/?plain').then(() => require('./launch-scene.cjs').launchScene(page, { terrain: 'flat', controls: true }));await ready(page);
     const saved=await page.evaluate(async()=>{
       const a=window.__app;a.setNoclip(true);a.flight.stop();a.heldView=true;
@@ -62,7 +61,7 @@ const {readyApp}=require('./attach-ready-app.cjs');
     const expandScene=page.getByRole('button',{name:'Expand Scene panel',exact:true});
     if(await expandScene.isVisible())await expandScene.click();
     // A fresh receiver's robot, lighting and paint preferences must not replace the shared view.
-    const receiver=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:Number(process.env.TEST_DPR||1)});await receiver.addInitScript(()=>{localStorage.setItem('ume-prefs',JSON.stringify({robot:'go2',terrain:'park',policy:'does-not-exist'}));localStorage.setItem('ume-appearance',JSON.stringify({r1:{colorway:'product',sourceBody:'stock',parts:{}}}));});
+    const receiver=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:1});await receiver.addInitScript(()=>{localStorage.setItem('ume-prefs',JSON.stringify({robot:'go2',terrain:'park',policy:'does-not-exist'}));localStorage.setItem('ume-appearance',JSON.stringify({r1:{colorway:'product',sourceBody:'stock',parts:{}}}));});
     const fresh=await pageIn(receiver);await fresh.goto(viewLink).then(() => require('./launch-scene.cjs').launchScene(fresh, { controls: true }));await ready(fresh);await restored(fresh);await matches(fresh,saved);
     const head={...saved,appearance:{...saved.appearance,sourceBody:'stock'},sourceHead:'ghost'};
     await page.evaluate(view=>window.__app.explore.restoreView(view),head);await restored(page);await matches(page,head);assert.equal(await page.evaluate(()=>window.__app.view.getSourceHead()),'ghost');
@@ -97,7 +96,7 @@ const {readyApp}=require('./attach-ready-app.cjs');
     await page.evaluate(view=>window.__app.explore.restoreView(view),legacy);await restored(page);assert.deepEqual(await page.evaluate(()=>window.__app.view.getAppearance()),saved.appearance);
     assert.equal(await page.evaluate(()=>window.__app.view.sourceColor.antialiasing),'fxaa');
     // Latest selection wins even while the first view is waiting for a native model download.
-    const raceContext=await browser.newContext({deviceScaleFactor:Number(process.env.TEST_DPR||1)}),race=await pageIn(raceContext);await race.goto(base+'/?plain').then(() => require('./launch-scene.cjs').launchScene(race, { terrain: 'flat', controls: true }));await ready(race);
+    const raceContext=await browser.newContext({deviceScaleFactor:1}),race=await pageIn(raceContext);await race.goto(base+'/?plain').then(() => require('./launch-scene.cjs').launchScene(race, { terrain: 'flat', controls: true }));await ready(race);
     let release,started;const gate=new Promise(resolve=>release=resolve),requested=new Promise(resolve=>started=resolve);
     await race.route('**/assets/source-robots/halflife2-dog/dog.glb',async route=>{started();await gate;await route.continue();});
     await race.evaluate(view=>{void window.__app.explore.restoreView(view)},saved);await requested;

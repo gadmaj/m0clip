@@ -1,8 +1,7 @@
 /** Ghost: final color pass follows all cameras, retains native lighting and PNG export. */
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),{readyApp}=require('./attach-ready-app.cjs');
 (async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{
-  const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:Number(process.env.TEST_DPR||1)}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
-  if(process.env.RENDER_ON_DEMAND)await require('./render-on-demand.cjs')(page);
+  const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:1}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
   // The release chunk stays byte-identical; the real Ready App is attached through CDP.
   await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&map=nt_ghost_ctg&body=dog').then(() => require('./launch-scene.cjs').launchScene(page));await readyApp(page,{until:()=>window.__app.view.terrainObject&&window.__app.view.getBodyVisualState().applied==='dog',timeout:240000});
   const proof=await page.evaluate(()=>{

@@ -10,7 +10,6 @@ const { readyApp } = require('./attach-ready-app.cjs');
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    await require('./render-on-demand.cjs')(page);
     await page.goto((process.env.BASE_URL || 'http://127.0.0.1:5176') + '/?plain')
       .then(() => require('./launch-scene.cjs').launchScene(page));
     // The release chunk stays byte-identical; the real Ready App is attached through CDP.

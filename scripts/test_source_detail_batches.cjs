@@ -1,15 +1,19 @@
 /** Chromium pixels: batched foliage keeps camera-facing shapes, tint, masks and flashlight shadows. */
 const assert=require('node:assert/strict'),{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
-(async()=>{const browser=await chromium.launch({headless:true,args:['--no-sandbox']});try{
+const path=require('node:path'),buildFixture=require('./build-fixture.cjs');
+(async()=>{const {code,css}=await buildFixture({root:path.resolve(__dirname,'..'),platform:'browser',format:'iife',globalName:'SourceDetailBatchFixture',source:`
+  export * as THREE from 'three';
+  export {batchSourceDetails,prepareDetailBatch,patchDetailBatchMaterial,expandDetailBatches} from './src/render/source-details';
+  export {sourceVertexMaterial} from './src/render/source-lighting';
+  export {setSourceTexturesEnabled} from './src/render/source-textures';
+  export {SourceMaterials} from './src/render/source-materials';
+  export {SourceFlashlight} from './src/render/source-flashlight';`});
+const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{}),args:['--no-sandbox']});try{
  const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text())});
  const base=process.env.BASE_URL||'http://127.0.0.1:5176';await page.route(base+'/?detail-batches',r=>r.fulfill({contentType:'text/html',body:'<body></body>'}));await page.goto(base+'/?detail-batches');
+ await page.addScriptTag({content:code});if(css)await page.addStyleTag({content:css});
  const proof=await page.evaluate(async()=>{
-  const THREE=await import('/node_modules/.vite/deps/three.js');
-  const {batchSourceDetails,prepareDetailBatch,patchDetailBatchMaterial,expandDetailBatches}=await import('/src/render/source-details.ts');
-  const {sourceVertexMaterial}=await import('/src/render/source-lighting.ts');
-  const {setSourceTexturesEnabled}=await import('/src/render/source-textures.ts');
-  const {SourceMaterials}=await import('/src/render/source-materials.ts');
-  const {SourceFlashlight}=await import('/src/render/source-flashlight.ts');
+  const {THREE,batchSourceDetails,prepareDetailBatch,patchDetailBatchMaterial,expandDetailBatches,sourceVertexMaterial,setSourceTexturesEnabled,SourceMaterials,SourceFlashlight}=window.SourceDetailBatchFixture;
   THREE.Object3D.DEFAULT_UP.set(0,0,1);
   const renderer=new THREE.WebGLRenderer({alpha:true,preserveDrawingBuffer:true}),target=new THREE.WebGLRenderTarget(128,96);renderer.setSize(128,96);renderer.setRenderTarget(target);renderer.setClearColor(0,1);renderer.toneMapping=THREE.NoToneMapping;
   const scene=new THREE.Scene(),root=new THREE.Group(),camera=new THREE.PerspectiveCamera(55,128/96,.05,100);scene.add(root);camera.up.set(0,0,1);
@@ -53,7 +57,7 @@ const assert=require('node:assert/strict'),{chromium}=require(process.env.PLAYWR
   target.dispose();renderer.dispose();return {batching,results,exports,ownedBefore,disposed,images:{before:Array.from(before[0].pixels),after:Array.from(afterImages[0])}};
  });
  const {PNG}=require(require('node:path').resolve(process.env.NOCLIP_REFERENCE||'../noclip.website','node_modules/pngjs'));
- for(const [name,data] of Object.entries(proof.images)){const png=new PNG({width:128,height:96});png.data=Buffer.from(data);require('node:fs').writeFileSync('/tmp/detail-batch-'+name+'.png',PNG.sync.write(png));}delete proof.images;
+ for(const [name,data] of Object.entries(proof.images)){const png=new PNG({width:128,height:96});png.data=Buffer.from(data);require('node:fs').writeFileSync(path.join(require('node:os').tmpdir(),'detail-batch-'+name+'.png'),PNG.sync.write(png));}delete proof.images;
  assert.deepEqual(errors,[]);
  assert.equal(proof.batching.instances,12);assert.equal(proof.batching.batches,2);
  // GPU atan/rotation and CPU object matrices round differently at cutout and

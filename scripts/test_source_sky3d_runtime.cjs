@@ -1,8 +1,7 @@
 /** Chromium integration: native skyline, foreground depth, camera paths and cleanup. */
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const assert=require('node:assert/strict'),fs=require('node:fs'),{readyApp}=require('./attach-ready-app.cjs');
-(async()=>{const b=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{const p=await b.newPage({deviceScaleFactor:Number(process.env.TEST_DPR||1)}),errors=[];p.on('pageerror',e=>errors.push(e.message));p.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
-if(process.env.RENDER_ON_DEMAND)await require('./render-on-demand.cjs')(p);
+(async()=>{const b=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{const p=await b.newPage({deviceScaleFactor:1}),errors=[];p.on('pageerror',e=>errors.push(e.message));p.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
 // The release chunk stays byte-identical; the real Ready App is attached through CDP.
 await p.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&map=nt_ghost_ctg').then(() => require('./launch-scene.cjs').launchScene(p));await readyApp(p,{until:()=>window.__app.view.terrainObject,timeout:180000});
 const proof=await p.evaluate(()=>{const v=window.__app.view,sky=v.sourceSky3D,world=v.terrainObject,display={...v.display};v.setDisplay({...display,robot:false});world.visible=false;
