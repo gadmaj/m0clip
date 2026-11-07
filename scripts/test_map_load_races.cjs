@@ -70,7 +70,10 @@ function fixture(id){
     for(const resource of v.sourceMaterials.resources)resource.addEventListener?.('dispose',()=>window.__activeDisposals++);
    });
    const expected=request;
-   if(mode!=='world')await held();await page.evaluate(()=>window.__oldLoad.catch(error=>{if(error.name!=='AbortError'&&!String(error).includes('texture'))throw error;}));
+   if(mode!=='world')await held();
+   const retired=await page.evaluate(()=>window.__oldLoad.then(()=>({rejected:false}),error=>({rejected:true,name:error.name})));
+   if(mode==='failed-texture')assert.equal(retired.rejected,true,'The deliberately missing retired texture must reject its own load');
+   else if(retired.rejected)assert.equal(retired.name,'AbortError','A healthy retired load may only reject as cancellation');
    const proof=await page.evaluate(()=>{
     const v=window.__app.view,c=v.sourceMaterials;c.update(.5);
     return {sameScene:v.terrainObject===window.__active,sameContext:c===window.__activeContext,id:v.terrainObject.userData.loadGeneration,
@@ -80,7 +83,7 @@ function fixture(id){
    });
    assert.equal(proof.id,expected);assert.ok(proof.sameScene&&proof.sameContext&&proof.oldDisposed&&proof.frame);assert.equal(proof.scenes,1);
    assert.equal(proof.sky,1);assert.equal(proof.sprites,1);assert.equal(proof.details,1);assert.equal(proof.activeDisposals,0);assert.equal(proof.oldResources,0);assert.equal(proof.animated,1);assert.equal(proof.clock,.5);
-   proofs.push({mode,...proof});await page.evaluate(()=>window.__app.view.setTerrainVisual(null));
+   proofs.push({mode,retired,...proof});await page.evaluate(()=>window.__app.view.setTerrainVisual(null));
   }
   rejectCurrent=true;
   const failure=await page.evaluate(async()=>{

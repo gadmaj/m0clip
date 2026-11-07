@@ -9,6 +9,7 @@
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const { chooseVisual } = require('./choose-visual.cjs');
@@ -117,10 +118,12 @@ async function pngCapture(page, directory, name, action) {
   assert.deepEqual(encoded, canvas, 'Consumer PNG dimensions must match the actual viewport canvas');
   return { suggested: download.suggestedFilename(), filename, canvas, encoded };
 }
-async function activateAdvancedPanel(page, id, touch = false, key = null) {
+// Activators are ensure-open (never toggle closed); only the panel's own collapse button collapses it.
+// Explicit activation proofs pass required so a missing compact switcher fails instead of returning null.
+async function activateAdvancedPanel(page, id, touch = false, key = null, { required = false } = {}) {
   const button = page.locator(`#workspace-panels button[aria-controls="${id}"]`);
-  if (!await button.isVisible()) return null;
-  const compact = await page.evaluate(() => innerWidth <= 760);
+  if (!await button.isVisible()) { assert.equal(required, false, `Advanced panel navigation must offer ${id} in this layout`); return null; }
+  const compact = await page.evaluate(() => matchMedia('(max-width: 760px)').matches);
   const others = async () => page.locator('#panel .floating-window').evaluateAll((roots, chosen) => roots.filter(root => root.id !== chosen).map(root => ({ id: root.id, x: root.getBoundingClientRect().x, y: root.getBoundingClientRect().y, expanded: root.querySelector('.floating-collapse').getAttribute('aria-expanded'), hidden: root.getClientRects().length === 0 })), id);
   const before = await others(); await hit(button);
   if (key) { await button.focus(); await page.keyboard.press(key); } else await activate(button, touch);
@@ -232,7 +235,11 @@ async function timeline(page, directory, { touch = false, small = false, smoke =
   const exportButton = page.getByTitle('Render the range to MP4 / MOV / WebM / PNG', { exact: true });
   await activate(exportButton, touch);
   await page.locator('#export').waitFor({ state: 'visible' }); assert.equal(await page.locator('#scene-actions').isVisible(), false, 'Export owns the interaction surface instead of covering live dock actions');
-  assert.equal(await page.locator('#workspace-panels').isVisible(), false, 'Export hides advanced activators alongside the live dock');
+  // Export keeps advanced activators available (review Look edits open Scene); only the live dock hides.
+  const sceneActivator = page.locator('#workspace-panels button[aria-controls="scene-window"]');
+  assert.equal(await page.locator('#workspace-panels').isVisible(), true, 'Export keeps advanced panel activators available');
+  assert.equal(await sceneActivator.isEnabled(), true, 'The Scene activator stays usable while Export is open');
+  const exportGeometry = { activator: await hit(sceneActivator), export: await page.locator('#export').boundingBox() };
   assert.equal(await page.locator('#export').evaluate(element => element.contains(document.activeElement)), true, 'Opening Export places keyboard focus in its controls');
   await page.keyboard.press('Escape'); await page.locator('#export').waitFor({ state: 'hidden' });
   assert.equal(await exportButton.evaluate(element => element === document.activeElement), true, 'Escape returns focus to the Export opener');
@@ -248,7 +255,7 @@ async function timeline(page, directory, { touch = false, small = false, smoke =
   await page.locator('#deck').waitFor({ state: 'visible', timeout: 120000 }); await dockProof(page);
   await activate(page.getByTitle('Close the timeline, back to the live sim (Esc)', { exact: true }), touch);
   await page.locator('#deck').waitFor({ state: 'hidden' });
-  const proof = { beforeDock, deck, dock, takeStatus, icons, accessibleBefore, accessiblePlaying, clockBefore, clockAfter, playingFrames, loopColorBefore, loopColorToggled, rangeBefore, rangeAfter, shot, takePath, reachable, frames: await raf(page, 6) };
+  const proof = { beforeDock, deck, dock, takeStatus, icons, accessibleBefore, accessiblePlaying, clockBefore, clockAfter, playingFrames, loopColorBefore, loopColorToggled, rangeBefore, rangeAfter, shot, takePath, exportGeometry, reachable, frames: await raf(page, 6) };
   fs.writeFileSync(path.join(directory, 'timeline-proof.json'), JSON.stringify(proof, null, 2));
   return proof;
 }
@@ -337,7 +344,7 @@ async function narrow(page, base, directory, small) {
   assert.equal(await page.locator('#workspace-panels').isVisible(), true, 'Narrow/short Controls provide discoverable existing-panel activation');
   const activators = [];
   for (const [id, key] of [['play-window', null], ['scene-window', 'Enter'], ['capture-window', 'Space']]) {
-    activators.push(await activateAdvancedPanel(page, id, true, key));
+    activators.push(await activateAdvancedPanel(page, id, true, key, { required: true }));
     const root = page.locator(`#${id}`), rect = await root.boundingBox(), actionDock = await page.locator('#scene-actions').boundingBox();
     assert.ok(rect.y + rect.height <= actionDock.y + 1);
   }
@@ -400,9 +407,26 @@ async function resizeWorkspace(page, base, directory) {
   for (const width of [390, 320, 760]) {
     await page.setViewportSize({ width, height: 844 });
     await raf(page, 4);
+    // Follow the stylesheet's actual query, not a rounded viewport width at fractional device scale.
+    const layout = await page.evaluate(() => ({
+      media: matchMedia('(max-width: 760px)').matches, navigationMedia: matchMedia('(max-width: 760px), (max-height: 600px)').matches,
+      innerWidth, clientWidth: document.documentElement.clientWidth, visualWidth: visualViewport?.width,
+      switcher: getComputedStyle(document.querySelector('#workspace-panels')).display !== 'none',
+      inactiveHidden: [...document.querySelectorAll('#panel > .floating-window:not([data-compact-active])')].every(root => root.getClientRects().length === 0),
+      gripsDisabled: [...document.querySelectorAll('#panel > .floating-window .floating-grip')].map(grip => grip.disabled),
+    }));
+    const agreement = `Stylesheet and controls agree at requested ${width}px: ${JSON.stringify(layout)}`;
+    assert.equal(layout.switcher, layout.navigationMedia, agreement);
+    assert.equal(layout.inactiveHidden, layout.media, agreement);
+    assert.ok(layout.gripsDisabled.every(disabled => disabled === layout.media), agreement);
+    if (!layout.media) {
+      assert.deepEqual(await remember(), remembered, 'A desktop boundary layout keeps the remembered desktop controls');
+      sizes.push({ width, layout, controls: [], dock: await dockProof(page) });
+      continue;
+    }
     const controls = [];
     for (const id of ['play-window', 'scene-window', 'capture-window']) {
-      controls.push(await activateAdvancedPanel(page, id));
+      controls.push(await activateAdvancedPanel(page, id, false, null, { required: true }));
       const root = page.locator(`#${id}`), rect = await root.boundingBox();
       const dock = await page.locator('#scene-actions').boundingBox();
       assert.ok(rect.x >= 0 && rect.x + rect.width <= width + 1 && rect.y + rect.height <= dock.y + 1, 'The selected compact panel fits above the real capture dock');
@@ -423,14 +447,14 @@ async function resizeWorkspace(page, base, directory) {
     await page.locator('#reset-workspace').click();
     assert.deepEqual(await page.locator('#panel > .floating-window:visible').evaluateAll(roots => roots.map(root => root.id)), ['play-window'], 'Compact reset returns to one reachable Play panel');
     assert.equal(await page.locator('#workspace-panels button[aria-controls="play-window"]').evaluate(element => element === document.activeElement), true, 'Reset leaves focus on visible compact navigation, not the now-hidden reset action');
-    await activateAdvancedPanel(page, 'capture-window');
+    await activateAdvancedPanel(page, 'capture-window', false, null, { required: true });
     const collapse = page.locator('#capture-window .floating-collapse');
     await collapse.click();
     assert.equal(await page.locator('#capture-window .floating-body').isVisible(), false);
     await page.locator('#workspace-panels button[aria-controls="capture-window"]').click();
     assert.equal(await page.locator('#capture-window .floating-body').isVisible(), true, 'Selecting the collapsed compact panel reopens its existing controls');
     assert.deepEqual(await remember(), remembered, 'Compact selection/collapse/reset and responsive clamps do not overwrite remembered desktop controls');
-    sizes.push({ width, controls, dock: await dockProof(page) });
+    sizes.push({ width, layout, controls, dock: await dockProof(page) });
     if (width !== 760) await page.screenshot({ path: path.join(directory, `resized-${width}.png`) });
   }
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -449,34 +473,54 @@ async function stackingWorkspace(page, base, directory) {
   await page.locator('#toggle-menu').click();
   const playCollapse = page.locator('#play-window .floating-collapse');
   if (await playCollapse.getAttribute('aria-expanded') !== 'true') await playCollapse.click();
-  for (const [id, x, y] of [['scene-window', 600, 96], ['capture-window', 600, 146]]) {
-    const root = page.locator(`#${id}`), collapse = root.locator('.floating-collapse');
+  const scene = page.locator('#scene-window'), reference = page.locator('#capture-window');
+  for (const root of [scene, reference]) {
+    const collapse = root.locator('.floating-collapse');
     if (await collapse.getAttribute('aria-expanded') === 'true') await collapse.click();
-    const origin = await root.boundingBox(), handle = await root.locator('.floating-grip').boundingBox();
-    await hit(root.locator('.floating-grip'));
-    const grabX = handle.x + handle.width / 2, grabY = handle.y + handle.height / 2;
-    await page.mouse.move(grabX, grabY); await page.mouse.down();
-    await page.mouse.move(grabX + x - origin.x, grabY + y - origin.y, { steps: 8 }); await page.mouse.up();
-    const placed = await root.boundingBox();
-    assert.ok(Math.abs(placed.x - x) < 1 && Math.abs(placed.y - y) < 1, 'Real drag places the collapsed panels for an overlapping-body regression');
   }
+  // Real pointer drag puts Reference's header directly under Scene's measured collapsed header, in its column,
+  // so expanding Scene must cover it (too close for Scene to shrink above it).
+  const sceneHeader = await scene.boundingBox(), origin = await reference.boundingBox(), handle = await reference.locator('.floating-grip').boundingBox();
+  const goal = { x: sceneHeader.x, y: sceneHeader.y + sceneHeader.height + 4 };
+  await hit(reference.locator('.floating-grip'));
+  const grabX = handle.x + handle.width / 2, grabY = handle.y + handle.height / 2;
+  await page.mouse.move(grabX, grabY); await page.mouse.down();
+  await page.mouse.move(grabX + goal.x - origin.x, grabY + goal.y - origin.y, { steps: 8 }); await page.mouse.up();
+  const placed = await reference.boundingBox();
+  assert.ok(Math.abs(placed.x - goal.x) < 1 && Math.abs(placed.y - goal.y) < 1, `Real drag places Reference under the collapsed Scene header: ${JSON.stringify({ sceneHeader, origin, goal, placed })}`);
   await page.setViewportSize({ width: 390, height: 844 }); await raf(page, 4);
-  await activateAdvancedPanel(page, 'scene-window');
-  await activateAdvancedPanel(page, 'play-window');
+  await activateAdvancedPanel(page, 'scene-window', false, null, { required: true });
+  await activateAdvancedPanel(page, 'play-window', false, null, { required: true });
   await page.setViewportSize({ width: 1280, height: 800 }); await raf(page, 4);
-  const sceneExpand = page.locator('#scene-window .floating-collapse');
+  const returned = await reference.boundingBox();
+  assert.ok(Math.abs(returned.x - placed.x) < 1 && Math.abs(returned.y - placed.y) < 1, 'Compact selection does not move the dragged desktop Reference panel');
+  const sceneExpand = scene.locator('.floating-collapse');
   assert.equal(await sceneExpand.getAttribute('aria-expanded'), 'false');
   await sceneExpand.click();
-  const breakpointTarget = page.locator('#scene-window details').filter({ has: page.locator('#reset-workspace') }).locator(':scope > summary');
+  // Choose the actual Scene control the Reference header lies under, not a fixed fold or coordinate.
+  const controls = '#scene-window .floating-body :is(summary, button)';
+  const overlap = await page.evaluate(selector => {
+    const referenceRoot = document.querySelector('#capture-window'), box = referenceRoot.getBoundingClientRect();
+    const body = document.querySelector('#scene-window .floating-body').getBoundingClientRect();
+    const all = [...document.querySelectorAll(selector)];
+    for (const [index, control] of all.entries()) {
+      const r = control.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+      if (!r.width || !r.height || r.top < body.top || r.bottom > body.bottom || r.left < body.left || r.right > body.right) continue;
+      if (x <= box.left || x >= box.right || y <= box.top || y >= box.bottom) continue;
+      const stack = document.elementsFromPoint(x, y);
+      return { index, label: control.textContent.trim(), x, y, reference: { x: box.x, y: box.y, width: box.width, height: box.height },
+        referenceBeneath: stack.some(element => referenceRoot.contains(element)) };
+    }
+    return null;
+  }, controls);
+  assert.ok(overlap, 'An expanded Scene control genuinely overlaps the dragged Reference header');
+  assert.equal(overlap.referenceBeneath, true, `The competing Reference header really occupies the Scene control's point: ${JSON.stringify(overlap)}`);
   const breakpointStacking = {
-    target: await hit(breakpointTarget),
-    scene: await page.locator('#scene-window').boundingBox(),
-    reference: await page.locator('#capture-window').boundingBox(),
+    overlap, placed, returned,
+    target: await hit(page.locator(controls).nth(overlap.index)),
+    scene: await scene.boundingBox(),
+    reference: await reference.boundingBox(),
   };
-  const { target, reference } = breakpointStacking;
-  assert.ok(target.x + target.width / 2 > reference.x && target.x + target.width / 2 < reference.x + reference.width &&
-    target.y + target.height / 2 > reference.y && target.y + target.height / 2 < reference.y + reference.height, 'The competing Reference header overlaps the real Scene target');
-
   await page.screenshot({ path: path.join(directory, 'desktop-overlap.png') });
   return { launch, breakpointStacking };
 }
@@ -494,26 +538,52 @@ async function legacy(page, base, directory) {
   return { launch, placement, media: await timeline(page, directory) };
 }
 async function source(page, directory, proxy, result) {
+  // The proxy fails one exact path; prove it is the visual the served release manifest actually selects.
+  const manifestResponse = await fetch(new URL(`/assets/maps/${MAP}/manifest.json`, process.env.BASE_URL));
+  assert.equal(manifestResponse.ok, true, 'The served map manifest must be readable');
+  const manifest = await manifestResponse.json(), selected = manifest.native_textures?.visual ?? manifest.visual ?? 'visual.glb';
+  assert.equal(`/assets/maps/${MAP}/${selected}`, mapVisual, 'The deliberate HTTP failure targets the map visual the current release loads');
   const initial = proxy.begin('workspace-source-flat'), launch = await enter(page, proxy.url, 'go2', directory);
-  proxy.begin('map-failure'); await chooseVisual(page, 'terrain', `map:${MAP}`);
-  await page.locator('#map-loading button:not([hidden])').waitFor({ state: 'visible', timeout: 120000 });
-  await page.locator('#capture-screenshot').click();
-  await page.waitForFunction(() => !document.querySelector('#capture-screenshot').disabled && document.querySelector('#capture-screenshot').getAttribute('aria-busy') !== 'true');
-  assert.equal(await page.locator('#screenshot-status').isVisible(), true, 'A real preparation error remains visible in quiet core actions'); await dockProof(page);
+  // An in-app map change is a transaction: a failure keeps the running scene and reports it in the notice.
+  const failing = proxy.begin('map-failure'); await chooseVisual(page, 'terrain', `map:${MAP}`);
+  const notice = page.locator('#policy-notice');
+  await page.waitForFunction(() => document.querySelector('#policy-notice-title')?.textContent === 'Map not loaded', null, { timeout: 120000 });
+  const failure = {
+    detail: await notice.locator('.dlg-body').textContent(), terrain: await page.locator('#sel-terrain').inputValue(),
+    injected: failing.resources.filter(resource => resource.path === mapVisual && resource.expectedFailure && resource.status === 503).length,
+  };
+  assert.ok(failure.detail.includes(selected) && /\b503\b/.test(failure.detail), `The visible map error names the failed selected visual and its HTTP status: ${failure.detail}`);
+  assert.ok(failure.injected >= 1, 'The selected map visual really received the injected 503');
+  assert.equal(failure.terrain, 'flat', 'A failed map keeps the active scene terrain');
   await page.screenshot({ path: path.join(directory, 'real-map-error-dock.png') });
+  await notice.locator('.dlg-foot button').click(); await notice.waitFor({ state: 'detached' });
+  await dockProof(page);
+  const kept = await pngCapture(page, directory, 'real-map-error-kept.png', () => page.locator('#capture-screenshot').click());
+  // Supported retry: choose the map again; hold its real visual to observe preparation ownership.
   const recovered = proxy.begin('ownership'); recovered.ownershipStage = 'rebuild';
-  await page.locator('#map-loading button').click();
-  await until(() => recovered.resources.some(resource => resource.path === mapVisual && resource.held), 'Real retried selected map must be held');
+  const downloads = [], download = value => downloads.push(value.suggestedFilename());
   let preparing;
-  const shot = await pngCapture(page, directory, 'real-map-recovered.png', async () => {
+  page.on('download', download);
+  try {
+    await chooseVisual(page, 'terrain', `map:${MAP}`);
+    await until(() => recovered.resources.some(resource => resource.path === mapVisual && resource.held), 'Real retried selected map must be held');
+    const statusBefore = await page.locator('#screenshot-status').textContent();
     await page.locator('#capture-screenshot').click();
-    preparing = { busy: await page.locator('#capture-screenshot').getAttribute('aria-busy'), status: await page.locator('#screenshot-status').textContent(), visible: await page.locator('#screenshot-status').isVisible() };
-    assert.equal(preparing.busy, 'true'); assert.equal(preparing.visible, true, 'Actual held-asset preparation status must remain visible');
+    preparing = { statusBefore, status: await page.locator('#screenshot-status').textContent(), visible: await page.locator('#screenshot-status').isVisible(),
+      busy: await page.locator('#capture-screenshot').getAttribute('aria-busy'), terrain: await page.locator('#sel-terrain').inputValue() };
+    assert.equal(preparing.visible, true, 'Held map preparation keeps a visible screenshot status in quiet core actions');
+    assert.notEqual(preparing.status, statusBefore, 'A screenshot request during map preparation reports its own state');
+    assert.equal(preparing.terrain, 'flat', 'The running scene stays active while the retried map prepares');
+    await dockProof(page);
     recovered.releaseRebuild = true;
-  });
-  await page.locator('#map-loading').waitFor({ state: 'hidden', timeout: 120000 }); await dockProof(page); await raf(page, 6);
+    await page.waitForFunction(map => document.querySelector('#sel-terrain').value === map, `map:${MAP}`, { timeout: 120000 });
+    await page.locator('#map-loading').waitFor({ state: 'hidden', timeout: 120000 });
+  } finally { page.off('download', download); }
+  assert.deepEqual(downloads, [], 'A screenshot requested during map preparation never captures the unfinished scene');
+  await dockProof(page); await raf(page, 6);
+  const shot = await pngCapture(page, directory, 'real-map-recovered.png', () => page.locator('#capture-screenshot').click());
   result.deliberateFailures = proxy.runs.flatMap(run => run.resources.filter(resource => resource.expectedFailure && resource.status === 503).map(resource => resource.path));
-  return { launch, preparing, shot, initialRequests: initial.resources.length, runs: proxy.runs };
+  return { launch, selected, failure, kept, preparing, shot, initialRequests: initial.resources.length, runs: proxy.runs };
 }
 
 (async () => {
@@ -527,17 +597,17 @@ async function source(page, directory, proxy, result) {
     const viewport = name === 'landscape' ? { width: 844, height: 390 }
       : mobile ? { width: name === 'mobile320' ? 320 : 390, height: small ? 520 : 844 } : { width: 1280, height: 800 };
     const directory = path.join(output, name); fs.mkdirSync(directory, { recursive: true });
-    const profileRoot = process.env.QA_PROFILE_DIR || directory;
-    fs.mkdirSync(profileRoot, { recursive: true });
-    const profile = fs.mkdtempSync(path.join(profileRoot, `${name}-profile-`));
-    const context = await chromium.launchPersistentContext(profile, {
+    // Fresh browser process and context per scenario; Playwright owns its temporary profile under os.tmpdir()
+    // and removes it on browser.close(). No scenario depends on a profile surviving its process.
+    const browser = await chromium.launch({
       headless: false, executablePath: process.env.CHROME_EXECUTABLE || '/usr/bin/google-chrome',
       args: ['--no-sandbox', '--ozone-platform=x11', '--disable-dev-shm-usage', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding'],
+    });
+    const context = await browser.newContext({
       viewport, deviceScaleFactor: mobile ? 1 : .5, isMobile: mobile, hasTouch: mobile,
       // Scale evidence only, not the actual viewport or rendering.
       recordVideo: { dir: path.join(directory, 'video'), size: mobile ? viewport : { width: 480, height: 300 } },
     });
-    const browser = context.browser();
     if (name === 'legacy') await context.addInitScript(() => {
       localStorage.setItem('ume-panel-visibility', JSON.stringify({ inspector: true, menu: false, restore: { inspector: true, menu: false } }));
       localStorage.setItem('playpen-workspace-v1', JSON.stringify({ 'play-window': { x: 84, y: 114, collapsed: true }, inspector: { x: 470, y: 120, collapsed: false } }));
@@ -546,12 +616,12 @@ async function source(page, directory, proxy, result) {
       localStorage.setItem('playpen-workspace-v1', JSON.stringify({ deck: { x: 12, y: 800, collapsed: false } }));
       localStorage.setItem('ume-deck-h', '120');
     });
-    const page = context.pages()[0] || await context.newPage(), errors = [], networkErrors = [], httpErrors = [], consoleErrors = [], warnings = [];
+    const page = await context.newPage(), errors = [], networkErrors = [], httpErrors = [], consoleErrors = [], warnings = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('requestfailed', request => networkErrors.push({ url: request.url(), error: request.failure()?.errorText }));
     page.on('response', response => { if (response.status() >= 400) httpErrors.push({ url: response.url(), path: new URL(response.url()).pathname, status: response.status() }); });
     page.on('console', message => { if (['error', 'warning'].includes(message.type())) (message.type() === 'error' ? consoleErrors : warnings).push({ text: message.text(), location: message.location() }); });
-    const result = { name, viewport, profile, chrome: browser.version(), errors, networkErrors, httpErrors, consoleErrors, warnings, deliberateFailures: [] }; results.push(result);
+    const result = { name, viewport, browserProfile: { mode: 'playwright-ephemeral', base: os.tmpdir() }, chrome: browser.version(), errors, networkErrors, httpErrors, consoleErrors, warnings, deliberateFailures: [] }; results.push(result);
     let proxy;
     try {
       if (name === 'desktop') result.proof = await desktop(page, process.env.BASE_URL, directory);
@@ -578,7 +648,7 @@ async function source(page, directory, proxy, result) {
       if (proxy) for (const run of proxy.runs) { run.releaseRebuild = true; run.releaseLate = true; }
       await page.screenshot({ path: path.join(directory, 'FAILED.png'), timeout: 10000 }).catch(error => { result.failureScreenshot = error.message; });
     } finally {
-      await page.close(); result.video = await page.video().path(); await context.close(); if (proxy) await proxy.close();
+      await page.close(); result.video = await page.video().path(); await context.close(); await browser.close(); if (proxy) await proxy.close();
       fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify({ stage: process.env.WORKSPACE_STAGE, base: process.env.BASE_URL, results }, null, 2));
     }
     console.log(JSON.stringify({ name, passed: !!result.passed, failure: result.failure }));
