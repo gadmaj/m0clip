@@ -27,7 +27,7 @@ export interface PanelCallbacks {
   onExportSetup(): void;
   onOpenShots(): void;
   onLoadTake(file: File): void;
-  onLocalMap?(file: File): Promise<void>;
+  onLocalMap?(file?: File, signal?: AbortSignal): Promise<void>;
   onLoadCsv(file: File, fps: number): void;
   onStopPlayback(): void;
   onImportPack(file: File): void;

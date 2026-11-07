@@ -5,6 +5,10 @@ import { copyDetailBillboard } from './source-details';
 import { patchExtraSkinMaterial } from './extra-skin';
 import { fetchAsset } from '../core/prepared-assets';
 import type { PlannedAsset } from '../loading/asset-plan';
+import type { SourceProps } from './source-props';
+
+import { copySourceTemporalTransform } from './source-materials';
+
 
 export const FLASHLIGHT_URL = '/assets/source/flashlight.png';
 let cookieAsset: Promise<{ blob: Blob; asset: PlannedAsset }> | undefined;
@@ -67,7 +71,7 @@ export class SourceFlashlight {
     try { draw(); } finally { this.enabled.value = previous; }
   }
 
-  renderDepth(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera) {
+  renderDepth(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, props?: SourceProps | null) {
     this.enabled.value = this.on && this.ready ? 1 : 0;
     const now = performance.now(), dt = Math.min((now - this.previous) / 1000, 0.1);
     this.previous = now;
@@ -88,6 +92,7 @@ export class SourceFlashlight {
     const swapped: { mesh: THREE.Mesh; material: THREE.Material | THREE.Material[] }[] = [];
     scene.traverse(object => {
       if (!(object instanceof THREE.Mesh) || !object.visible) return;
+      if (props?.owns(object) && !object.castShadow) { object.visible = false; hidden.push(object); return; }
       const originals = [object.material].flat();
       if (originals.every(m => m.transparent && m.alphaTest === 0)) { object.visible = false; hidden.push(object); return; }
       const depths = originals.map(m => {
@@ -101,6 +106,7 @@ export class SourceFlashlight {
         const map = (m as THREE.MeshBasicMaterial).map ?? null;
         if (!!depth.map !== !!map) depth.needsUpdate = true;
         depth.map = map;
+        copySourceTemporalTransform(m, depth);
         if (object.geometry.hasAttribute('weights_1')) patchExtraSkinMaterial(depth);
         return depth;
       });
@@ -188,7 +194,7 @@ export class SourceFlashlight {
         #include <opaque_fragment>
       `);
     };
-    material.customProgramCacheKey = () => originalKey + '-source-flashlight-v3';
+    material.customProgramCacheKey = () => originalKey + '-source-flashlight-v4';
     material.needsUpdate = true;
   }
 }

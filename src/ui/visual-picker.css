@@ -71,6 +71,18 @@
 .visual-picker-dialog[data-local-map] { width: min(460px, calc(100vw - 24px)); overflow-y: auto; }
 .visual-picker-dialog[data-local-map] input[type="file"] { min-width: 0; max-width: 100%; }
 .visual-picker-card > span { min-width: 0; overflow-wrap: anywhere; }
+.local-map-candidates { display: grid; gap: 6px; flex: 0 0 auto; }
+.local-map-candidates .visual-picker-card { width: 100%; min-width: 0; overflow-wrap: anywhere; }
+.local-map-companions { flex: 0 0 auto; min-width: 0; border-top: 1px solid var(--line-hi); margin-top: 10px; }
+.local-map-companions > p { color: var(--text-2); overflow-wrap: anywhere; }
+.local-map-mounts { margin: 0; padding-left: 24px; }
+.local-map-mounts li { margin-bottom: 8px; overflow-wrap: anywhere; }
+.local-map-mounts .visual-picker-actions { margin: 4px 0 0; gap: 4px; }
+.local-map-status { flex: 0 0 auto; margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.local-map-status:not(:empty) { margin: 8px 0; }
+.local-map-status p { margin: 0; }
+.local-map-status ul { padding-left: 20px; }
+.local-map-status summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
 @media (max-width: 450px) {
   .visual-picker-dialog { padding: 12px; }
   .visual-picker-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }

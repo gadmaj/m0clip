@@ -1,6 +1,6 @@
 import type { PlannedAsset } from './asset-plan';
 import { catalogueAssetKey } from './catalogue';
-import type { TransferUpdate } from './transfers';
+import type { TransferUpdate, TransferRealm } from './transfers';
 
 export interface LoadingSnapshot {
   loaded: number;
@@ -22,7 +22,7 @@ export interface LoadingSnapshot {
 }
 
 /** Only explicitly independent module realms split an otherwise identical HTTP entity. */
-function progressEntityKey(asset: { url: string; realm?: 'map-verification' }): string {
+function progressEntityKey(asset: { url: string; realm?: TransferRealm }): string {
   const url = catalogueAssetKey(asset.url);
   return asset.realm ? `${asset.realm}\u0000${url}` : url;
 }
@@ -33,7 +33,7 @@ export class SceneProgress {
   private requests = new Map<string, TransferUpdate>();
   private activity = new Map<string, number>();
   private resources = new Map<string, TransferUpdate>();
-  private workerRoots = new Set<string>();
+  private workerRoots = new Map<string, TransferRealm>();
   private budget: Map<string, number> | null = null;
   /** Entities the planner selected with a payload. The budget also absorbs earlier terminal
    * observations (tolerated probes such as a missing metadata 404), which never prove a requirement. */
@@ -64,12 +64,16 @@ export class SceneProgress {
   get hasCatalogueMismatch() { return this.mismatch; }
 
   /** Assign an owned worker's root before freeze, without inventing an HTTP read. */
-  ownWorkerRoot(generation: number, value: string, now: number) {
+  ownWorkerRoot(generation: number, value: string, realm: TransferRealm, now: number) {
     if (generation !== this.generation) return;
     const url = catalogueAssetKey(value);
-    if (this.workerRoots.has(url)) return;
-    this.workerRoots.add(url);
-    const realm = 'map-verification', key = progressEntityKey({ url, realm });
+    const previousRealm = this.workerRoots.get(url);
+    if (previousRealm !== undefined) {
+      if (previousRealm !== realm) this.mismatch = true;
+      return;
+    }
+    this.workerRoots.set(url, realm);
+    const key = progressEntityKey({ url, realm });
     const page = this.resources.get(url);
     if (page) {
       const resource = this.resources.get(key);
@@ -125,7 +129,7 @@ export class SceneProgress {
     if (generation !== this.generation) return;
     for (const update of updates) {
       const url = catalogueAssetKey(update.url);
-      const realm = update.realm ?? (this.workerRoots.has(url) ? 'map-verification' : undefined);
+      const realm = update.realm ?? this.workerRoots.get(url);
       const key = progressEntityKey({ url, realm });
       const previous = this.requests.get(update.id);
       // A late batch must not resurrect a completed, failed or cancelled request.

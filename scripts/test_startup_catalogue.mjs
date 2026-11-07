@@ -41,6 +41,9 @@ try {
     verification: { type: 'chunk', fileName: 'assets/bundle-verification.worker.js', facadeModuleId: null,
       moduleIds: ['/fixture/src/maps/bundle-verification.worker.ts'], imports: ['assets/bundle.js'], dynamicImports: [] },
   }, true);
+  await put('assets/source-client.js', 'import "./common.js"; import "./browser.js";');
+  await put('assets/source-inspect.worker.js', 'import "./common.js"; import "./browser.js";');
+  await put('assets/source-assemble.worker.js', 'import "./common.js"; import "./browser.js";');
   await put('assets/sim.worker.js', 'new URL("./ort.wasm", import.meta.url); new URL("./not-emitted.mjs", import.meta.url);');
   await put('assets/ort.wasm', Buffer.alloc(41)); await put('wasm/old-unused-runtime.wasm', Buffer.alloc(999));
   const graph = await buildRuntimeGraph(root, [
@@ -48,6 +51,9 @@ try {
     chunk('/assets/common.js'), chunk('/assets/three.js'),
     chunk('/assets/main.js', 'page', ['/assets/common.js', '/assets/three.js', '/assets/browser.js'], ['/assets/main.css'], ['/assets/GLTFExporter.js']),
     chunk('/assets/sim.worker.js', 'worker'), chunk('/assets/GLTFExporter.js'), chunk('/assets/browser.js'), ...intakeChunks, ...verificationChunks,
+    chunk('/assets/source-client.js', 'sourceImport', ['/assets/common.js', '/assets/browser.js']),
+    chunk('/assets/source-inspect.worker.js', 'sourceMetadata', ['/assets/common.js', '/assets/browser.js']),
+    chunk('/assets/source-assemble.worker.js', 'sourceAssembly', ['/assets/common.js', '/assets/browser.js']),
   ]);
   assert.deepEqual(graph.runtime.page, ['/assets/browser.js', '/assets/main.css', '/assets/main.js', '/assets/three.js']);
   assert.deepEqual(graph.dependencies['/assets/main.js'], ['/assets/browser.js', '/assets/main.css', '/assets/three.js']);
@@ -147,6 +153,9 @@ try {
     ['/src/render.ts', 'export const renderer = "transformed ✓";'],
     ['/src/maps/bundle.ts', 'import "/src/shell.ts"; import "/src/browser.ts"; export const inspect = () => {};'],
     ['/src/maps/bundle-verification.worker.ts?worker_file&type=module', 'import "/src/maps/bundle.ts";'],
+    ['/src/maps/source-import.ts', 'import "/src/shell.ts"; import "/src/browser.ts";'],
+    ['/src/maps/source-inspect.worker.ts?worker_file&type=module', 'import "/src/shell.ts"; import "/src/browser.ts";'],
+    ['/src/maps/source-assemble.worker.ts?worker_file&type=module', 'import "/src/shell.ts"; import "/src/browser.ts";'],
     ['/src/browser.ts', 'export const inflate = value => value;'],
     ['/src/worker/sim.worker.ts?worker_file&type=module', 'import "/src/policy.ts";'],
     ['/src/policy.ts', 'new URL("/runtime/ort.wasm", import.meta.url);'],

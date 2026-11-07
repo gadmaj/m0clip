@@ -1,6 +1,8 @@
 /** Browser-local converted maps. ZIP metadata is read separately from resource bodies. */
 import { BoundedInflate, deflateFeedBytes } from './deflate';
 import { mapXmlReferences, parseMapXml } from './xml.mjs';
+import { encodeSourceJson, parseSourceJson, preflightSourceJson } from './raw-source-json';
+
 
 export interface MapBundleResource {
   path: string;
@@ -22,6 +24,31 @@ export interface DecodedMapBundle {
   files: ReadonlyMap<string, Blob>;
 }
 
+
+export interface GeneratedMapBundleOptions {
+  name: string;
+  game: string;
+  files: ReadonlyMap<string, Blob>;
+  signal?: AbortSignal;
+  /** Retained file bytes, excluding caller-owned originals and runtime/GPU work. */
+  maxOutputBytes: number;
+  /** Selected hash input + WebCrypto input copy + 4096-byte digest/hex allowance. */
+  maxHashBytes: number;
+  /** Aggregate serialized index and inspected JSON/XML metadata bytes. */
+  maxMetadataBytes: number;
+  /** Conservative new index/validation/serialization ownership, not a heap ceiling. */
+  maxMetadataAllocationBytes: number;
+  maxFiles?: number;
+}
+
+interface MetadataBudget { bytes: number; allocation: number; maxBytes: number; maxAllocation: number }
+
+function reserveMetadata(budget: MetadataBudget, bytes: number, allocation: number) {
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > budget.maxBytes - budget.bytes
+    || !Number.isSafeInteger(allocation) || allocation < 0 || allocation > budget.maxAllocation - budget.allocation)
+    fail('generated metadata limit exceeded');
+  budget.bytes += bytes; budget.allocation += allocation;
+}
 const wrapper = 'm0clip-map.json';
 const maxMetadata = 16 * 1024 * 1024;
 const utf8 = new TextDecoder('utf-8', { fatal: true });
@@ -50,10 +77,12 @@ function dependency(value: unknown, base: string): string | null {
   return pathName(parts.join('/'));
 }
 interface BundlePathNode { file: boolean; children?: Map<string, BundlePathNode> }
-/** Visit each component once, without rebuilding complete ancestor prefixes. */
-function validateAncestors(paths: Iterable<string>, signal?: AbortSignal) {
+/** One component visit per path component, never a rebuilt ancestor prefix.
+ * Bound trie ownership even for compact ZIP metadata with very deep paths. */
+function validateAncestors(paths: Iterable<string>, signal?: AbortSignal, reserveNode?: () => void) {
   const maxNodes = 262144;
   let nodes = 1;
+  reserveNode?.();
   const root: BundlePathNode = { file: false };
   for (const path of paths) {
     aborted(signal);
@@ -66,10 +95,14 @@ function validateAncestors(paths: Iterable<string>, signal?: AbortSignal) {
       let child = node.children?.get(component);
       if (!child) {
         if (nodes >= maxNodes) fail('resource path component limit exceeded');
-        nodes++; child = { file: false };
-        node.children ??= new Map(); node.children.set(component, child);
+        reserveNode?.();
+        nodes++;
+        child = { file: false };
+        node.children ??= new Map();
+        node.children.set(component, child);
       }
-      node = child; start = end + 1;
+      node = child;
+      start = end + 1;
     }
     if (node.children?.size) fail(`file/directory path conflict: ${path}`);
     node.file = true;
@@ -207,20 +240,31 @@ function record(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`invalid ${label}`);
   return value as Record<string, unknown>;
 }
-async function json(blob: Blob, path: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+async function json(blob: Blob, path: string, signal?: AbortSignal, budget?: MetadataBudget): Promise<Record<string, unknown>> {
   aborted(signal);
   try {
+    if (budget) {
+      // Reserve input before reading; parser preflight charges text/structure
+      // before JSON.parse, including duplicate keys and ignored subtrees.
+      reserveMetadata(budget, blob.size, blob.size);
+      const parsed = parseSourceJson(new Uint8Array(await blob.arrayBuffer()), {
+        signal, maxBytes: blob.size, maxAllocationBytes: budget.maxAllocation - budget.allocation,
+      });
+      reserveMetadata(budget, 0, parsed.ownershipBytes);
+      return record(parsed.value, path);
+    }
     const text = await blob.text();
     aborted(signal);
     return record(JSON.parse(text), path);
   } catch (error) { aborted(signal); fail(`invalid JSON in ${path}: ${error instanceof Error ? error.message : String(error)}`); }
 }
-function indexOf(value: Record<string, unknown>, signal?: AbortSignal): MapBundleIndex {
+function indexOf(value: Record<string, unknown>, signal?: AbortSignal, budget?: MetadataBudget): MapBundleIndex {
   if (value.format !== 'm0clip-map' || value.version !== 1 || value.entry !== 'manifest.json') fail('unsupported m0clip-map.json format/version/entry (expected m0clip-map version 1)');
   for (const field of ['name', 'game']) if (typeof value[field] !== 'string' || !(value[field] as string).trim() || (value[field] as string).length > 256 || /[\u0000-\u001f\u007f]/.test(value[field] as string)) fail(`invalid bundle ${field}`);
   if (!Array.isArray(value.resources) || !value.resources.length || value.resources.length > 65534) fail('invalid resource list');
   const names = new Set<string>();
   const resources = value.resources.map(item => {
+    aborted(signal);
     const resource = record(item, 'resource'), path = pathName(resource.path), key = path.toLowerCase();
     if (path === wrapper || names.has(key)) fail(`duplicate/reserved resource path: ${path}`);
     if (/\.(?:zip|7z|rar|tar|tgz|tbz2?|txz|bz2|xz)(?:\.gz)?$/i.test(path)) fail(`archive cannot be a map dependency: ${path}`);
@@ -230,7 +274,7 @@ function indexOf(value: Record<string, unknown>, signal?: AbortSignal): MapBundl
     return Object.freeze({ path, bytes: resource.bytes as number, sha256: resource.sha256 });
   });
   for (const required of ['manifest.json', 'map.xml']) if (!resources.some(resource => resource.path === required)) fail(`required resource is missing: ${required}`);
-  validateAncestors(names, signal);
+  validateAncestors(names, signal, budget ? () => reserveMetadata(budget, 0, 512) : undefined);
   return Object.freeze({ format: 'm0clip-map', version: 1, name: value.name as string, game: value.game as string, entry: 'manifest.json', resources: Object.freeze(resources) });
 }
 async function inspect(file: Blob, signal?: AbortSignal) {
@@ -251,41 +295,39 @@ async function inspect(file: Blob, signal?: AbortSignal) {
 export async function inspectMapBundle(file: Blob, signal?: AbortSignal): Promise<MapBundleIndex> {
   return (await inspect(file, signal)).index;
 }
-async function hash(blob: Blob, signal?: AbortSignal) {
+
+const hashWorkspaceOverhead = 4096;
+async function hash(blob: Blob, signal?: AbortSignal, maxHashBytes = Number.MAX_SAFE_INTEGER) {
   aborted(signal);
+  if (blob.size > (maxHashBytes - hashWorkspaceOverhead) / 2) fail('generated hash workspace limit exceeded');
   const bytes = await blob.arrayBuffer();
   aborted(signal);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   aborted(signal);
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
-async function gltf(blob: Blob, path: string, signal?: AbortSignal) {
-  if (/\.gltf$/i.test(path)) return json(blob, path, signal);
+async function gltf(blob: Blob, path: string, signal?: AbortSignal, budget?: MetadataBudget) {
+  if (/\.gltf$/i.test(path)) return json(blob, path, signal, budget);
   const bytes = await read(blob, 0, 20, signal), data = view(bytes);
   if (data.getUint32(0, true) !== 0x46546c67 || data.getUint32(4, true) !== 2 || data.getUint32(8, true) !== blob.size || data.getUint32(16, true) !== 0x4e4f534a || data.getUint32(12, true) > blob.size - 20) fail(`invalid GLB: ${path}`);
-  return json(blob.slice(20, 20 + data.getUint32(12, true)), path, signal);
+  return json(blob.slice(20, 20 + data.getUint32(12, true)), path, signal, budget);
 }
 /** Mirrors build_startup_catalogue's selected mapVisuals and GLTF URI edges,
  * adding manifest.files (the independent physics closure). No directory scans. */
-async function validateDependencies(files: ReadonlyMap<string, Blob>, signal?: AbortSignal) {
-  const manifest = await json(files.get('manifest.json')!, 'manifest.json', signal);
+async function validateDependencies(files: ReadonlyMap<string, Blob>, signal?: AbortSignal, budget?: MetadataBudget) {
+  const manifest = await json(files.get('manifest.json')!, 'manifest.json', signal, budget);
   let xmlCharacters = 0;
   let xmlAllocation = 0;
-  const xmlAllocationLimit = 64 * 1024 * 1024;
+  const xmlAllocationLimit = budget?.maxAllocation ?? 64 * 1024 * 1024;
   const reserveXml = (bytes: number) => {
     aborted(signal);
-    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > xmlAllocationLimit - xmlAllocation)
+    if (budget) reserveMetadata(budget, 0, bytes);
+    else if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > xmlAllocationLimit - xmlAllocation)
       throw new RangeError('Map XML metadata allocation limit exceeded');
     xmlAllocation += bytes;
   };
   const xmlOptions = { signal, maxAllocationBytes: xmlAllocationLimit, reserve: reserveXml };
-  const xml = async (blob: Blob) => {
-    aborted(signal);
-    reserveXml(blob.size * 3 + 1024);
-    const text = await blob.text();
-    aborted(signal);
-    return text;
-  };
+
   const required = new Set<string>(['manifest.json', 'map.xml']);
   function add(value: unknown, base = 'manifest.json', embedded = false) {
     const path = dependency(value, base);
@@ -296,6 +338,16 @@ async function validateDependencies(files: ReadonlyMap<string, Blob>, signal?: A
   if (!Array.isArray(manifest.files) || !manifest.files.includes('map.xml')) fail('manifest.json files must include map.xml');
   const physics = new Set(manifest.files.map(pathName));
   for (const path of physics) add(path);
+  // Reserve the selected read/text before decoding, then let the shared
+  // tokenizer charge only actual retained metadata (not ignored inline arrays).
+  const xml = async (blob: Blob) => {
+    aborted(signal);
+    if (budget) reserveMetadata(budget, blob.size, 0);
+    reserveXml(blob.size * 3 + 1024);
+    const text = await blob.text();
+    aborted(signal);
+    return text;
+  };
   const rootXml = await xml(files.get('map.xml')!);
   aborted(signal);
   const rootElements = parseMapXml(rootXml, 'map.xml', xmlOptions);
@@ -316,7 +368,7 @@ async function validateDependencies(files: ReadonlyMap<string, Blob>, signal?: A
     aborted(signal);
     const blob = files.get(path)!;
     if (/\.(?:glb|gltf)$/i.test(path)) {
-      const document = await gltf(blob, path, signal);
+      const document = await gltf(blob, path, signal, budget);
       for (const field of ['buffers', 'images']) {
         if (document[field] === undefined) continue;
         if (!Array.isArray(document[field])) fail(`invalid ${field} in ${path}`);
@@ -326,7 +378,7 @@ async function validateDependencies(files: ReadonlyMap<string, Blob>, signal?: A
         }
       }
     } else if (path === 'lightstyles.json') {
-      const styles = await json(blob, path, signal);
+      const styles = await json(blob, path, signal, budget);
       for (const page of Object.values(record(styles.pages, 'lightstyle pages'))) add(page, path);
     } else if (/\.xml$/i.test(path)) {
       const text = path === 'map.xml' ? rootXml : await xml(blob);
@@ -334,7 +386,10 @@ async function validateDependencies(files: ReadonlyMap<string, Blob>, signal?: A
       const elements = path === 'map.xml' ? rootElements : parseMapXml(text, path, xmlOptions);
       for (const reference of mapXmlReferences(elements, path, compiler, {
         signal, maxExpandedCharacters: maxMetadata - xmlCharacters,
-        reserve(characters) { reserveXml(characters * 64 + 256); xmlCharacters += characters; },
+        reserve(characters) {
+          reserveXml(characters * 64 + 256);
+          xmlCharacters += characters;
+        },
       })) {
         const file = dependency(reference.value, reference.base);
         if (file === null) fail(`embedded URI is not valid in ${path}`);
@@ -354,9 +409,65 @@ export async function decodeMapBundle(file: Blob, signal?: AbortSignal): Promise
     if (blob.size !== resource.bytes || await hash(blob, signal) !== resource.sha256) fail(`wrong bytes or SHA256: ${resource.path}`);
     files.set(resource.path, blob);
   }
-  await validateDependencies(files, signal);
+  return finalize(index, files, signal);
+}
+
+async function finalize(index: MapBundleIndex, files: Map<string, Blob>, signal?: AbortSignal,
+  budget?: MetadataBudget, maxHashBytes?: number): Promise<DecodedMapBundle> {
+  await validateDependencies(files, signal, budget);
   const canonical = { ...index, resources: [...index.resources].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) };
-  const fingerprint = await hash(new Blob([encoder.encode(JSON.stringify(canonical))]), signal);
+  let bytes: Uint8Array;
+  if (budget) {
+    const measured = preflightSourceJson(canonical, { signal, maxBytes: Math.min(maxMetadata, budget.maxBytes - budget.bytes) });
+    if (measured.byteLength > ((maxHashBytes ?? Number.MAX_SAFE_INTEGER) - hashWorkspaceOverhead) / 2) fail('generated hash workspace limit exceeded');
+    reserveMetadata(budget, measured.byteLength, measured.byteLength * 4 + measured.nodes * 32 + measured.members * 32);
+    bytes = encodeSourceJson(canonical, { signal, maxBytes: measured.byteLength });
+  } else bytes = encoder.encode(JSON.stringify(canonical));
+  const fingerprint = await hash(new Blob([bytes as BlobPart]), signal, maxHashBytes);
   aborted(signal);
   return { id: `local-${fingerprint}`, fingerprint, index, files };
+}
+
+/** Finalize already-generated immutable files through the ZIP consumer's index,
+ * dependency and identity rules. No ZIP, URL, fetch or resource discovery. The
+ * input Map is snapshotted synchronously before the first asynchronous read.
+ * Hashes are sequential; limits cover this finalizer's new scoped ownership,
+ * not caller-retained conversion data or whole-browser memory. */
+export async function finalizeGeneratedMapBundle(options: GeneratedMapBundleOptions): Promise<DecodedMapBundle> {
+  const { signal } = options;
+  aborted(signal);
+  const limit = (value: number, label: string) => {
+    if (!Number.isSafeInteger(value) || value < 0) fail(`invalid generated ${label} limit`);
+    return value;
+  };
+  const maxOutput = limit(options.maxOutputBytes, 'output'), maxHash = limit(options.maxHashBytes, 'hash');
+  const maxFiles = Math.min(limit(options.maxFiles ?? 65534, 'file'), 65534);
+  const budget: MetadataBudget = { bytes: 0, allocation: 0,
+    maxBytes: limit(options.maxMetadataBytes, 'metadata'), maxAllocation: limit(options.maxMetadataAllocationBytes, 'metadata allocation') };
+  const files = new Map<string, Blob>(), resources: MapBundleResource[] = [];
+  let output = 0;
+  for (const [path, input] of options.files) {
+    aborted(signal);
+    if (resources.length >= maxFiles) fail('generated file limit exceeded');
+    // Charge path/index/map/set/sort bookkeeping before allocating new records.
+    if (typeof path !== 'string') fail('invalid generated resource path');
+    reserveMetadata(budget, 0, 1024 + path.length * 64);
+    pathName(path);
+    const blob = Blob.prototype.slice.call(input, 0, input.size, contentType(path)) as Blob;
+    if (!Number.isSafeInteger(blob.size) || blob.size > maxOutput - output) fail('generated output limit exceeded');
+    if (blob.size > (maxHash - hashWorkspaceOverhead) / 2) fail('generated hash workspace limit exceeded');
+    output += blob.size;
+    files.set(path, blob);
+    resources.push({ path, bytes: blob.size, sha256: '0'.repeat(64) });
+  }
+  // The same schema/path rules used by ZIP wrappers run before body allocation.
+  const value = { format: 'm0clip-map', version: 1, name: options.name, game: options.game, entry: 'manifest.json', resources };
+  const validated = indexOf(value, signal, budget);
+  for (const resource of resources) {
+    aborted(signal);
+    resource.sha256 = await hash(files.get(resource.path)!, signal, maxHash);
+  }
+  // Only internally computed hashes changed after schema/path validation.
+  const index = Object.freeze({ ...validated, resources: Object.freeze(resources.map(resource => Object.freeze(resource))) });
+  return finalize(index, files, signal, budget, maxHash);
 }

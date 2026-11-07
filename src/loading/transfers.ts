@@ -1,14 +1,21 @@
 /** Startup-only decoded payload accounting. No observer branch consumes a body. */
 import { isPreviewAsset } from './preview-assets';
+export type TransferRealm = 'map-verification' | 'source-metadata' | 'source-assembly';
 export interface TransferUpdate {
   id: string;
   url: string;
   loaded: number;
   total: number | null;
   state: 'loading' | 'done' | 'failed' | 'cancelled';
-  realm?: 'map-verification';
+  realm?: TransferRealm;
   /** HTTP status of a failed response, when the browser exposed one. */
   status?: number;
+}
+
+/** Worker-root ownership is metadata; only transfers credit consumed HTTP bytes. */
+export interface WorkerTransferObserver {
+  root(url: string, realm: TransferRealm): void;
+  transfers(updates: TransferUpdate[]): void;
 }
 
 interface Collector {

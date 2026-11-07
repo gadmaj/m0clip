@@ -13,6 +13,12 @@ interface SourceWorldLight {
   inner: number; outer: number; exponent: number; radius: number; attenuation: number[]; flags: number;
 }
 
+
+/** Owned native cache for static props; capture is optional on the live sampler. */
+export interface SourceAmbientSample {
+  cube: number[][];
+  lights: SourceAmbientData['lights'];
+}
 export class SourceAmbient {
   styleValue: (style: number) => number = () => 1;
   readonly enabled = { value: 0 };
@@ -37,9 +43,12 @@ export class SourceAmbient {
 
   get available() { return this.data !== null; }
 
-  sample(x: number, y: number, z: number) {
+  sample(x: number, y: number, z: number, cache?: SourceAmbientSample) {
     const d = this.data;
-    if (!d) return;
+    if (!d) {
+      if (cache) { cache.cube.length = 0; cache.lights.length = 0; }
+      return;
+    }
     const p = new THREE.Vector3(x / 0.0254, y / 0.0254, z / 0.0254)
       .applyMatrix3(this.rotation.value).add(new THREE.Vector3(...d.origin as [number, number, number]));
     let leaf = d.head;
@@ -106,6 +115,18 @@ export class SourceAmbient {
       u.attenuation.set(...l.attenuation as [number, number, number], l.inner);
       u.direction.set(...l.normal as [number, number, number], l.outer);
       if (l.kind === 0) { u.attenuation.set(0, 0, 1, 0); u.direction.set(0, 0, 0, 0); }
+    }
+    if (cache) {
+      cache.cube.length = 0;
+      cache.lights.length = 0;
+      for (const value of this.cube.value) cache.cube.push(value.toArray());
+      for (const { light } of best) {
+        const style = this.styleValue(light.style);
+        cache.lights.push({
+          ...light, pos: light.pos.slice(), normal: light.normal.slice(), attenuation: light.attenuation.slice(),
+          color: [light.color[0] * style, light.color[1] * style, light.color[2] * style],
+        });
+      }
     }
   }
 

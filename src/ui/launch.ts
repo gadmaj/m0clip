@@ -11,19 +11,16 @@ import { VisualPicker } from './visual-picker';
 import { previewImage, staticPreviewOptions, characterOptions, characterDescription, sourceModelCatalog } from './preview-catalog';
 import { previewMedia } from './preview-media';
 import { SceneProgress, assetName, detailText, downloadEstimate, loadingPhase, type LoadingSnapshot } from '../loading/progress';
-import { observeTransfers, type TransferUpdate } from '../loading/transfers';
+import { observeTransfers, type TransferUpdate, type TransferRealm, type WorkerTransferObserver } from '../loading/transfers';
 import type { PlannedAsset, PriorModuleIntake } from '../loading/asset-plan';
 import { registerPreviewAsset } from '../loading/preview-assets';
 import './launch.css';
-import { inspectLocalMap, loadLocalMap, localMapIntakeState } from './local-map';
-import type { MapBundleIndex } from '../maps/bundle';
+import { chooseLocalMap, loadLocalMap, localMapIntakeState, localSourceIntakeState, localMapStageLabel, showLocalMapError, type LocalMapChoice } from './local-map';
 import type { MapSource } from '../maps/source';
-import type { BundleVerificationObserver } from '../maps/bundle-verification';
 
 export interface LaunchSelection {
   terrain: TerrainName;
-  localFile?: File;
-  localIndex?: MapBundleIndex;
+  localChoice?: LocalMapChoice;
   localSource?: MapSource;
   mode: SceneMode;
   /** Robot mode physics; Player mode keeps it remembered and unused. */
@@ -70,6 +67,9 @@ function rememberedCharacter(appearance: unknown): CharacterId | null {
 }
 
 const transferStates: Record<TransferUpdate['state'], string> = { loading: 'Active', done: 'Completed', failed: 'Failed', cancelled: 'Cancelled' };
+const transferRealms: Record<TransferRealm, string> = {
+  'map-verification': 'Bundle check', 'source-metadata': 'Source index', 'source-assembly': 'Source build',
+};
 
 class LaunchController {
   readonly selection: LaunchSelection;
@@ -109,6 +109,9 @@ class LaunchController {
   private progress = new SceneProgress();
   private loadGeneration = 0;
   private preloadedLocalMap?: PriorModuleIntake;
+  private preloadedSourceMap?: PriorModuleIntake;
+  private sourceAssemblyUsed = false;
+  private sourceMetadataUsed = false;
   private localMapVerification = false;
   private progressTimer?: number;
   private stopTransfers?: () => void;
@@ -128,7 +131,8 @@ class LaunchController {
   private detailCounts!: HTMLElement;
   private detailTransfers!: HTMLElement;
   private detailsDirty = true;
-  private detailRows = new Map<string, { row: HTMLElement; state: HTMLElement; bytes: HTMLElement }>();
+  private detailEpoch = 0;
+  private detailRows = new Map<string, { row: HTMLElement; state: HTMLElement; bytes: HTMLElement; epoch: number }>();
   private loadingStarted = 0;
   private gameTimer?: number;
   private morphTimer?: number;
@@ -167,14 +171,19 @@ class LaunchController {
   get loadingId() { return this.loadGeneration; }
   get priorLocalMapIntake() { return this.preloadedLocalMap; }
   get usesLocalMapVerification() { return this.localMapVerification; }
+  get priorSourceMapIntake() { return this.preloadedSourceMap; }
+  get usesSourceAssembly() { return this.sourceAssemblyUsed; }
+  get usesSourceMetadata() { return this.sourceMetadataUsed; }
   /** Capture the load that owns this worker, never a later scene generation. */
-  beginLocalMapVerification(): BundleVerificationObserver {
-    this.localMapVerification = true;
+  beginLocalMapIntake(): WorkerTransferObserver {
     const generation = this.loadGeneration;
     return {
-      root: url => {
+      root: (url, realm) => {
         if (!this.loading || !this.showing || generation !== this.loadGeneration) return;
-        this.progress.ownWorkerRoot(generation, url, performance.now());
+        if (realm === 'map-verification') this.localMapVerification = true;
+        else if (realm === 'source-metadata') this.sourceMetadataUsed = true;
+        else this.sourceAssemblyUsed = true;
+        this.progress.ownWorkerRoot(generation, url, realm, performance.now());
         this.detailsDirty = true;
       },
       transfers: updates => this.receiveTransfers(generation, updates),
@@ -207,6 +216,7 @@ class LaunchController {
         <section id="launch-map-step" aria-labelledby="launch-map-title"><h2 id="launch-map-title">Pick a map</h2>
           <label for="launch-map-trigger">Map</label><select id="launch-map"></select>
           <p id="launch-catalog-status" role="status">Loading maps…</p><button id="launch-catalog-retry" class="btn" type="button" hidden>Retry map catalog</button>
+          <div id="launch-local-status" class="local-map-status" role="status"></div>
           <div class="launch-actions"><button id="launch-next" class="btn primary" type="button">Choose character</button></div>
         </section>
         <section id="launch-character-step" aria-labelledby="launch-character-title" hidden><h2 id="launch-character-title">Pick a character</h2>
@@ -281,9 +291,10 @@ class LaunchController {
       if (this.reducedMotion.matches && this.gameStage.dataset.game === 'morph') this.revealPong();
     });
     const map = this.root.querySelector<HTMLSelectElement>('#launch-map')!;
-    map.onchange = () => { this.selection.terrain = map.value as TerrainName; this.selection.preserveView = false; };
+    const localStatus = this.root.querySelector<HTMLElement>('#launch-local-status')!;
+    map.onchange = () => { this.selection.terrain = map.value as TerrainName; this.selection.preserveView = false; localStatus.replaceChildren(); };
     this.mapPicker = new VisualPicker(map,{id:'launch-map',label:'Map',
-      intake:{label:'Open map bundle…',select:async(file,signal)=>{const index=await inspectLocalMap(file,signal);signal.throwIfAborted();this.selection.localFile=file;this.selection.localIndex=index;this.selection.terrain='map:local-pending';this.selection.preserveView=false;this.renderMaps();}},
+      intake:{label:'Open local map…',open:async signal=>{const choice=await chooseLocalMap(undefined,signal,this.selection.localChoice);signal.throwIfAborted();this.selection.localChoice=choice;this.selection.localSource=undefined;this.selection.terrain='map:local-pending';this.selection.preserveView=false;localStatus.replaceChildren();this.renderMaps();}},
       preview:(value,label)=>{if(value.startsWith('map:local-')){const note=document.createElement('span');note.textContent=label;return note;}return previewImage(value.startsWith('map:')?'map':'terrain',value);}});
     const robot = this.root.querySelector<HTMLSelectElement>('#launch-robot')!;
     for (const value of robots) robot.add(new Option(value.replace(/_/g,' ').toUpperCase(),value));
@@ -324,21 +335,21 @@ class LaunchController {
       this.context.title = this.context.textContent;
       this.startProgress();
       this.status.tabIndex = -1; this.status.focus({ preventScroll: true });
-      if(this.selection.terrain==='map:local-pending'&&this.selection.localFile){
+      if(this.selection.terrain==='map:local-pending'&&this.selection.localChoice){
         const controller=new AbortController(),cancel=this.root.querySelector<HTMLButtonElement>('#launch-cancel-map')!;
         cancel.hidden=false;cancel.onclick=()=>controller.abort();
-        this.phase('Verifying local map files…');
+        this.phase('Preparing local map…');
         try{
-          const source=await loadLocalMap(this.selection.localFile,controller.signal,this.beginLocalMapVerification());
+          const source=await loadLocalMap(this.selection.localChoice,controller.signal,this.beginLocalMapIntake(),stage=>this.localWork(localMapStageLabel(stage)));
           controller.signal.throwIfAborted();
-          this.selection.localSource=source;this.selection.terrain=`map:${source.id}`;this.selection.localFile=undefined;
+          this.selection.localSource=source;this.selection.terrain=`map:${source.id}`;this.selection.localChoice=undefined;
           const bytes=Array.from(source.payload!.files.values()).reduce((sum,file)=>sum+file.size,0);
           this.localWork(`Local files verified · ${(bytes/1_000_000).toFixed(1)} MB · separate from downloads`);
         }catch(error){
           this.loading=false;delete this.root.dataset.loading;this.cancelPong();
           this.stopTransfers?.();this.stopTransfers=undefined;window.clearInterval(this.progressTimer);this.progressTimer=undefined;
           step('map');
-          this.root.querySelector('#launch-catalog-status')!.textContent=controller.signal.aborted?'Map loading cancelled.':`Map not loaded: ${error instanceof Error?error.message:error}`;
+          showLocalMapError(localStatus,controller.signal.aborted?new DOMException('Map loading cancelled.','AbortError'):error);
           this.mapPicker.button.focus();return;
         }finally{cancel.hidden=true;cancel.onclick=null;}
       }
@@ -363,7 +374,9 @@ class LaunchController {
 
   private describe() {
     const terrain = this.selection.terrain;
-    const map = terrain.startsWith('map:local-') && this.selection.localIndex ? this.selection.localIndex.name
+    const choice = this.selection.localChoice;
+    const localName = choice ? choice.kind === 'bundle' ? choice.index.name : choice.name : this.selection.localSource?.identity?.name;
+    const map = terrain.startsWith('map:local-') && localName ? localName
       : terrain.startsWith('map:') ? this.maps.find(entry => `map:${entry.id}` === terrain)?.name ?? terrain.slice(4) : labels[terrain];
     if (this.selection.mode === 'player') {
       const body = this.root.querySelector<HTMLSelectElement>('#launch-player-body')!.selectedOptions[0]?.label ?? this.selection.playerBody;
@@ -464,9 +477,11 @@ class LaunchController {
     const select = this.root.querySelector<HTMLSelectElement>('#launch-map')!;
     const groups = new Map<string,HTMLOptGroupElement>();
     select.replaceChildren();
+    const choice = this.selection.localChoice;
     const options = [
       ...this.maps.map(map => ({ value: `map:${map.id}`, label: mapEntryLabel(map), group:map.game })),
-      ...(this.selection.localIndex?[{value:'map:local-pending',label:`${this.selection.localIndex.name} · Local file`,group:'Local maps'}]:[]),
+      ...(choice?[{value:'map:local-pending',label:`${choice.kind==='bundle'?choice.index.name:choice.name} · Local file`,group:'Local maps'}]:[]),
+      ...(this.selection.localSource?[{value:`map:${this.selection.localSource.id}`,label:`${this.selection.localSource.identity?.name??'Local map'} · Local file`,group:'Local maps'}]:[]),
       ...TERRAINS.map(terrain => ({ value: terrain, label: labels[terrain], group:'Built-in terrains' })),
     ];
     if (!options.some(option => option.value === this.selection.terrain)) options.unshift({ value: this.selection.terrain, label: `${this.selection.terrain.slice(4)} (selected map)`, group:'Selected map' });
@@ -512,10 +527,13 @@ class LaunchController {
   }
 
   private startProgress() {
-    const started = performance.now(), intake = localMapIntakeState();
+    const started = performance.now(), intake = localMapIntakeState(), sourceIntake = localSourceIntakeState();
     // Copy before Load's verification; later imports cannot rewrite this scope.
     this.preloadedLocalMap = intake && { complete: intake.complete, before: started };
+    this.preloadedSourceMap = sourceIntake && { complete: sourceIntake.complete, before: started };
     this.localMapVerification = false;
+    this.sourceAssemblyUsed = false;
+    this.sourceMetadataUsed = false;
     for (const option of this.root.querySelectorAll<HTMLOptionElement>('option[data-preview]')) {
       if (option.dataset.preview) registerPreviewAsset(option.dataset.preview);
     }
@@ -589,23 +607,28 @@ class LaunchController {
     const bytes = `${snapshot.loaded} B received · ${snapshot.knownTotal} B ${snapshot.frozen ? 'fixed maximum' : 'discovered'}${split}${snapshot.unknown ? ` · ${snapshot.unknown} sizes pending` : ''}${snapshot.unexpected ? ` · ${snapshot.unexpected} catalogue mismatches` : ''}`;
     if (this.detailBytes.textContent !== bytes) this.detailBytes.textContent = bytes;
     const counts = { loading: 0, done: 0, failed: 0, cancelled: 0 };
+    const epoch = ++this.detailEpoch;
     for (const transfer of this.progress.transfers()) {
       counts[transfer.state]++;
       let elements = this.detailRows.get(transfer.id);
       if (!elements) {
         const row = document.createElement('li');
         const name = document.createElement('span'); name.className = 'launch-detail-name';
-        name.textContent = assetName(transfer.url); name.title = name.textContent;
+        name.textContent = `${transfer.realm ? `${transferRealms[transfer.realm]} · ` : ''}${assetName(transfer.url)}`; name.title = name.textContent;
         const state = document.createElement('span');
         const bytes = document.createElement('span'); bytes.className = 'launch-detail-size';
         row.append(name, state, bytes); this.detailTransfers.append(row);
-        elements = { row, state, bytes }; this.detailRows.set(transfer.id, elements);
+        elements = { row, state, bytes, epoch }; this.detailRows.set(transfer.id, elements);
       }
+      elements.epoch = epoch;
       if (elements.row.dataset.state !== transfer.state) elements.row.dataset.state = transfer.state;
       const state = transfer.status === undefined ? transferStates[transfer.state] : `${transferStates[transfer.state]} · HTTP ${transfer.status}`;
       if (elements.state.textContent !== state) elements.state.textContent = state;
       const amount = `${transfer.loaded} B received${transfer.total === null ? ' · response size unadvertised' : ` / ${transfer.total} B known`}`;
       if (elements.bytes.textContent !== amount) elements.bytes.textContent = amount;
+    }
+    for (const [id, elements] of this.detailRows) {
+      if (elements.epoch !== epoch) { elements.row.remove(); this.detailRows.delete(id); }
     }
     const summary = `${counts.loading} active · ${counts.done} completed · ${counts.failed} failed · ${counts.cancelled} cancelled`;
     if (this.detailCounts.textContent !== summary) this.detailCounts.textContent = summary;

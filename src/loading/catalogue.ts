@@ -32,6 +32,8 @@ export function loadStartupCatalogue(): Promise<StartupAssetCatalogue> {
       || !Array.isArray(catalogue.runtime.page) || !Array.isArray(catalogue.runtime.worker)
       || !Array.isArray(catalogue.runtime.inference) || !Array.isArray(catalogue.runtime.localMap)
       || !Array.isArray(catalogue.runtime.localMapVerification)
+      || !Array.isArray(catalogue.runtime.sourceClient) || !Array.isArray(catalogue.runtime.sourceMetadata)
+      || !Array.isArray(catalogue.runtime.sourceAssembly)
       || !catalogue.mapVisuals || !catalogue.modelBundles) {
       throw new Error('The scene asset catalogue is incomplete. Reload to try again.');
     }
@@ -46,10 +48,10 @@ export function loadStartupCatalogue(): Promise<StartupAssetCatalogue> {
  * A failed/pending entry cannot hide unfinished dependencies or hold Load hostage. */
 export function priorIntakeAssets(catalogue: StartupAssetCatalogue, intake: PriorModuleIntake | undefined,
   entries: readonly (Pick<PerformanceResourceTiming, 'name' | 'startTime' | 'responseEnd' | 'decodedBodySize'>
-    & { responseStatus?: number })[]): string[] {
+    & { responseStatus?: number })[], roots: readonly string[]): readonly string[] {
   if (!intake) return [];
-  if (intake.complete) return catalogue.runtime.localMap;
-  const graph = new Set(catalogue.runtime.localMap.map(catalogueAssetKey));
+  if (intake.complete) return roots;
+  const graph = new Set(roots.map(catalogueAssetKey));
   const completed = new Set<string>();
   for (const entry of entries) {
     if (entry.startTime >= intake.before || entry.responseEnd <= 0 || !/^https?:/i.test(entry.name)

@@ -14,7 +14,7 @@ export interface VisualPickerConfig {
   description?:(value:string)=>string;
   /** Called only after the user explicitly opens this mode. Results do not select anything. */
   catalog?:{label:string;load:(query:string,offset:number,signal:AbortSignal)=>Promise<VisualCatalogPage>};
-  intake?: {label:string;select:(file:File,signal:AbortSignal)=>Promise<void>};
+  intake?: {label:string;open:(signal:AbortSignal)=>Promise<void>};
 }
 /** A view over a canonical select, never a second selection model. */
 export class VisualPicker {
@@ -27,6 +27,7 @@ export class VisualPicker {
   private generation = 0;
   private disposed = false;
   private request:AbortController|null = null;
+  private intakeRequest:AbortController|null = null;
   private searchTimer?:number;
   private refreshIncluded:(()=>void)|null=null;
   private readonly changed = () => this.sync();
@@ -109,10 +110,13 @@ export class VisualPicker {
     const grid=document.createElement('div'); grid.className='visual-picker-grid'; dialog.append(grid);
     const status=document.createElement('p');status.setAttribute('role','status');status.setAttribute('aria-live','polite');status.hidden=true;dialog.append(status);
     if(this.config.intake){
-      const input=document.createElement('input');input.type='file';input.accept='.zip,application/zip';input.hidden=true;dialog.append(input);
       const actions=document.createElement('div');actions.className='visual-picker-actions';header.after(actions);
-      const intake=action(this.config.intake.label,()=>input.click());actions.append(intake);
-      input.onchange=async()=>{const file=input.files?.[0];if(!file)return;this.cancelRequest();const request=this.request=new AbortController();intake.disabled=true;status.hidden=false;status.textContent='Reading map index…';try{await this.config.intake!.select(file,request.signal);if(this.dialog===dialog)this.close();}catch(error){if(this.dialog===dialog){status.textContent=error instanceof Error?error.message:String(error);intake.disabled=false;input.value='';}}};
+      const intake=action(this.config.intake.label,async()=>{
+        this.cancelRequest();this.intakeRequest?.abort();const request=this.intakeRequest=new AbortController();intake.disabled=true;
+        try{await this.config.intake!.open(request.signal);if(this.dialog===dialog)this.close();}
+        catch(error){if(this.dialog===dialog){status.hidden=false;status.textContent=error instanceof DOMException&&error.name==='AbortError'?'Map selection cancelled.':error instanceof Error?error.message:String(error);intake.disabled=false;intake.focus();}}
+        finally{if(this.intakeRequest===request)this.intakeRequest=null;}
+      });actions.append(intake);
     }
     const navigation=document.createElement('div');navigation.className='visual-picker-actions';navigation.hidden=true;
     const previous=action('Previous',()=>{offset=Math.max(0,offset-(page?.limit??40));void loadSource();});
@@ -205,5 +209,5 @@ export class VisualPicker {
     document.body.append(dialog);VisualPicker.opened.add(this);dialog.showModal();switchMode(false);
     window.dispatchEvent(new Event('visual-picker-open'));(search??title).focus();
   }
-  dispose(){if(this.disposed)return;this.disposed=true;this.close(false);this.select.removeEventListener('change',this.changed);this.root.remove();}
+  dispose(){if(this.disposed)return;this.disposed=true;this.intakeRequest?.abort();this.intakeRequest=null;this.close(false);this.select.removeEventListener('change',this.changed);this.root.remove();}
 }

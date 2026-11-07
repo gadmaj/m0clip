@@ -266,24 +266,28 @@ assert.equal(beforeIntake, undefined);
 
 const catalogue = { version: 1, release: 'intake-scope', sizes: {
   '/main.js': 100, '/browser.js': 19_144, '/bundle.js': 15_422, '/model.bin': 700, '/verify.worker.js': 500,
-}, dependencies: { '/main.js': ['/browser.js'], '/bundle.js': ['/browser.js'], '/verify.worker.js': ['/bundle.js'] },
+  '/source.js': 400, '/inspect.worker.js': 600, '/assemble.worker.js': 900,
+}, dependencies: { '/main.js': ['/browser.js'], '/bundle.js': ['/browser.js'], '/verify.worker.js': ['/bundle.js'],
+  '/source.js': ['/browser.js'], '/inspect.worker.js': ['/browser.js'], '/assemble.worker.js': ['/browser.js'] },
   runtime: { page: ['/main.js', '/browser.js'], worker: [], inference: [], localMap: ['/bundle.js', '/browser.js'],
-    localMapVerification: ['/verify.worker.js', '/bundle.js', '/browser.js'] },
+    localMapVerification: ['/verify.worker.js', '/bundle.js', '/browser.js'],
+    sourceClient: ['/source.js', '/browser.js'], sourceMetadata: ['/inspect.worker.js', '/browser.js'],
+    sourceAssembly: ['/assemble.worker.js', '/browser.js'] },
   mapVisuals: {}, modelBundles: {} };
 const completeBeforeLoad = { complete: true, before: 100 };
 const receipt = { name: 'https://scene.test/browser.js', startTime: 10, responseEnd: 20, decodedBodySize: 19_144, responseStatus: 200 };
-assert.deepEqual(priorIntakeAssets(catalogue, undefined, [receipt]), [], 'No prior intake means no past-byte exclusion');
-assert.deepEqual(priorIntakeAssets(catalogue, completeBeforeLoad, []), catalogue.runtime.localMap,
+assert.deepEqual(priorIntakeAssets(catalogue, undefined, [receipt], catalogue.runtime.localMap), [], 'No prior intake means no past-byte exclusion');
+assert.deepEqual(priorIntakeAssets(catalogue, completeBeforeLoad, [], catalogue.runtime.localMap), catalogue.runtime.localMap,
   'A fulfilled pre-Load import proves its whole graph available even without cached body-size timing');
 for (const invalid of [
   { ...receipt, decodedBodySize: 19_143 }, { ...receipt, decodedBodySize: 0 },
   { ...receipt, responseEnd: 0 }, { ...receipt, startTime: 100 },
   { ...receipt, responseStatus: undefined }, { ...receipt, responseStatus: 0 }, { ...receipt, responseStatus: 304 },
   { ...receipt, responseStatus: 404 }, { ...receipt, name: 'https://scene.test/model.bin', decodedBodySize: 700 },
-]) assert.deepEqual(priorIntakeAssets(catalogue, pendingBeforeLoad, [invalid]), [],
+]) assert.deepEqual(priorIntakeAssets(catalogue, pendingBeforeLoad, [invalid], catalogue.runtime.localMap), [],
   'A pending/failed import cannot exclude partial, unfinished, later, uncertain, failed or unrelated bodies');
 const overlapReceipt = { ...receipt, responseEnd: 200 };
-assert.deepEqual(priorIntakeAssets(catalogue, pendingBeforeLoad, [overlapReceipt]), ['/browser.js'],
+assert.deepEqual(priorIntakeAssets(catalogue, pendingBeforeLoad, [overlapReceipt], catalogue.runtime.localMap), ['/browser.js'],
   'An exact completed shared body is prior work even if its unrelated bundle entry fails or remains pending');
 const scoped = new SceneProgress();
 for (const [intake, entries, independentSharedRoot] of [
@@ -292,7 +296,7 @@ for (const [intake, entries, independentSharedRoot] of [
   [pendingBeforeLoad, [{ ...receipt, startTime: 101 }], false],
   [completeBeforeLoad, [], true], [pendingBeforeLoad, [receipt], true],
 ]) {
-  const prior = priorIntakeAssets(catalogue, intake, entries);
+  const prior = priorIntakeAssets(catalogue, intake, entries, catalogue.runtime.localMap);
   const page = plannedAssets(catalogue, catalogue.runtime.page, [], prior);
   const generation = scoped.begin(0);
   const selected = plannedAssets(catalogue, ['/model.bin', ...(independentSharedRoot ? ['/browser.js'] : [])], []);
@@ -316,7 +320,7 @@ for (const [intake, entries, independentSharedRoot] of [
 // never satisfy the same URL required in the independent verification realm.
 const verifierProgress = new SceneProgress(), verifierGeneration = verifierProgress.begin(0);
 const pageAssets = plannedAssets(catalogue, catalogue.runtime.page, [],
-  priorIntakeAssets(catalogue, completeBeforeLoad, []));
+  priorIntakeAssets(catalogue, completeBeforeLoad, [], catalogue.runtime.localMap));
 const verificationAssets = plannedAssets(catalogue, catalogue.runtime.localMapVerification, [])
   .map(asset => ({ ...asset, realm: 'map-verification' }));
 verifierProgress.update(verifierGeneration,
@@ -352,7 +356,7 @@ for (const ordering of ['page-before-ownership', 'ownership-before-page', 'scope
   const rootProgress = new SceneProgress(), generation = rootProgress.begin(0);
   if (ordering === 'page-before-ownership') rootProgress.update(generation, [pageRoot], 1);
   if (ordering === 'scoped-before-ownership') rootProgress.update(generation, [scopedRoot, pageRoot], 1);
-  rootProgress.ownWorkerRoot(generation, `https://scene.test${rootUrl}`, 2);
+  rootProgress.ownWorkerRoot(generation, `https://scene.test${rootUrl}`, 'map-verification', 2);
   const hadReceipt = ordering === 'page-before-ownership' || ordering === 'scoped-before-ownership';
   assert.equal(rootProgress.snapshot(2).loaded, hadReceipt ? rootBytes : 0);
   assert.equal([...rootProgress.transfers()].length, hadReceipt ? 1 : 0,
@@ -368,7 +372,7 @@ for (const ordering of ['page-before-ownership', 'ownership-before-page', 'scope
   assert.equal([...rootProgress.transfers()].length, 1, 'Page and scoped observations remain one actual root entity');
   assert.equal(rootProgress.hasCatalogueMismatch, false);
   const next = rootProgress.begin(5);
-  rootProgress.ownWorkerRoot(generation, rootUrl, 6);
+  rootProgress.ownWorkerRoot(generation, rootUrl, 'map-verification', 6);
   rootProgress.update(generation, [pageRoot, scopedRoot], 6);
   rootProgress.freeze(next, rootAssets, 7);
   assert.equal(rootProgress.snapshot(7).loaded, 0);
@@ -382,7 +386,7 @@ for (const ordering of ['page-before-ownership', 'ownership-before-page', 'scope
 
 const partialRoot = new SceneProgress(), partialGeneration = partialRoot.begin(0);
 partialRoot.update(partialGeneration, [transfer('root:pending', rootUrl, 1000, null)], 1);
-partialRoot.ownWorkerRoot(partialGeneration, rootUrl, 2);
+partialRoot.ownWorkerRoot(partialGeneration, rootUrl, 'map-verification', 2);
 let partialSnapshot = partialRoot.snapshot(2);
 assert.equal(partialSnapshot.loaded, 1000, 'Ownership preserves only the actual consumed prefix');
 assert.equal(partialSnapshot.active, 1, 'Ownership preserves the real active request');
@@ -396,6 +400,34 @@ partialRoot.update(partialGeneration, [transfer('root:pending', rootUrl, rootByt
 assert.equal(partialRoot.snapshot(4).remaining, 0);
 assert.equal(partialRoot.snapshot(4).active, 0, 'Migrated request activity ends on its actual terminal update');
 assert.equal(partialRoot.hasCatalogueMismatch, false);
+// Prior page imports cannot complete either independent worker's shared code.
+// Untagged window root timings must still reach the worker that actually owns it.
+const sourceProgress = new SceneProgress(), sourceGeneration = sourceProgress.begin(0);
+const priorSource = priorIntakeAssets(catalogue, completeBeforeLoad, [], catalogue.runtime.sourceClient);
+const sourcePage = plannedAssets(catalogue, catalogue.runtime.sourceClient, [], priorSource);
+const metadataAssets = plannedAssets(catalogue, catalogue.runtime.sourceMetadata, [])
+  .map(asset => ({ ...asset, realm: 'source-metadata' }));
+const assemblyAssets = plannedAssets(catalogue, catalogue.runtime.sourceAssembly, [])
+  .map(asset => ({ ...asset, realm: 'source-assembly' }));
+sourceProgress.ownWorkerRoot(sourceGeneration, '/inspect.worker.js', 'source-metadata', 1);
+sourceProgress.ownWorkerRoot(sourceGeneration, '/assemble.worker.js', 'source-assembly', 1);
+sourceProgress.freeze(sourceGeneration, [...sourcePage, ...metadataAssets, ...assemblyAssets], 2);
+const sourceMaximum = 600 + 900 + 2 * 19_144;
+assert.equal(sourceProgress.snapshot(2).knownTotal, sourceMaximum);
+assert.equal(sourceProgress.snapshot(2).loaded, 0, 'Prior page bytes are not fresh worker reads');
+sourceProgress.update(sourceGeneration, [
+  transfer('inspect:root', '/inspect.worker.js', 600, 600, 'done'),
+  { ...transfer('inspect:shared', '/browser.js', 19_144, 19_144, 'done'), realm: 'source-metadata' },
+], 3);
+assert.equal(sourceProgress.snapshot(3).remaining, 900 + 19_144,
+  'Metadata completion cannot credit conversion code at the same canonical URL');
+sourceProgress.update(sourceGeneration, [
+  transfer('assemble:root', '/assemble.worker.js', 900, 900, 'done'),
+  { ...transfer('assemble:shared', '/browser.js', 19_144, 19_144, 'done'), realm: 'source-assembly' },
+], 4);
+assert.equal(sourceProgress.snapshot(4).remaining, 0);
+assert.equal(sourceProgress.snapshot(4).knownTotal, sourceMaximum);
+assert.equal(sourceProgress.hasCatalogueMismatch, false);
 console.log(JSON.stringify({ fixedMaximum: true, uniqueEntities: true, retainedPreflight: true,
   retryIsolation: true, generationIsolation: true, realRate: true, stalledEstimate: true, catalogueMismatch: true,
   activeOnlyEta: true, phaseLabels: true, detailText: true, httpFailureCause: true }));
