@@ -284,19 +284,6 @@ let rotatedSource;
   // An opaque silhouette does not depend on UVs; a mesh-level custom depth material stays legal.
   const mesh=new THREE.Mesh(new THREE.BufferGeometry(),source);mesh.customDepthMaterial=new THREE.MeshDepthMaterial();
   bindSourceTemporalShadows(mesh,[original,source]);assert.equal(mesh.onBeforeShadow,THREE.Object3D.prototype.onBeforeShadow);
-  // Exported DCC GLB: standard KHR_texture_transform, checked by the spec's own example
-  // semantics (offset [0,1], rotation π/2, scale .5 selects the lower-left quadrant):
-  // uv' = T(offset)·R·S·uv with R rows [cos sin; -sin cos].
-  const writer={extensionsUsed:{}},definition={pbrMetallicRoughness:{baseColorTexture:{index:0}}};
-  await sourceBaseTransformWriter(writer).writeMaterialAsync(source,definition);
-  assert.equal(writer.extensionsUsed.KHR_texture_transform,true);
-  const t=definition.pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform;
-  const specUv=(u,v)=>{const c=Math.cos(t.rotation),s=Math.sin(t.rotation),x=t.scale[0]*u,y=t.scale[1]*v;return [c*x+s*y+t.offset[0],-s*x+c*y+t.offset[1]];};
-  for(const [u,v] of samples)near(specUv(u,v),authoredUv(ROTATED,u,v),`exported KHR_texture_transform (${u},${v})`);
-  // A Studio normal map follows the same base matrix at runtime, so it is exported too.
-  const normalOnly={normalTexture:{index:1}};
-  await sourceBaseTransformWriter({extensionsUsed:{}}).writeMaterialAsync(original,normalOnly);
-  assert.deepEqual(normalOnly.normalTexture.extensions.KHR_texture_transform,t);
 }
 {
   const {original,source}=await patched('cutout');
