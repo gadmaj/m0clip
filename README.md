@@ -197,7 +197,17 @@ host it: Vite copies everything in `public/` into the build.
 <details>
 <summary>Source maps</summary>
 
-Maps are converted on the command line, not uploaded in the browser:
+In the map gallery, choose **Open local map…**, then **Source BSP**, **Source
+GMA** or **Source ZIP**. Pick a map from the file. Use **Add archives…** for
+ZIP, GMA or VPK companions, or **Add game folder…** for loose files.
+The BSP’s embedded pak takes precedence, followed by the map archive, then
+companions in their listed order. Files stay local; no game files are downloaded.
+
+Missing or unsupported features stop conversion and appear under
+**Requirements**, without replacing the current scene. A shared cause is listed
+once; separate authored causes remain visible. Not every Source map is supported.
+
+You can also convert a map on the command line for your own host:
 
 ```sh
 .venv/bin/python scripts/import_source_bsp.py \
@@ -234,12 +244,12 @@ The packager needs Linux (`/proc/self/fd`), rejects symlinks, checks the world,
 prop, texture and physics dependencies, never overwrites an existing ZIP and
 stays under 4 GiB. The bundle itself works in any browser.
 
-In the map gallery, choose **Open map bundle…**. The file is checked locally in a
-worker and is not uploaded; cancel before installation to keep the current
-scene. Local maps last for the tab’s session. Saved takes and views remember the
-map, not its files, so reattach the same bundle after a reload. Finish loading a
-map or saved view before opening Timeline or another take. Raw BSP, GMA and VPK
-files can’t be opened in the browser.
+In the map gallery, choose **Open local map… → Converted .map.zip**. The file is
+checked locally in a worker and is not uploaded; cancel before installation to
+keep the current scene. Local maps last for the tab’s session. Saved takes and
+views remember the map, not its files, so reattach the original map and companions
+after a reload. Finish loading a map or saved view before opening Timeline or
+another take. VPKs supply companions; they are not a standalone map format here.
 
 </details>
 
