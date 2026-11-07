@@ -1,12 +1,23 @@
-/** CPU material packaging, not Chrome/GPU or complete-map qualification. */
+/** CPU material packaging plus actual GLTFLoader/Source material consumers.
+ * node scripts/test_raw_source_materials.mjs
+ * Not Chrome/GPU, native pixel or complete-map qualification: shader-patch
+ * uniforms prove the bound UV matrix, not rasterized texels. */
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-import { build } from 'esbuild';
-const compiled=await build({stdin:{contents:"export * from './src/maps/raw-source-materials';export * from './src/maps/raw-source-gltf';export * from './src/maps/raw-source-files';export * from './src/maps/raw-source-vtf';",resolveDir:process.cwd(),loader:'ts'},bundle:true,platform:'node',format:'cjs',write:false});
-const module={exports:{}};
-new Function('module','require',compiled.outputFiles[0].text)(module,createRequire(import.meta.url));
-const {SourceMaterialExport,SourceGlb,SourceFileSystem,readSourceVtf}=module.exports;
+import buildFixture from './build-fixture.cjs';
+// Real Vite transforms bundle the ACTUAL GLTFLoader and Source consumers with one Three instance.
+const compiled=await buildFixture({root:process.cwd(),platform:'node',format:'es',source:`
+  export * from './src/maps/raw-source-materials';
+  export * from './src/maps/raw-source-gltf';
+  export * from './src/maps/raw-source-files';
+  export * from './src/maps/raw-source-vtf';
+  export * from './src/render/source-vtf';
+  export * from './src/render/source-materials';
+  export * from './src/render/source-lighting';
+  export { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+  export * as THREE from 'three';`});
+const {SourceMaterialExport,SourceGlb,SourceFileSystem,readSourceVtf,SourceNativeTextures,SourceMaterials,patchSourceMaterial,
+  sourceVertexMaterial,bindSourceTemporalShadows,sourceBaseTransformWriter,GLTFLoader,THREE}=await import('data:text/javascript;base64,'+Buffer.from(compiled.code).toString('base64'));
 function vtf({frames=2,faces=1,format=0,padding=0,alpha=true}={}){
   const header=Buffer.alloc(80);header.write('VTF\0');header.writeUInt32LE(7,4);header.writeUInt32LE(2,8);header.writeUInt32LE(80,12);
   header.writeUInt16LE(1,16);header.writeUInt16LE(1,18);header.writeUInt32LE((faces===6?0x4000:0)|(alpha?0x2000:0),20);
@@ -29,6 +40,35 @@ function pngPixels(result,index){
   const decoded=spawnSync('python3',['-c','import io,sys\nfrom PIL import Image\nim=Image.open(io.BytesIO(sys.stdin.buffer.read())).convert("RGBA")\nsys.stdout.buffer.write(im.tobytes())'],{input:result.view(image.bufferView)});
   assert.equal(decoded.status,0,decoded.stderr.toString());return [...decoded.stdout];
 }
+async function load(glb){
+  const owner=new SourceMaterials(),loader=new GLTFLoader();
+  // Original embedded VTF bytes become real DataTextures; no WebGL renderer exists.
+  loader.register(parser=>new SourceNativeTextures(parser,owner,undefined));
+  const loaded=await loader.parseAsync(await glb.finish().arrayBuffer(),'');
+  return {...loaded,owner,material:index=>loaded.parser.getDependency('material',index)};
+}
+const near=(actual,expected,message='',epsilon=1e-6)=>{assert.equal(actual.length,expected.length,message);actual.forEach((v,i)=>assert(Math.abs(v-expected[i])<epsilon,`${message} ${actual} != ${expected}`));};
+// Source renderers emit linear colour through gamma 2.2 (sourceVertexMaterial/
+// sourceMaterial, noclip Main.ts): what a white unlit texel displays as.
+const displayed=color=>color.toArray().map(v=>v**(1/2.2));
+function compile(material,library){
+  const shader={uniforms:{},vertexShader:THREE.ShaderLib[library].vertexShader,fragmentShader:THREE.ShaderLib[library].fragmentShader};
+  material.onBeforeCompile(shader,null);return shader;
+}
+/** Independent Source ParameterMatrix oracle (noclip MaterialParameters.ts setMatrix):
+ * T(center+translate)·R(rotate)·T(-center)·S(scale), applied to native UVs. */
+function authoredUv(text,u,v){
+  const o={center:[0,0],scale:[1,1],rotate:[0],translate:[0,0]};
+  for(const [,key,values] of text.matchAll(/(center|scale|rotate|translate)((?:\s+[-+.\d]+)+)/g)){const n=values.trim().split(/\s+/).map(Number);o[key]=key==='rotate'||n.length===2?n:[n[0],n[0]];}
+  const m=new THREE.Matrix3().makeTranslation(o.center[0]+o.translate[0],o.center[1]+o.translate[1])
+    .multiply(new THREE.Matrix3().makeRotation(o.rotate[0]*Math.PI/180))
+    .multiply(new THREE.Matrix3().makeTranslation(-o.center[0],-o.center[1]))
+    .multiply(new THREE.Matrix3().makeScale(o.scale[0],o.scale[1]));
+  return [...new THREE.Vector3(u,v,1).applyMatrix3(m).toArray().slice(0,2)];
+}
+const samples=[[0,0],[1,0],[0,1],[.3,.8],[-1.5,2.25]];
+const boundUv=(matrix,u,v)=>[...new THREE.Vector3(u,v,1).applyMatrix3(matrix).toArray().slice(0,2)];
+function assertBound(matrix,expected,message){assert(matrix,`${message}: no base UV binding`);for(const [u,v] of samples)near(boundUv(matrix,u,v),expected(u,v),`${message} (${u},${v})`);}
 const input=vtf({padding:65536});
 const diagnosticSource=`UnlitGeneric { ${Array.from({length:8},(_,i)=>`"k${i}" "v" [$UNKNOWN_${i}]`).join(' ')} }`;
 const diagnosticFilesystem=await filesystem({'materials/diagnostics.vmt':diagnosticSource});
@@ -79,8 +119,16 @@ assert.deepEqual([...await texturePixels(result,second.pbrMetallicRoughness.base
 assert.deepEqual(pngPixels(result,second.pbrMetallicRoughness.baseColorTexture.index),[255,1,99,0]);
 assert.deepEqual([...await texturePixels(result,second.normalTexture.index)],[7,8,9,255]);
 assert.deepEqual([...await texturePixels(result,result.json.materials[rooted].pbrMetallicRoughness.baseColorTexture.index)],[255,1,99,0],'virtual-root Patch and texture references reach the actual selected VTF frame');
-assert.deepEqual(second.pbrMetallicRoughness.baseColorFactor,[.5,128/255,64/255*.25,.75]);
-assert.equal(second.alphaMode,'BLEND');
+// Consumer fidelity, not exporter metadata: the loaded linear colour, carried by the
+// real Source vertex material, displays as the authored gamma $color × $color2.
+{
+  const tintGlb=new SourceGlb(),tintExporter=new SourceMaterialExport(tintGlb,fs),tintIndex=await tintExporter.material('second');
+  assert.deepEqual(tintExporter.requirements,[]);
+  const loaded=await load(tintGlb),original=await loaded.material(tintIndex),native=sourceVertexMaterial(original,1,{value:1});
+  near(displayed(native.color),[1*.5,128/255,64/255*.25]);
+  assert.equal(native.opacity,.75);assert.equal(original.transparent,true);assert.equal(native.transparent,true);
+  native.dispose();loaded.owner.clear();
+}
 const suffixGlb=new SourceGlb(),suffixExporter=new SourceMaterialExport(suffixGlb,await filesystem({
   'materials/literal.vmt':'VertexLitGeneric { "$basetexture" "literal.vmt" }',
   'materials/literal.vmt.vtf':vtf({frames:1}),
@@ -147,4 +195,131 @@ const smallWorking=new SourceMaterialExport(new SourceGlb(),fs,{maxTextureWorkin
 await assert.rejects(smallWorking.material('first'));
 const aborted=new AbortController();aborted.abort(new Error('cancel material conversion'));
 const cancelled=new SourceMaterialExport(new SourceGlb(),fs,{signal:aborted.signal});assert.throws(()=>cancelled.material('first'));
-console.log('Source material GLB resources preserve real frames, transparent PNG pixels, HDR, cubemap bindings and bounded concurrent ownership; unresolved capabilities remain blocking.');
+// Authored scalar alpha, static $basetexturetransform and TextureScroll through the
+// actual GLTFLoader -> Source lighting variants -> shadow/export consumers.
+const ROTATED='center .5 .5 scale 2 .5 rotate 90 translate .25 -.125',SCALE2='scale 2 2';
+const SCROLL='Proxies { TextureScroll { texturescrollvar "$basetexturetransform" texturescrollrate ".5" texturescrollangle "0" texturescale "3" } }';
+const stateFs=await filesystem({
+  'materials/alpha.vtf':vtf(),'materials/opaque.vtf':vtf({alpha:false}),
+  'materials/before.vmt':`VertexLitGeneric { "$basetexture" "opaque" "$alpha" ".25" "$color" "[.5 .5 .5]" "$basetexturetransform" "${SCALE2}" }`,
+  'materials/scalar.vmt':'UnlitGeneric { "$alpha" ".25" }',
+  'materials/scalartested.vmt':'VertexLitGeneric { "$basetexture" "alpha" "$alpha" ".5" "$alphatest" "1" "$alphatestreference" ".4" }',
+  'materials/scalarglow.vmt':'VertexLitGeneric { "$basetexture" "alpha" "$alpha" ".5" "$translucent" "1" "$selfillum" "1" }',
+  'materials/scalaradd.vmt':'VertexLitGeneric { "$basetexture" "opaque" "$alpha" ".5" "$additive" "1" }',
+  'materials/rotated.vmt':`LightmappedGeneric { "$basetexture" "opaque" "$basetexturetransform" "${ROTATED}" }`,
+  'materials/cutout.vmt':`VertexLitGeneric { "$basetexture" "alpha" "$alphatest" "1" "$basetexturetransform" "${ROTATED}" }`,
+  'materials/scrolled.vmt':`VertexLitGeneric { "$basetexture" "opaque" "$basetexturetransform" "${ROTATED}" ${SCROLL} }`,
+  'materials/animated.vmt':`VertexLitGeneric { "$basetexture" "alpha" "$basetexturetransform" "${ROTATED}" Proxies { AnimatedTexture { animatedtexturevar "$basetexture" animatedtextureframenumvar "$frame" animatedtextureframerate "10" } } }`,
+  'materials/detailed.vmt':`VertexLitGeneric { "$basetexture" "opaque" "$detail" "opaque" "$basetexturetransform" "${ROTATED}" }`,
+  'materials/bumped.vmt':`LightmappedGeneric { "$basetexture" "opaque" "$bumpmap" "opaque" "$basetexturetransform" "${ROTATED}" }`,
+  'materials/skewdetail.vmt':`VertexLitGeneric { "$basetexture" "opaque" "$detail" "opaque" "$detailscale" "[2 3]" }`,
+  'materials/detailtransform.vmt':`VertexLitGeneric { "$basetexture" "opaque" "$detail" "opaque" "$detailtexturetransform" "scale 2 2" }`,
+});
+const stateGlb=new SourceGlb(),stateExporter=new SourceMaterialExport(stateGlb,stateFs);
+// Companions follow the effective base UVs in the renderer (WebGL coordinates:
+// scripts/test_source_base_uv_runtime.cjs), so these combinations are now accepted.
+const stateNames=['before','scalar','scalartested','scalarglow','scalaradd','rotated','cutout','scrolled','animated','detailed','bumped'];
+const stateIndex=Object.fromEntries(await Promise.all(stateNames.map(async name=>[name,await stateExporter.material(name)])));
+assert.deepEqual(stateExporter.requirements,[],'common static transforms, companions and scalar alpha are bound, not blocked');
+// Still explicit: per-axis detail scale and an independent authored detail matrix.
+const companionBlocked=new SourceMaterialExport(new SourceGlb(),stateFs);
+for(const [name,code] of [['skewdetail','material-detail-scale-runtime'],['detailtransform','material-texture-transform-runtime']]){
+  await companionBlocked.material(name);
+  assert(companionBlocked.requirements.some(r=>r.blocking&&r.code===code&&r.path===`materials/${name}.vmt`),name);
+}
+const state=await load(stateGlb),owner=state.owner;
+const baseMatrix=material=>compile(material,material.isMeshBasicMaterial?'basic':material.isMeshDepthMaterial?'depth':'standard').uniforms.sourceProxyBaseTransform?.value;
+async function patched(name,resources={}){
+  const original=await state.material(stateIndex[name]),source=owner.own(sourceVertexMaterial(original,1,{value:1}));
+  patchSourceMaterial(source,original,resources,undefined,undefined,undefined,0,false,owner);
+  return {original,source};
+}
+// SDK 2013 BaseVSShader::EvaluateBlendRequirements: constant alpha modulation blends;
+// alpha testing keeps precedence; additive becomes alpha-weighted BT_BLENDADD.
+{
+  const scalar=await state.material(stateIndex.scalar);
+  assert.equal(scalar.transparent,true);assert.equal(scalar.opacity,.25);assert.equal(scalar.alphaTest,0);
+  const tested=await state.material(stateIndex.scalartested);
+  assert.equal(tested.transparent,false,'alpha test keeps precedence over scalar alpha');assert.equal(tested.alphaTest,.4);assert.equal(tested.opacity,.5);
+  const glow=await state.material(stateIndex.scalarglow);
+  assert.equal(glow.transparent,true,'selfillum suppresses texture-alpha blending, not constant alpha modulation');
+  const add=await patched('scalaradd');
+  assert.equal(add.original.transparent,true);assert.equal(add.source.transparent,true);assert.equal(add.source.blending,THREE.AdditiveBlending);
+}
+// Main's before-control: alpha .25, tint .5, static scale 2 was OPAQUE, gamma factor, metadata-only.
+{
+  const {original,source}=await patched('before');
+  assert.equal(original.transparent,true);assert.equal(source.opacity,.25);
+  near(displayed(source.color),[.5,.5,.5],'authored gamma tint');
+  for(const material of [original,source])assertBound(baseMatrix(material),(u,v)=>authoredUv(SCALE2,u,v),'static scale 2');
+}
+let rotatedSource;
+{
+  const {original,source}=await patched('rotated');rotatedSource=source;
+  const lit=owner.own(sourceVertexMaterial(original,6,{value:1}));
+  patchSourceMaterial(lit,original,{},undefined,undefined,undefined,0,false,owner);
+  for(const material of [original,source,lit])assertBound(baseMatrix(material),(u,v)=>authoredUv(ROTATED,u,v),'static rotated transform in every lighting variant');
+  // An opaque silhouette does not depend on UVs; a mesh-level custom depth material stays legal.
+  const mesh=new THREE.Mesh(new THREE.BufferGeometry(),source);mesh.customDepthMaterial=new THREE.MeshDepthMaterial();
+  bindSourceTemporalShadows(mesh,[original,source]);assert.equal(mesh.onBeforeShadow,THREE.Object3D.prototype.onBeforeShadow);
+  // Exported DCC GLB: standard KHR_texture_transform, checked by the spec's own example
+  // semantics (offset [0,1], rotation π/2, scale .5 selects the lower-left quadrant):
+  // uv' = T(offset)·R·S·uv with R rows [cos sin; -sin cos].
+  const writer={extensionsUsed:{}},definition={pbrMetallicRoughness:{baseColorTexture:{index:0}}};
+  await sourceBaseTransformWriter(writer).writeMaterialAsync(source,definition);
+  assert.equal(writer.extensionsUsed.KHR_texture_transform,true);
+  const t=definition.pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform;
+  const specUv=(u,v)=>{const c=Math.cos(t.rotation),s=Math.sin(t.rotation),x=t.scale[0]*u,y=t.scale[1]*v;return [c*x+s*y+t.offset[0],-s*x+c*y+t.offset[1]];};
+  for(const [u,v] of samples)near(specUv(u,v),authoredUv(ROTATED,u,v),`exported KHR_texture_transform (${u},${v})`);
+}
+{
+  const {original,source}=await patched('cutout');
+  assert(source.alphaTest>0&&source.map,'actual cutout variant');
+  const mesh=new THREE.Mesh(new THREE.BufferGeometry(),source);bindSourceTemporalShadows(mesh,[original,source]);
+  // Three's shadow pass hands the mesh its private cutout depth material before the draw.
+  const depth=new THREE.MeshDepthMaterial({map:source.map,alphaTest:source.alphaTest});
+  mesh.onBeforeShadow(null,null,null,null,mesh.geometry,depth,null);
+  assertBound(baseMatrix(depth),(u,v)=>authoredUv(ROTATED,u,v),'cutout shadow silhouette');
+  const shared=new THREE.Mesh(new THREE.BufferGeometry(),source);shared.customDepthMaterial=new THREE.MeshDepthMaterial();
+  assert.throws(()=>bindSourceTemporalShadows(shared,[original,source]),'an untransformed shared cutout shadow is refused');
+}
+// SDK 2013 TextureScroll OnBind replaces the WHOLE base matrix (src/game/client/
+// texturescrollmaterialproxy.cpp, SetMatrixValue): the static transform is not composed.
+{
+  const {original,source}=await patched('scrolled');
+  const sdk=time=>{
+    let s=time*Math.cos(0)*.5,t=time*Math.sin(0)*.5;
+    if(s<0)s+=1+-Math.trunc(s);if(t<0)t+=1+-Math.trunc(t);s-=Math.trunc(s);t-=Math.trunc(t);
+    return (u,v)=>[3*u+s,3*v+t];
+  };
+  for(const time of [0,1.5,3.5]){owner.update(time);for(const material of [original,source])assertBound(baseMatrix(material),sdk(time),`TextureScroll at ${time}s`);}
+  const definition={pbrMetallicRoughness:{baseColorTexture:{index:0}}};
+  await sourceBaseTransformWriter({extensionsUsed:{}}).writeMaterialAsync(source,definition);
+  assert.equal(definition.pbrMetallicRoughness.baseColorTexture.extensions,undefined,'a time-varying proxy matrix is not exported as static');
+}
+{
+  const original=await state.material(stateIndex.animated);
+  const frames=await Promise.all(original.userData.sourceMaterial.animationFrames.map(i=>state.parser.getDependency('texture',i)));
+  const {source}=await patched('animated',{frames});
+  owner.update(.15);assert.equal(source.map,frames[1]);
+  for(const material of [original,source])assertBound(baseMatrix(material),(u,v)=>authoredUv(ROTATED,u,v),'AnimatedTexture keeps the static base matrix');
+}
+// Prebuilt converter metadata uses the same row-major key; its legacy scroll rate is
+// the same SDK TextureScroll (texturescale 1) and replaces the static matrix.
+{
+  const converted=(meta)=>{
+    const original=new THREE.MeshStandardMaterial({map:new THREE.Texture()});original.userData.sourceMaterial={shader:'vertexlitgeneric',unlit:true,...meta};
+    const source=owner.own(sourceVertexMaterial(original,1,{value:1}));patchSourceMaterial(source,original,{},undefined,undefined,undefined,0,false,owner);return source;
+  };
+  assertBound(baseMatrix(converted({basetexturetransform:[0,-.5,.75,2,0,-.5,0,0,1]})),(u,v)=>[.75-.5*v,2*u-.5],'converted static transform');
+  owner.update(1.75);
+  assertBound(baseMatrix(converted({basetexturetransform:[2,0,0,0,2,0,0,0,1],scroll:[.5,0]})),(u,v)=>[u+.875,v],'converter TextureScroll on the shared base matrix');
+}
+owner.clear();
+assert(baseMatrix(rotatedSource).equals(new THREE.Matrix3()),'a cleared map releases its static binding');
+{
+  const definition={pbrMetallicRoughness:{baseColorTexture:{index:0}}};
+  await sourceBaseTransformWriter({extensionsUsed:{}}).writeMaterialAsync(rotatedSource,definition);
+  assert.equal(definition.pbrMetallicRoughness.baseColorTexture.extensions,undefined);
+}
+console.log('Source material GLB resources preserve real frames, transparent PNG pixels, HDR, cubemap bindings and bounded concurrent ownership; unresolved capabilities remain blocking. GLTFLoader consumers: authored gamma tint, scalar-alpha blend/alpha-test precedence, static base UV in lighting/shadow/export, TextureScroll replacement. CPU uniforms only, no GPU pixels.');

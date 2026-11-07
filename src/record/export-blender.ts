@@ -21,6 +21,7 @@ import { shotLightObjects } from '../render/shot-lights';
 import type { LookState } from '../ui/look';
 import type { ShotEdits, ShotLight } from './post';
 import { extraSkinningWriter } from '../render/extra-skin';
+import { sourceBaseTransformWriter } from '../render/source-materials';
 
 export interface GlbJob {
   fps: number;              // key rate; keys are in seconds, so motion plays at true speed at any scene rate
@@ -200,7 +201,7 @@ async function finishGlb(s: { scene: THREE.Scene; world: THREE.Group; view: Scen
   const { GLTFExporter } = await import("three/examples/jsm/exporters/GLTFExporter.js");
   const cleanup = prepareLosslessTextures(scene),images=losslessImageWriter(view.renderer);
   try {
-    const glb = await new GLTFExporter().register(images.plugin).register(infiniteCameraWriter).register(extraSkinningWriter).parseAsync(scene, {
+    const glb = await new GLTFExporter().register(images.plugin).register(infiniteCameraWriter).register(extraSkinningWriter).register(sourceBaseTransformWriter).parseAsync(scene, {
       binary: true, trs: true, onlyVisible: true, animations: tracks.length ? [clip] : [],
     });
     return new Blob([glb as ArrayBuffer], { type: "model/gltf-binary" });

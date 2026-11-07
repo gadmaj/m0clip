@@ -1622,7 +1622,7 @@ export class SceneView {
     await Promise.all(pending).catch(async error=>{await Promise.allSettled(pending);throw error;});
     if (!current()) throw new DOMException('Map loading cancelled.','AbortError');
     // Studio (non-Source) lighting draws these meshes through Three's shadow map;
-    // scrolled cutouts must cast the same scrolled silhouette in every lighting variant.
+    // base-transformed (static or TextureScroll) cutouts cast the same silhouette in every lighting variant.
     for (const variant of variants) bindSourceTemporalShadows(variant.mesh, [variant.original, variant.source].flat());
     const mainVisibility=visibilityData?context.own(new SourceVisibility(visibilityData,gltf.scene)):null;
     let sky3D:SourceSky3D|null=null;

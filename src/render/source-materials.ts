@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { sourceTextureControl,sourceTextureShader,SOURCE_TEXTURE_FALLBACK } from './source-textures';
 import { MAX_SHOT_LIGHTS } from '../record/post';
 import { SourceTemporalProxyState, type SourceTemporalProxies } from './source-material-proxies';
+import type { GLTFExporterPlugin, GLTFWriter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 
 
 type V = number[];
@@ -25,7 +26,8 @@ export interface MaterialResources {
   frames?: THREE.Texture[]; lightmaps?: THREE.Texture[];
 }
 
-interface TemporalTransformPatch { uniform: { value: THREE.Matrix3 }; owner?: object }
+/** `fixed`: an authored static $basetexturetransform, not a proxy-driven matrix. */
+interface TemporalTransformPatch { uniform: { value: THREE.Matrix3 }; owner?: object; fixed?: boolean }
 
 const temporalTransformPatches = new WeakMap<THREE.Material, TemporalTransformPatch>();
 
@@ -33,7 +35,11 @@ const inactiveTemporalTransform = new THREE.Matrix3();
 
 /** Wrap once with ONE stable uniform per target material. Three calls
  * onBeforeCompile once per material/program key, so a rebind cannot install a
- * new uniform object; the getter follows whichever patch the material holds. */
+ * new uniform object; the getter follows whichever patch the material holds.
+ * Source samples $bumpmap at the base coordinates in every generic shader
+ * (SDK 2013 vertexlit_and_unlit_generic_bump_ps2x.fxc:166, skin_ps20b.fxc:190,
+ * common_lightmappedgeneric_fxc.h GetBaseTextureAndNormal), so a Studio
+ * material's normal map follows the same matrix as its base map. */
 function installTemporalTransform(material: THREE.Material, patch: TemporalTransformPatch) {
   const installed = temporalTransformPatches.has(material);
   temporalTransformPatches.set(material, patch);
@@ -44,7 +50,8 @@ function installTemporalTransform(material: THREE.Material, patch: TemporalTrans
     previous.call(material, shader, renderer);
     shader.uniforms.sourceProxyBaseTransform = live;
     shader.vertexShader = 'uniform mat3 sourceProxyBaseTransform;\n' + shader.vertexShader.replace('#include <uv_vertex>',
-      '#include <uv_vertex>\n#ifdef USE_MAP\nvMapUv = (sourceProxyBaseTransform * vec3(uv, 1.0)).xy;\n#endif');
+      '#include <uv_vertex>\n#ifdef USE_MAP\nvMapUv = (sourceProxyBaseTransform * vec3(uv, 1.0)).xy;\n#endif'
+      + '\n#ifdef USE_NORMALMAP\nvNormalMapUv = (sourceProxyBaseTransform * vec3(uv, 1.0)).xy;\n#endif');
   };
   material.customProgramCacheKey = () => key + '|source-temporal-base-transform';
   material.needsUpdate = true;
@@ -73,15 +80,66 @@ const sourceTemporalShadow: THREE.Object3D['onBeforeShadow'] = function (this: T
 };
 
 /** Install the shadow hook on a map mesh whose displayable materials (every
- * lighting variant) include a proxy UV transform. Mesh-level custom depth or
+ * lighting variant) include a base UV transform. Mesh-level custom depth or
  * distance materials are shared by all of a mesh's materials, so a transformed
- * cutout there is refused rather than drawn with an unscrolled shadow. */
+ * cutout there is refused rather than drawn with an untransformed shadow. An
+ * opaque silhouette does not depend on UVs and needs no hook. */
 export function bindSourceTemporalShadows(mesh: THREE.Mesh, materials: readonly THREE.Material[]): void {
-  if (!materials.some(material => temporalTransformPatches.has(material))) return;
+  const transformed = materials.filter(material => temporalTransformPatches.has(material));
+  if (!transformed.length) return;
   if (mesh.onBeforeShadow === sourceTemporalShadow) return;
-  if (mesh.customDepthMaterial || mesh.customDistanceMaterial || mesh.onBeforeShadow !== THREE.Object3D.prototype.onBeforeShadow)
-    throw new Error('Source texture-scroll material cannot share a custom shadow material or shadow hook');
+  if (mesh.customDepthMaterial || mesh.customDistanceMaterial || mesh.onBeforeShadow !== THREE.Object3D.prototype.onBeforeShadow) {
+    const cutout = transformed.some(material => {
+      const m = material as THREE.MeshStandardMaterial;
+      return (m.map || m.alphaMap) && m.alphaTest > 0 || m.alphaToCoverage;
+    });
+    if (!cutout) return;
+    throw new Error('Source base-transformed cutout material cannot share a custom shadow material or shadow hook');
+  }
   mesh.onBeforeShadow = sourceTemporalShadow;
+}
+
+const KHR_TEXTURE_TRANSFORM = 'KHR_texture_transform';
+/** Live authored static base matrix of a displayed material (TextureScroll's
+ * time-varying matrix is not a static texture transform and is excluded). */
+function sourceStaticBaseTransform(material: THREE.Material): THREE.Matrix3 | undefined {
+  const patch = temporalTransformPatches.get(material);
+  return patch?.fixed && patch.owner ? patch.uniform.value : undefined;
+}
+
+/** Register with exporter.register(sourceBaseTransformWriter). Writes the exact
+ * static base matrix the renderer applies as standard KHR_texture_transform
+ * (spec order T(offset)·R(rotation)·S(scale), R = [cos sin; -sin cos]). Source's
+ * R(θ)·S matrices never shear; a non-decomposable matrix is refused, not approximated. */
+export function sourceBaseTransformWriter(writer: GLTFWriter): GLTFExporterPlugin {
+  return {
+    async writeMaterialAsync(material, definition) {
+      const matrix = sourceStaticBaseTransform(material);
+      const info = (definition.pbrMetallicRoughness as { baseColorTexture?: { extensions?: Record<string, unknown> } } | undefined)?.baseColorTexture;
+      if (!matrix || !info) return;
+      const e = matrix.elements, m00 = e[0], m10 = e[1], m01 = e[3], m11 = e[4];
+      const sx = Math.hypot(m00, m10);
+      let rotation: number, sy: number;
+      if (sx > 0) { rotation = Math.atan2(-m10, m00); sy = m01 * Math.sin(rotation) + m11 * Math.cos(rotation); }
+      else { rotation = Math.atan2(m01, m11); sy = Math.hypot(m01, m11); }
+      const c = Math.cos(rotation), s = Math.sin(rotation), scale = Math.max(1, Math.abs(m00), Math.abs(m10), Math.abs(m01), Math.abs(m11));
+      if (Math.max(Math.abs(c * sx - m00), Math.abs(-s * sx - m10), Math.abs(s * sy - m01), Math.abs(c * sy - m11)) > 1e-6 * scale)
+        throw new Error('A Source base texture transform cannot be represented as KHR_texture_transform');
+      info.extensions ??= {};
+      info.extensions[KHR_TEXTURE_TRANSFORM] = { offset: [e[6], e[7]], rotation, scale: [sx, sy] };
+      writer.extensionsUsed[KHR_TEXTURE_TRANSFORM] = true;
+    },
+  };
+}
+
+/** Authored row-major static $basetexturetransform from sourceMaterial metadata
+ * (raw exporter and converter share this key), when it changes base UVs. */
+function staticBaseTransform(meta: Metadata): readonly number[] | undefined {
+  const value = meta.basetexturetransform;
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length !== 9 || !value.every(Number.isFinite) || value[6] !== 0 || value[7] !== 0 || value[8] !== 1)
+    throw new Error('Invalid Source base texture transform metadata');
+  return value.every((v, i) => v === (i % 4 === 0 ? 1 : 0)) ? undefined : value;
 }
 /** Each map request owns its resources and clock, including allocations that finish
  * after cancellation. Stale requests can never clear or animate the current map. */
@@ -97,6 +155,8 @@ private temporal: { state: SourceTemporalProxyState; matrix: THREE.Matrix3;
 
 private temporalOriginals = new WeakMap<THREE.MeshStandardMaterial, SourceMaterials['temporal'][number]>();
 
+private baseTransforms = new WeakMap<THREE.MeshStandardMaterial, THREE.Matrix3>();
+
 private temporalTransformOwners: { patch: TemporalTransformPatch; owner: object }[] = [];
 private disposed=false;
   private released=new WeakSet<object>();
@@ -111,7 +171,7 @@ private disposed=false;
   discard(resource:{dispose():void}){if(this.resources.delete(resource))this.release(resource);}
   animate(material:THREE.MeshBasicMaterial,frames:THREE.Texture[],fps:number){if(!this.disposed)this.animated.push({material,frames,fps});}
   
-private patchTemporalTransform(material: THREE.MeshBasicMaterial | THREE.MeshStandardMaterial, matrix: THREE.Matrix3) {
+private patchTemporalTransform(material: THREE.MeshBasicMaterial | THREE.MeshStandardMaterial, matrix: THREE.Matrix3, fixed = false) {
     let patch = temporalTransformPatches.get(material);
     if (!patch) {
       patch = { uniform: { value: inactiveTemporalTransform } };
@@ -119,8 +179,23 @@ private patchTemporalTransform(material: THREE.MeshBasicMaterial | THREE.MeshSta
     }
     const owner = {};
     patch.owner = owner;
+    patch.fixed = fixed;
     patch.uniform.value = matrix;
     this.temporalTransformOwners.push({ patch, owner });
+  }
+
+/** Authored static $basetexturetransform: the same base UV binding as TextureScroll,
+ * shared by every lighting variant, shadow cutout and flashlight depth copy. Callers
+ * never combine it with TextureScroll, whose SDK OnBind replaces the whole matrix. */
+bindBaseTransform(source: THREE.MeshBasicMaterial, original: THREE.MeshStandardMaterial, values: readonly number[]) {
+    if (this.disposed) return;
+    let matrix = this.baseTransforms.get(original);
+    if (!matrix) {
+      matrix = new THREE.Matrix3().set(values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7], values[8]);
+      this.baseTransforms.set(original, matrix);
+      this.patchTemporalTransform(original, matrix, true);
+    }
+    if (temporalTransformPatches.get(source)?.uniform.value !== matrix) this.patchTemporalTransform(source, matrix, true);
   }
 
 bindTemporal(source: THREE.MeshBasicMaterial, original: THREE.MeshStandardMaterial, frames: THREE.Texture[], program: SourceTemporalProxies) {
@@ -164,9 +239,9 @@ update(time:number){
   clear(){
     this.animated.length=0;
     for(const {patch,owner} of this.temporalTransformOwners)if(patch.owner===owner){
-      patch.owner=undefined;patch.uniform.value=inactiveTemporalTransform;
+      patch.owner=undefined;patch.fixed=false;patch.uniform.value=inactiveTemporalTransform;
     }
-    this.temporalTransformOwners.length=0;this.temporal.length=0;this.temporalOriginals=new WeakMap();
+    this.temporalTransformOwners.length=0;this.temporal.length=0;this.temporalOriginals=new WeakMap();this.baseTransforms=new WeakMap();
     for(const resource of this.resources){if(this.disposed)this.release(resource);else resource.dispose();}
     this.resources.clear();
   }
@@ -201,7 +276,21 @@ export function patchSourceMaterial(material: THREE.MeshBasicMaterial, original:
   const custom = material as THREE.MeshBasicMaterial & { defines?: Record<string, string> };
   if (hasTangent) custom.defines = { ...custom.defines, USE_TANGENT: '' };
   if (meta.additive) { material.blending = THREE.AdditiveBlending; material.depthWrite = false; }
-  if (meta.temporalProxies) context.bindTemporal(material, original, resources.frames ?? [], meta.temporalProxies);
+  // Converter metadata keeps TextureScroll as its rate vector: the same SDK proxy
+  // (texturescale 1), so it drives the shared base matrix and every pass using it.
+  let temporal = meta.temporalProxies;
+  if (!temporal && meta.scroll !== undefined) {
+    const rate = meta.scroll;
+    if (!Array.isArray(rate) || rate.length !== 2 || !rate.every(Number.isFinite)) throw new Error('Invalid Source scroll metadata');
+    temporal = { operations: [{ kind: 'texturescroll', scroll: [rate[0], rate[1]], scale: 1 },
+      ...(resources.frames?.length && meta.animationfps ? [{ kind: 'animatedtexture' as const, fps: meta.animationfps }] : [])] };
+  }
+  // SDK TextureScroll OnBind writes the complete base matrix (texturescrollmaterialproxy.cpp
+  // SetMatrixValue), so a scrolled material never applies its static one.
+  const scrolled = !!temporal?.operations.some(operation => operation.kind === 'texturescroll');
+  const baseTransform = scrolled ? undefined : staticBaseTransform(meta);
+  if (baseTransform) context.bindBaseTransform(material, original, baseTransform);
+  if (temporal) context.bindTemporal(material, original, resources.frames ?? [], temporal);
   else if (resources.frames?.length && meta.animationfps) context.animate(material, resources.frames, meta.animationfps);
   const r = THREE.MathUtils.degToRad(yaw), c = Math.cos(r), s = Math.sin(r);
   const rotation = new THREE.Matrix3().set(c, -s, 0, s, c, 0, 0, 0, 1);
@@ -214,12 +303,21 @@ export function patchSourceMaterial(material: THREE.MeshBasicMaterial, original:
   });
   const flag = (v: unknown) => v ? 'true' : 'false';
   const signedNormal=resources.normal?.userData.sourceNativeTexture?.format===22;
+  // Effective Source base coordinates: the bound static/TextureScroll matrix (vertex)
+  // plus a legacy converter scroll (fragment). SDK 2013 samples bump, envmap mask,
+  // self-illum mask and Phong exponent there (vertexlit_and_unlit_generic_ps2x.fxc:335,441;
+  // skin_ps20b.fxc:190,253,338), detail at $detailscale × that matrix without
+  // $detailtexturetransform (vertexlitgeneric_dx9_helper.cpp:986, lightmappedgeneric_dx9_helper.cpp:802,
+  // BaseVSShader.cpp SetVertexShaderTextureScaledTransform). LightmappedGeneric and
+  // WorldVertexTransition sample the envmap mask at $envmapmasktransform·uv instead
+  // (lightmappedgeneric_vs20.fxc:200-203; authored mask transforms are refused upstream).
+  const baseTransformed = temporalTransformPatches.has(material);
+  const worldMaskUv = meta.shader === 'lightmappedgeneric' || meta.shader === 'worldvertextransition';
   const previous = material.onBeforeCompile.bind(material), key = material.customProgramCacheKey();
   material.onBeforeCompile = (shader, renderer) => {
     previous(shader, renderer);
     sourceTextureShader(material,shader);
     Object.assign(shader.uniforms, {
-      sourceEffectTime: context.time, sourceEffectScroll: { value: new THREE.Vector2(...(meta.scroll ?? [0, 0]) as [number, number]) },
       sourceEffectDetail: { value: resources.detail },
       sourceEffectDetailParams: { value: new THREE.Vector2(meta.detailscale ?? 4, meta.detailblendfactor ?? 1) },
       sourceEffectBase2: { value: resources.base2 }, sourceEffectNormal: { value: resources.normal }, sourceEffectMask: { value: resources.mask },
@@ -234,7 +332,7 @@ export function patchSourceMaterial(material: THREE.MeshBasicMaterial, original:
       sourceEffectEnvParams: { value: new THREE.Vector4(meta.envmapcontrast ?? 0, meta.envmapsaturation ?? 1, meta.envmapfresnel ?? 1, meta.envmaplightscale ?? 0) },
     });
     const declarations = `varying vec3 vSourceEffectVertexLight; varying vec4 vSourceEffectLightAttenuation; varying vec2 vSourceEffectLightUv; varying vec3 vSourceEffectPosition; varying vec3 vSourceEffectNormal;
-      varying vec3 vSourceEffectTangent; varying vec3 vSourceEffectBitangent; varying vec2 vSourceEffectUv;\n`;
+      varying vec3 vSourceEffectTangent; varying vec3 vSourceEffectBitangent; varying vec2 vSourceEffectUv; varying vec2 vSourceEffectBaseUv;\n`;
     const lightingUniforms = `
       uniform mat3 sourceEffectRotation; uniform vec3 sourceEffectOrigin;
       uniform vec3 sourceEffectAmbient[6];
@@ -311,6 +409,7 @@ export function patchSourceMaterial(material: THREE.MeshBasicMaterial, original:
         vSourceEffectTangent = vec3(0.0); vSourceEffectBitangent = vec3(0.0);
       #endif
       vSourceEffectUv = uv;
+      vSourceEffectBaseUv = ${baseTransformed ? '(sourceProxyBaseTransform * vec3(uv, 1.0)).xy' : 'uv'};
       #ifdef USE_UV1
         vSourceEffectLightUv = uv1;
       #else
@@ -319,27 +418,27 @@ export function patchSourceMaterial(material: THREE.MeshBasicMaterial, original:
       vSourceEffectLightAttenuation = sourceVertexAttenuation(vSourceEffectPosition);
       vSourceEffectVertexLight = sourceVertexDiffuse(vSourceEffectPosition, vSourceEffectNormal);
     `);
-    // Keep the normal/mask UVs independent of the animated base-texture transform.
+    // Companion samplers use the effective base coordinates; the tangent frame stays
+    // on the authored UVs, as Source's vertex tangents do.
     shader.fragmentShader = shader.fragmentShader.replace(SOURCE_TEXTURE_FALLBACK,'').replace('#include <map_fragment>', `
       #ifdef USE_MAP
-        vec4 sampledDiffuseColor = sourceDiffuseSample(texture2D(map, vMapUv + sourceEffectScroll * sourceEffectTime));
+        vec4 sampledDiffuseColor = sourceDiffuseSample(texture2D(map, vMapUv));
         // Source retains the primary sample for reflection/Phong/glow masks,
         // while secondary textures and detail blending modify the albedo.
         float sourceBaseTextureAlpha = sampledDiffuseColor.a;
         #ifdef USE_COLOR_ALPHA
-          if (${flag(resources.base2)}) sampledDiffuseColor = mix(sampledDiffuseColor, sourceDiffuseSample(texture2D(sourceEffectBase2, vMapUv)), vColor.a);
+          if (${flag(resources.base2)}) sampledDiffuseColor = mix(sampledDiffuseColor, sourceDiffuseSample(texture2D(sourceEffectBase2, vSourceEffectBaseUv)), vColor.a);
         #endif
         // Ghost uses Source MulDetail2 (mode 0). Detail samples stay linear:
         // a 0.5 texel leaves the base unchanged, independent of scene lighting.
         if (${flag(resources.detail)}) sampledDiffuseColor *= mix(vec4(1.0),
-          sourceDiffuseSample(texture2D(sourceEffectDetail, vSourceEffectUv * sourceEffectDetailParams.x)) * 2.0, sourceEffectDetailParams.y);
+          sourceDiffuseSample(texture2D(sourceEffectDetail, vSourceEffectBaseUv * sourceEffectDetailParams.x)) * 2.0, sourceEffectDetailParams.y);
         diffuseColor *= sampledDiffuseColor;
       #endif
     `);
     shader.fragmentShader = shader.fragmentShader.replace('uniform float sourceExposure;', '');
     shader.fragmentShader = '#define SOURCE_MATERIAL_EFFECTS\n' + declarations + `
       uniform float sourceExposure;
-      uniform float sourceEffectTime; uniform vec2 sourceEffectScroll;
       uniform sampler2D sourceEffectDetail; uniform vec2 sourceEffectDetailParams;
       uniform sampler2D sourceEffectBase2, sourceEffectNormal, sourceEffectMask, sourceEffectExponent, sourceEffectSelfIllum;
       uniform samplerCube sourceEffectCube;
@@ -357,7 +456,7 @@ export function patchSourceMaterial(material: THREE.MeshBasicMaterial, original:
         vec4 bump = vec4(0.5, 0.5, 1.0, 1.0);
         vec3 tn = vec3(0.0, 0.0, 1.0);
         if (${flag(resources.normal)}) {
-          bump = texture2D(sourceEffectNormal, vSourceEffectUv);
+          bump = texture2D(sourceEffectNormal, vSourceEffectBaseUv);
           vec3 t = vSourceEffectTangent, b = vSourceEffectBitangent;
           if (dot(t, t) < 0.1) {
             vec3 q1 = dFdx(vSourceEffectPosition), q2 = dFdy(vSourceEffectPosition);
@@ -383,7 +482,7 @@ export function patchSourceMaterial(material: THREE.MeshBasicMaterial, original:
         float exponent = sourceEffectSpecParams.x;
         vec4 specMap = vec4(0.0);
         if (${flag(resources.exponent)}) {
-          specMap = texture2D(sourceEffectExponent, vSourceEffectUv);
+          specMap = texture2D(sourceEffectExponent, vSourceEffectBaseUv);
           exponent = 1.0 + sourceEffectSpecParams.y * specMap.r;
         }
         if (${flag(props)}) {
@@ -466,12 +565,12 @@ export function patchSourceMaterial(material: THREE.MeshBasicMaterial, original:
           specular *= tint * specMask;
         }
         if (${flag(meta.selfillum)}) {
-          vec3 mask = ${resources.selfIllum ? 'texture2D(sourceEffectSelfIllum, vSourceEffectUv).rgb' : 'vec3(baseAlpha)'};
+          vec3 mask = ${resources.selfIllum ? 'texture2D(sourceEffectSelfIllum, vSourceEffectBaseUv).rgb' : 'vec3(baseAlpha)'};
           result = mix(result, albedo * sourceEffectEmissiveTint * sourceExposure, mask);
         }
         if (${flag(cube && meta.envmap)}) {
           vec3 env = textureCube(sourceEffectCube, sourceEffectRotation * reflected).rgb * sourceEffectEnvTint;
-          if (${flag(resources.mask)}) env *= texture2D(sourceEffectMask, vSourceEffectUv).rgb;
+          if (${flag(resources.mask)}) env *= texture2D(sourceEffectMask, ${worldMaskUv ? 'vSourceEffectUv' : 'vSourceEffectBaseUv'}).rgb;
           if (${flag(meta.normalmapalphaenvmapmask)}) env *= bump.a;
           if (${flag(meta.basealphaenvmapmask)}) env *= 1.0 - baseAlpha;
           env *= mix(vec3(1.0), clamp(lighting, 0.0, 1.0), sourceEffectEnvParams.w);
@@ -495,7 +594,8 @@ export function patchSourceMaterial(material: THREE.MeshBasicMaterial, original:
   const features = [!!resources.detail, props, hasTangent, !!resources.base2, !!(cube && meta.envmap), !!resources.normal, signedNormal, !!resources.mask,
     !!resources.exponent, !!resources.selfIllum, resources.lightmaps?.length === 3,
     meta.unlit, meta.phong, meta.selfillum, meta.halflambert, meta.ssbump, meta.nodiffusebumplighting,
-    meta.basealphaphongmask, meta.phongmaskinvert, meta.phongalbedotint, meta.normalmapalphaenvmapmask, meta.basealphaenvmapmask].map(Boolean);
-  material.customProgramCacheKey = () => `${key}-source-effects-v11-${features.map(Number).join('')}`;
+    meta.basealphaphongmask, meta.phongmaskinvert, meta.phongalbedotint, meta.normalmapalphaenvmapmask, meta.basealphaenvmapmask,
+    baseTransformed, worldMaskUv].map(Boolean);
+  material.customProgramCacheKey = () => `${key}-source-effects-v12-${features.map(Number).join('')}`;
   material.needsUpdate = true;
 }

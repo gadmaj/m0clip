@@ -2,7 +2,7 @@
  * Source material/VTF conventions: noclip.website (Jasper St. Pierre, MIT; LICENSE.noclip).
  */
 import { canonicalSourcePath, type SourceFileSystem } from './raw-source-files';
-import { createSourceMaterialResolver, SourceMaterialBudget, sourceMaterialPath, type ResolvedSourceMaterial, type SourceMaterialOptions } from './raw-source-vmt';
+import { createSourceMaterialResolver, parseSourceVector, SourceMaterialBudget, sourceMaterialPath, type ResolvedSourceMaterial, type SourceMaterialOptions } from './raw-source-vmt';
 import { readSourceVtf, type SourceVtf } from './raw-source-vtf';
 import { sourceVtfPixelKind } from './raw-source-vtf-codec';
 import { SourceGlb, type SourceGltfRoot } from './raw-source-gltf';
@@ -36,6 +36,13 @@ const SKY_PARAMETERS: Readonly<Record<string, true>> = {
   $basetexture: true, $hdrbasetexture: true, $hdrcompressedtexture: true, $frame: true,
   $basetexturetransform: true, $color: true, $color2: true, $nofog: true, $ignorez: true, $nocull: true,
 };
+/** Source modulation colours ($color×$color2, rendercolor) are authored in gamma
+ * space; Source shaders and this renderer work in linear (SDK 2013 BaseVSShader
+ * SetModulationPixelShaderDynamicState_LinearColorSpace, noclip fillGammaColor,
+ * Player SourceMaterialLibrary). The glTF base colour factor is linear. */
+export function sourceLinearColor(gamma: number): number {
+  return gamma ** 2.2;
+}
 function limit(value: number | undefined, fallback: number): number {
   const result = value ?? fallback;
   if (!Number.isSafeInteger(result) || result < 1) throw new Error('Invalid Source material resource limit');
@@ -296,8 +303,12 @@ export class SourceMaterialExport {
     this.options.signal?.throwIfAborted();
     if (texture === undefined) return undefined;
     const material = this.glb.json.materials.length;
+    // UnlitGeneric skies use the generic modulation path (gamma $color×$color2 →
+    // linear, as sourceLinearColor); the native Sky shader's $color constant
+    // multiplies the linear sample directly.
+    const factor = descriptor.shader === 'sky' ? color : color.map(sourceLinearColor);
     this.glb.json.materials.push({ name: path, pbrMetallicRoughness: { metallicFactor: 0, roughnessFactor: 1,
-      baseColorFactor: [...color, 1], baseColorTexture: { index: texture } },
+      baseColorFactor: [...factor, 1], baseColorTexture: { index: texture } },
       doubleSided: descriptor.metadata.nocull, alphaMode: 'OPAQUE',
       extras: { sourceVertexLighting: 1, sourceUnlit: true } });
     return { material, transform: descriptor.transforms.$basetexturetransform?.matrix ?? [1, 0, 0, 0, 1, 0, 0, 0, 1] };
@@ -324,11 +335,12 @@ export class SourceMaterialExport {
     const meta: Record<string, unknown> = { ...descriptor.metadata };
     if (temporal.operations.length) meta.temporalProxies = temporal;
     const color2=descriptor.metadata.color2;
-    const factor=[...descriptor.metadata.color.map((v,i)=>v*(Array.isArray(color2)?color2[i]:1)),Number(descriptor.metadata.alpha??1)];
-    if(factor.length!==4||factor.some(v=>!Number.isFinite(v)||v<0||v>1)){
+    const tint=descriptor.metadata.color.map((v,i)=>v*(Array.isArray(color2)?color2[i]:1)),alpha=Number(descriptor.metadata.alpha??1);
+    if(tint.length!==3||[...tint,alpha].some(v=>!Number.isFinite(v)||v<0||v>1)){
       this.block('material-hdr-tint-runtime',path,'Authored tint/alpha is outside the core glTF factor range; original values are retained without clamping.');
       return undefined;
     }
+    const factor=[...tint.map(sourceLinearColor),alpha];
     if(descriptor.metadata.alphatest&&(descriptor.metadata.alphatestreference<0||descriptor.metadata.alphatestreference>1)){
       this.block('material-alpha-cutoff-runtime',path,'Authored alpha-test threshold is outside the core glTF range.');
       return undefined;
@@ -339,7 +351,17 @@ export class SourceMaterialExport {
     const baseLayout=base?.path?await this.layout(base.path):undefined;
     const alphaTexture=!!baseLayout&&!!(baseLayout.header.flags&0x3000)&&descriptor.metadata.translucent
       &&!descriptor.metadata.selfillum&&!descriptor.metadata.basealphaenvmapmask&&!descriptor.metadata.opaquetexture;
-    const translucent=alphaTexture||!!descriptor.metadata.vertexalpha;
+    // SDK 2013 BaseVSShader::EvaluateBlendRequirements: constant alpha modulation
+    // (IsAlphaModulating) or vertex alpha blends independently of texture alpha.
+    const translucent=alphaTexture||!!descriptor.metadata.vertexalpha||alpha<1;
+    // The renderer places detail at scalar $detailscale × the effective base UVs
+    // (SDK SetVertexShaderTextureScaledTransform). A two-component scale scales
+    // the matrix columns and rows differently; it is not reduced to one component.
+    const detailScale=descriptor.parameters.$detailscale;
+    if(detailScale!==undefined&&descriptor.textures.some(texture=>texture.parameter==='$detail')){
+      const scale=parseSourceVector(detailScale,this.resourceBudget);
+      if(scale.some(value=>value!==scale[0]))this.block('material-detail-scale-runtime',path,'Authored non-uniform $detailscale requires native per-axis detail coordinates.');
+    }
     if(descriptor.metadata.alphatest)meta.additive=false; // Native alpha-test branch wins over additive state.
     else if(descriptor.metadata.additive&&!translucent)this.block('material-additive-runtime',path,'Native one-plus-one additive blending is distinct from alpha-weighted glow and requires native blend-state support.');
     const record: MaterialRecord = { name: path, pbrMetallicRoughness: { metallicFactor: 0, roughnessFactor: .85,

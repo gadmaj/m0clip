@@ -261,6 +261,118 @@ for (const [mutate] of [
   const parsed = await readSourceBsp(f.blob()), pending = decodeSourceWorld(parsed, { signal: abort.signal });
   await assert.rejects(pending, { name: 'AbortError' });
 }
+// Thin authored brushes: plane 5 becomes z >= -dist under plane 4's z <= 0, both brushes
+// are CONTENTS_PLAYERCLIP, and brush model *1 (func_wall) reaches brush 1 through leaf 1.
+function thinFixture(dist) {
+  const f = fixture();
+  f.entries.get(1).bytes.writeFloatLE(dist, 5 * 20 + 12);
+  for (let i = 0; i < 2; i++) f.entries.get(18).bytes.writeInt32LE(0x10000, i * 12 + 8);
+  f.put(14, record(96, b => {
+    for (let i = 0; i < 3; i++) { b.writeFloatLE(-64, i * 4); b.writeFloatLE(i === 2 ? 0 : 64, 12 + i * 4); }
+    b.writeInt32LE(1, 44); b.writeInt32LE(-2, 48 + 36);
+  }));
+  return f;
+}
+const funcWall = { classname: 'func_wall', model: 1, entityIndex: 7, capability: 'authored-brush-placement-only',
+  matrix: new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]) };
+const entityCollision = world => assembleSourceEntityCollision(world, { brushes: [funcWall], placements: [], models: new Map() });
+const zExtent = vertices => { const zs = []; for (let i = 2; i < vertices.length; i += 3) zs.push(vertices[i]); return [Math.min(...zs), Math.max(...zs)]; };
+{
+  const world = await decodeSourceWorld(await readSourceBsp(thinFixture(0.25).blob())), entity = await entityCollision(world);
+  assert.deepEqual(world.skippedDegenerateBrushes, []); assert.deepEqual(world.requirements, []);
+  assert.equal(world.collision.length, 1); assert.equal(world.collision[0].kind, 'box');
+  assert.ok(Math.abs(world.collision[0].halfExtents[2] - 0.125 * 0.0254) < 1e-12 && Math.abs(world.collision[0].position[2] + 0.125 * 0.0254) < 1e-12,
+    'A real quarter-unit Playerclip keeps its authored thickness and placement in world collision');
+  assert.equal(entity.collision.length, 1); assert.deepEqual(entity.requirements, []);
+  const [low, high] = zExtent(entity.collision[0].vertices);
+  assert.ok(Math.abs(high) < 1e-12 && Math.abs(low + 0.25 * 0.0254) < 1e-12, 'The same thin brush in a func_wall model is entity collision');
+  const xml = sourceWorldPhysicsXml({ collision: [...world.collision, ...entity.collision] });
+  assert.match(xml, /<geom type="box"/); assert.match(xml, /<mesh name="source_collision_1" vertex="/);
+}
+{
+  const f = thinFixture(0.25), p = f.entries.get(1).bytes;
+  p.writeFloatLE(Math.SQRT1_2, 0); p.writeFloatLE(Math.SQRT1_2, 4);
+  const world = await decodeSourceWorld(await readSourceBsp(f.blob()));
+  assert.equal(world.collision.length, 1); assert.equal(world.collision[0].kind, 'convex');
+  const [low, high] = zExtent(world.collision[0].vertices);
+  assert.ok(Math.abs(high) < 1e-12 && Math.abs(low + 0.25 * 0.0254) < 1e-12, 'A slanted thin brush is a convex hull, not skipped');
+}
+for (const dist of [0.0004, 4e-7, 1e-45]) {
+  // Real positive volumes too thin for the emitted hull's rounding, down to the smallest
+  // float32 separation, block world and entity admission; none is flattened or skipped.
+  const world = await decodeSourceWorld(await readSourceBsp(thinFixture(dist).blob())), entity = await entityCollision(world);
+  assert.deepEqual(world.collision, []); assert.deepEqual(world.skippedDegenerateBrushes, [], `${dist}-unit volume is not degenerate`);
+  assert.deepEqual(world.requirements.map(r => [r.code, r.blocking]), [['brush-collision-unrepresentable', true]]);
+  assert.match(world.requirements[0].detail, /\bbrush 0\b/);
+  assert.deepEqual(entity.collision, []);
+  assert.deepEqual(entity.requirements.map(r => [r.code, r.blocking]), [['brush-collision-unrepresentable', true]]);
+  assert.match(entity.requirements[0].detail, /\bEntity 7\b.*\bbrush 1\b/);
+}
+for (const dist of [0, -0, -1]) {
+  // Exactly coincident or crossing opposed half-spaces provably enclose no volume.
+  const world = await decodeSourceWorld(await readSourceBsp(thinFixture(dist).blob())), entity = await entityCollision(world);
+  assert.deepEqual(world.collision, []); assert.deepEqual(world.skippedDegenerateBrushes, [0]); assert.deepEqual(world.requirements, []);
+  assert.deepEqual(entity.collision, []); assert.deepEqual(entity.requirements, []);
+}
+// Decoded geometry is charged before allocation, cumulatively for the world and every later
+// brush-model decode, including faces that repeat the same surfedges.
+function repeatedFaces(worldFaces, modelFaces = 0) {
+  const f = fixture(), total = worldFaces + modelFaces, face = f.entries.get(7).bytes;
+  f.put(7, Buffer.concat(Array.from({ length: total }, () => face)), 1);
+  f.put(31, Buffer.alloc(total * 8));
+  f.put(14, record(96, b => {
+    for (let i = 0; i < 3; i++) { b.writeFloatLE(-64, i * 4); b.writeFloatLE(i === 2 ? 0 : 64, 12 + i * 4); }
+    b.writeInt32LE(worldFaces, 44);
+    b.writeInt32LE(-2, 48 + 36); b.writeInt32LE(worldFaces, 48 + 40); b.writeInt32LE(modelFaces, 48 + 44);
+  }));
+  return f;
+}
+const admitted = promise => promise.then(() => true, error => { if (!(error instanceof RangeError)) throw error; return false; });
+/** Smallest limit in (fails, passes] that admits the attempt. */
+async function smallestAdmitted(fails, passes, attempt) {
+  while (passes - fails > 1) { const middle = Math.floor((fails + passes) / 2); if (await attempt(middle)) passes = middle; else fails = middle; }
+  return passes;
+}
+{
+  const bsp = await readSourceBsp(repeatedFaces(128).blob());
+  assert.equal((await decodeSourceWorld(bsp)).surfaces.length, 128, 'Repeated surfedge references are 128 real faces');
+  const RealFloat32Array = globalThis.Float32Array;
+  let float32Bytes = 0;
+  globalThis.Float32Array = class extends RealFloat32Array {
+    constructor(...args) { super(...args); float32Bytes += this.byteLength; if (float32Bytes > 20000) throw new Error(`Float32 tripwire at ${float32Bytes} bytes`); }
+  };
+  try {
+    await assert.rejects(decodeSourceWorld(bsp, { maxGeometryBytes: 20000 }), RangeError);
+  } finally { globalThis.Float32Array = RealFloat32Array; }
+  assert.ok(float32Bytes <= 20000, 'The configured ceiling refuses before attribute arrays exceed it');
+  for (const options of [{ maxGeometryBytes: 0 }, { maxVertices: 1.5 }]) await assert.rejects(decodeSourceWorld(bsp, options));
+}
+{
+  const bsp = await readSourceBsp(repeatedFaces(16, 16).blob());
+  const count = surfaces => surfaces.reduce((sum, surface) => sum + surface.positions.length / 3, 0);
+  const worldVertices = count((await decodeSourceWorld(bsp)).surfaces);
+  const modelVertices = count(await (await decodeSourceWorld(bsp)).decodeModelSurfaces(1));
+  assert.ok(modelVertices > 0 && modelVertices <= worldVertices, 'A per-call allowance would admit the late model');
+  await assert.rejects((await decodeSourceWorld(bsp, { maxVertices: worldVertices })).decodeModelSurfaces(1), RangeError,
+    'A late brush model shares the world vertex lifetime');
+  const both = await decodeSourceWorld(bsp, { maxVertices: worldVertices + modelVertices });
+  assert.equal(count(await both.decodeModelSurfaces(1)), modelVertices);
+  await assert.rejects(both.decodeModelSurfaces(1), RangeError, 'Decoding a model again allocates, and is charged, again');
+}
+{
+  const bsp = await readSourceBsp(thinFixture(0.25).blob());
+  const worldBytes = await smallestAdmitted(0, 1 << 24, limit => admitted(decodeSourceWorld(bsp, { maxGeometryBytes: limit })));
+  const bothBytes = await smallestAdmitted(worldBytes, 1 << 24, async limit => admitted(entityCollision(await decodeSourceWorld(bsp, { maxGeometryBytes: limit }))));
+  assert.ok(bothBytes > worldBytes, 'Late entity hulls are charged to the same geometry lifetime');
+  await assert.rejects(entityCollision(await decodeSourceWorld(bsp, { maxGeometryBytes: worldBytes })), RangeError);
+  assert.equal((await entityCollision(await decodeSourceWorld(bsp, { maxGeometryBytes: bothBytes }))).collision.length, 1);
+}
+{
+  const bsp = await readSourceBsp(fixture({ displacement: true }).blob());
+  const vertices = (await decodeSourceWorld(bsp)).surfaces[0].positions.length / 3;
+  await assert.rejects(decodeSourceWorld(bsp, { maxVertices: vertices - 1 }), RangeError, 'Every displacement grid vertex is charged');
+  assert.equal((await decodeSourceWorld(bsp, { maxVertices: vertices })).surfaces[0].gridSide, 5);
+}
 // Python stdlib is an independent real LZMA encoder, not a fake codec/mock.
 function valveCompressed(payload, dictionarySize = 1 << 23) {
   const encoded = spawnSync('python3', ['-c', 'import lzma,sys;sys.stdout.buffer.write(lzma.compress(sys.stdin.buffer.read(),format=lzma.FORMAT_ALONE,filters=[{\"id\":lzma.FILTER_LZMA1,\"dict_size\":int(sys.argv[1])}]))', String(dictionarySize)], { input: payload });

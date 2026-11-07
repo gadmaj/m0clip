@@ -18,6 +18,14 @@ export interface SourceEntity {
   readonly pairs: readonly (readonly [string, string])[];
   readonly values: Readonly<Record<string, string>>;
 }
+/** One reservation against an import's aggregate decoded/working ceilings. */
+export interface SourceBspReservation {
+  /** Success: transient working capacity returns; decoded bytes stay owned for the import. */
+  complete(): void;
+  /** Failure before any codec started returns everything. After a codec started,
+   * both stay charged: abandoned codec arrays may still be live. Idempotent. */
+  fail(codecStarted: boolean): void;
+}
 export interface SourceBsp {
   readonly file: Blob;
   readonly version: number;
@@ -27,6 +35,17 @@ export interface SourceBsp {
   readonly entities: readonly SourceEntity[];
   /** All 64 raw lumps remain owned; decode only requested payloads. */
   getLump(index: number, signal?: AbortSignal): Promise<Uint8Array<ArrayBuffer>>;
+  /** Charge payloads and retained records derived from this BSP (game lumps,
+   * static-prop placements/leaves) to the SAME aggregate ceilings as lumps, before
+   * any read, decode or allocation. Throws without charging. */
+  reserve(decodedBytes: number, workingBytes: number): SourceBspReservation;
+}
+/** Conservative JS numeric-array slot costs, not engine heap metrics: read input,
+ * Valve->alone adapter copy, codec output, dictionary and probabilities. */
+export function sourceLzmaWorkingBytes(readBytes: number, storedBytes: number, size: number, property: number, dictionary: number): number {
+  const lc = property % 9, lp = Math.floor(property / 9) % 5;
+  return readBytes + storedBytes + size * 16 + Math.max(dictionary, 4096) * 16
+    + (1 << (lc + lp)) * (0x300 * 16 + 128) + 256 * 1024;
 }
 export interface SourceEntityOptions {
   signal?: AbortSignal;
@@ -43,7 +62,7 @@ export interface SourceBspOptions extends SourceEntityOptions {
   variant?: 'auto' | 'standard' | 'left4dead2';
   /** Per-lump decompression and dictionary allocation ceiling. */
   maxLumpBytes?: number;
-  /** Aggregate retained decoded bytes, including in-flight reservations. */
+  /** Aggregate retained decoded bytes and derived retained records, including in-flight reservations. */
   maxDecodedBytes?: number;
   /** Aggregate conservative transient ownership, including encoded input,
    * LZMA adapter/codec arrays and entity text. Not a JS heap measurement. */
@@ -133,6 +152,53 @@ export function parseSourceEntities(text: string, options: SourceEntityOptions =
   for (;;) { const step = steps.next(); if (step.done) return step.value; }
 }
 
+/** Record strides and accepted lump versions this importer's own decoders
+ * require (raw-source-geometry/lighting/visibility). A descriptor order that
+ * violates them is impossible, not an ambiguous alternative. */
+const LUMP_SCHEMA: readonly (readonly [index: number, stride: number, versions: readonly number[]])[] = [
+  [1, 20, [0]], [2, 32, [0]], [3, 12, [0]], [5, 32, [0]], [6, 72, [0]], [7, 56, [1]], [8, 4, [1]],
+  [12, 4, [0]], [13, 4, [0]], [14, 48, [0]], [17, 2, [0]], [18, 12, [0]], [19, 8, [0]], [26, 176, [0]],
+  [30, 12, [0]], [31, 2, [0]], [33, 20, [0]], [39, 2, [0]], [44, 4, [0]], [48, 2, [0]], [53, 4, [1]], [58, 56, [1]],
+];
+/** Mandatory bounded evidence for one structurally valid descriptor order: entity
+ * text, worldmodel 0, record schemas/versions and Valve LZMA headers. Reads at
+ * most 256 entity bytes, 48 model bytes and 17 bytes per compressed lump. */
+async function variantEvidence(version: number, lumps: readonly SourceLump[], maxEntityBytes: number, signal?: AbortSignal): Promise<boolean> {
+  const size = (lump: SourceLump) => lump.uncompressedSize || lump.length;
+  const read = async (lump: SourceLump, bytes: number) => {
+    const view = new DataView(await lump.raw.slice(0, bytes).arrayBuffer());
+    sourceAbort(signal);
+    return view;
+  };
+  const entities = lumps[0], models = lumps[14], nodes = lumps[5], leaves = lumps[10], primitives = lumps[37];
+  if (!entities.length || entities.version !== 0 || size(entities) > maxEntityBytes || !models.length || !nodes.length) return false;
+  for (const [index, stride, versions] of LUMP_SCHEMA) {
+    const lump = lumps[index];
+    if (lump.length && (!versions.includes(lump.version) || size(lump) % stride)) return false;
+  }
+  if (leaves.length && (leaves.version > 1 || size(leaves) % (leaves.version === 0 ? 56 : 32))) return false;
+  if (primitives.length && (primitives.version !== 0 || size(primitives) % (version === 22 ? 16 : 10))) return false;
+  for (const lump of lumps) if (lump.uncompressedSize) {
+    const header = await read(lump, 17);
+    if (header.byteLength !== 17 || header.getUint32(0, true) !== 0x414d5a4c || header.getUint32(4, true) !== lump.uncompressedSize
+      || header.getUint32(8, true) !== lump.length - 17 || header.getUint8(12) >= 225) return false;
+  }
+  if (!entities.uncompressedSize) {
+    const head = new Uint8Array((await read(entities, 256)).buffer);
+    const first = head.findIndex(byte => byte !== 0x20 && (byte < 9 || byte > 13));
+    if (first < 0 || (head[first] !== 0x7b && (head[first] !== 0x2f || head[first + 1] !== 0x2f))) return false;
+  }
+  if (!models.uncompressedSize) {
+    const model = await read(models, 48), faces = lumps[7].length ? lumps[7] : lumps[58];
+    const bounds = Array.from({ length: 6 }, (_, i) => model.getFloat32(i * 4, true));
+    const headnode = model.getInt32(36, true), firstFace = model.getInt32(40, true), faceCount = model.getInt32(44, true);
+    const totalFaces = faces.length ? size(faces) / 56 : 0;
+    if (bounds.some(value => !Number.isFinite(value)) || bounds[0] > bounds[3] || bounds[1] > bounds[4] || bounds[2] > bounds[5]
+      || headnode < 0 || headnode >= size(nodes) / 32 || firstFace < 0 || faceCount < 0 || faceCount > totalFaces - firstFace) return false;
+  }
+  return true;
+}
+
 export async function readSourceBsp(file: Blob, options: SourceBspOptions = {}): Promise<SourceBsp> {
   sourceAbort(options.signal);
   if (file.size < 1036) throw new Error('Truncated VBSP header');
@@ -161,9 +227,17 @@ export async function readSourceBsp(file: Blob, options: SourceBspOptions = {}):
     return lumps;
   };
   const requested = options.variant ?? 'auto';
-  const standard = requested !== 'left4dead2' ? directory('standard') : undefined;
-  const l4d = requested !== 'standard' ? directory('left4dead2') : undefined;
-  if (requested === 'auto' && standard && l4d) throw new Error('Ambiguous BSP descriptor order; select standard or left4dead2 explicitly');
+  if (requested !== 'auto' && requested !== 'standard' && requested !== 'left4dead2') throw new Error('Invalid BSP variant');
+  let standard = requested !== 'left4dead2' ? directory('standard') : undefined;
+  let l4d = requested !== 'standard' ? directory('left4dead2') : undefined;
+  if (requested === 'auto' && standard && l4d) {
+    // Both descriptor orders fit the file: only mandatory schema evidence may
+    // decide, never a preferred order. Explicit selection remains available.
+    const standardEvidence = await variantEvidence(version, standard, maxEntityBytes, options.signal);
+    const l4dEvidence = await variantEvidence(version, l4d, maxEntityBytes, options.signal);
+    if (standardEvidence === l4dEvidence) throw new Error('Unsupported BSP descriptor layout or required lump schema');
+    if (standardEvidence) l4d = undefined; else standard = undefined;
+  }
   const lumps = standard ?? l4d;
   if (!lumps) throw new Error('Invalid BSP lump directory bounds, overlap, or descriptor order');
   const cache = new Map<number, Uint8Array<ArrayBuffer>>();
@@ -172,6 +246,20 @@ export async function readSourceBsp(file: Blob, options: SourceBspOptions = {}):
   const reserveWorking = (bytes: number) => {
     if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > maxWorking - workingBytes) throw new Error('Source aggregate working limit exceeded');
     workingBytes += bytes;
+  };
+  const reserveDerived = (decoded: number, working: number): SourceBspReservation => {
+    if (!Number.isSafeInteger(decoded) || decoded < 0 || decoded > maxDecoded - decodedBytes) throw new Error('Source aggregate decoded limit exceeded');
+    reserveWorking(working);
+    decodedBytes += decoded;
+    let settled = false;
+    return {
+      complete() { if (!settled) { settled = true; workingBytes -= working; } },
+      fail(codecStarted) {
+        if (settled) return;
+        settled = true;
+        if (!codecStarted) { workingBytes -= working; decodedBytes -= decoded; }
+      },
+    };
   };
   // Decode lifetime belongs to this import. A requester may abandon only its
   // own wait; late decode settlement remains handled and may populate cache.
@@ -220,11 +308,7 @@ export async function readSourceBsp(file: Blob, options: SourceBspOptions = {}):
           if (header.getUint32(4, true) !== size || header.getUint32(8, true) !== lump.length - 17) throw new Error('Valve LZMA size mismatch or limit exceeded');
           const property = header.getUint8(12), dictionary = header.getUint32(13, true);
           if (property >= 225 || dictionary > maximum) throw new Error('Unsupported or excessive LZMA properties');
-          const lc = property % 9, lp = Math.floor(property / 9) % 5;
-          // Conservative JS numeric-array slot costs, not engine heap metrics:
-          // encoded input + alone copy + codec output + dictionary + probabilities.
-          reserve(lump.length * 2 + size * 16 + Math.max(dictionary, 4096) * 16
-            + (1 << (lc + lp)) * (0x300 * 16 + 128) + 256 * 1024);
+          reserve(sourceLzmaWorkingBytes(lump.length, lump.length, size, property, dictionary));
         } else reserve(lump.length);
         const bytes = new Uint8Array(await lump.raw.arrayBuffer());
         sourceAbort(decodeSignal);
@@ -262,11 +346,15 @@ export async function readSourceBsp(file: Blob, options: SourceBspOptions = {}):
       sourceAbort(options.signal);
     }
   } finally { workingBytes -= entityBytes.length * 2; }
-  return { file, version, revision, variant: standard ? 'standard' : 'left4dead2', lumps, entities, getLump };
+  return { file, version, revision, variant: standard ? 'standard' : 'left4dead2', lumps, entities, getLump, reserve: reserveDerived };
 }
 
 export interface SourceWorldOptions {
   signal?: AbortSignal;
+  /** Cumulative decoded geometry ownership, shared with later brush-model decoding. */
+  maxGeometryBytes?: number;
+  /** Cumulative decoded surface vertices, including later brush models. */
+  maxVertices?: number;
   /** Default uses the existing spawn-floor probe; a map-centre fallback adds a blocking spawn-unresolved requirement. */
   spawn?: { origin: readonly [number, number, number]; yaw: number };
 }

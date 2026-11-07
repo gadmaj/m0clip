@@ -121,9 +121,14 @@ for (const emission of emitted.placements) loaded.push(await comparePlacement(pa
 near(loaded[0].meshes[0].localToWorld(new THREE.Vector3(.0254 * 16, .0254, 0)).toArray(), [2.54 + .0254 * 32, .0254 * 2, 0]);
 assert.strictEqual(loaded[0].meshes[0].geometry.attributes.position, loaded[1].meshes[0].geometry.attributes.position, 'GLTFLoader actually shares the geometry accessor');
 assert.notStrictEqual(loaded[0].meshes[0].skeleton.bones[1], loaded[1].meshes[0].skeleton.bones[1]);
-near(loaded[0].meshes[0].material.color.toArray(), [.5, .25 * 128 / 255, 64 / 255]);
-near(loaded[1].meshes[0].material.color.toArray(), [.1, .7 * 128 / 255, .2 * 64 / 255]);
+// Source renderers output linear colour through gamma 2.2 (source-lighting
+// sourceVertexMaterial, noclip Main.ts). The loader's linear colour must
+// display as the authored gamma product $color × byte rendercolor / 255.
+const displayed = color => color.toArray().map(v => v ** (1 / 2.2));
+near(displayed(loaded[0].meshes[0].material.color), [.5, .25 * 128 / 255, 64 / 255]);
+near(displayed(loaded[1].meshes[0].material.color), [.1, .7 * 128 / 255, .2 * 64 / 255]);
 assert.equal(loaded[1].meshes[0].material.opacity, .8);
+assert.equal(loaded[1].meshes[0].material.transparent, true, 'authored scalar $alpha < 1 blends (SDK EvaluateBlendRequirements)');
 // A static alpha and normal-rendermode entity alpha differ even with identical raw RGBA.
 for(const reverse of [false,true]){
   const mixed=[
@@ -177,7 +182,7 @@ for (const skin of [2, 55, -1]) {
   assert.deepEqual(result.requirements, []);
   const skinParsed = await consume(skinGlb);
   const actual = await comparePlacement(skinParsed, result.placements[0], model);
-  near(actual.meshes[0].material.color.toArray(), [.5, .25 * 128 / 255, 64 / 255]);
+  near(displayed(actual.meshes[0].material.color), [.5, .25 * 128 / 255, 64 / 255]);
   assert.equal(actual.meshes[0].material.opacity, 1);
   assert.equal(actual.root.userData.skin, skin, 'native family selection does not rewrite authored skin metadata');
 }
@@ -192,6 +197,26 @@ const bytesGlb = new SourceGlb(), bytesMaterials = new SourceMaterialExport(byte
 await assert.rejects(appendSourceProps(bytesGlb, bytesMaterials, props, world, { ...limits, maxGeometryBytes: 16, lightingForPlacement: () => cache }));
 const abort = new AbortController(); abort.abort(new Error('cancel props'));
 await assert.rejects(appendSourceProps(new SourceGlb(), blockedMaterials, props, world, { ...limits, signal: abort.signal, lightingForPlacement: () => cache }));
+// Retained JSON metadata is an aggregate import budget charged BEFORE records are
+// built: placements aliasing one large authored leaf array each pay for their copy.
+{
+  const aliased = Uint16Array.from({ length: 4096 }, (_, i) => i % 3);
+  const emit = (indices, maxMetadataBytes) => {
+    const target = new SourceGlb();
+    const run = appendSourceProps(target, new SourceMaterialExport(target, files), propsFor(indices.map(i => placement(i, { leaves: aliased }))), world,
+      { ...limits, ...(maxMetadataBytes === undefined ? {} : { maxMetadataBytes }), lightingForPlacement: () => cache });
+    return { target, run };
+  };
+  const single = emit([60]), one = (await single.run).metadataBytes;
+  assert(one >= aliased.length * 2, 'each emitted leaf ID and visibility membership is charged');
+  const pair = emit([61, 62], 2 * one), pairResult = await pair.run;
+  assert.deepEqual(pairResult.requirements, []); assert.equal(pairResult.metadataBytes, 2 * one);
+  const over = emit([61, 62, 63], 2 * one);
+  await assert.rejects(over.run);
+  assert.equal(over.target.json.nodes.length, pair.target.json.nodes.length, 'the over-budget placement built no node/bone/leaf records');
+  const alone = emit([64], one - 1);
+  await assert.rejects(alone.run); assert.equal(alone.target.json.nodes.length, 0);
+}
 // Actual native cubemap face order/bytes and per-placement metadata ownership.
 const cubeHeader = Buffer.alloc(80); cubeHeader.write('VTF\0'); cubeHeader.writeUInt32LE(7, 4); cubeHeader.writeUInt32LE(2, 8); cubeHeader.writeUInt32LE(80, 12);
 cubeHeader.writeUInt16LE(1, 16); cubeHeader.writeUInt16LE(1, 18); cubeHeader.writeUInt32LE(0x4000, 20); cubeHeader.writeUInt16LE(1, 24); cubeHeader.writeUInt16LE(0xffff, 26);

@@ -8,7 +8,18 @@ import { sourceAbort } from './raw-source-lzma';
 export const SOURCE_COLLISION_CONTENTS = 0x1000b;
 /** Maximum distance between an authored collision surface and its emitted shape. */
 export const SOURCE_COLLISION_TOLERANCE_METRES = 0.001;
+/** Narrowest authored brush (Source units, 0.1 mm) whose emitted hull, rounded to
+ * 1/HULL_STEPS_PER_UNIT, keeps a positive width along every authored side normal. */
+export const SOURCE_MIN_HULL_WIDTH_UNITS = 0.004;
 const DISPLACEMENT_THICKNESS_METRES = 0.15;
+/** Emitted hull vertices round to 1/1000 Source unit (0.0254 mm); duplicate intersections merge on that grid. */
+const HULL_STEPS_PER_UNIT = 1000;
+/** Float32-authored plane slack (0.254 mm), inside SOURCE_COLLISION_TOLERANCE_METRES. */
+const HULL_PLANE_SLACK_UNITS = 0.01;
+/** Conservative transient slots per unique hull candidate: number[] triple, Set entry and key string. */
+const HULL_POINT_WORKING_BYTES = 128;
+/** Surface and lightmap records with their small front/mins/styles arrays. */
+const SURFACE_RECORD_BYTES = 256;
 
 type Vec3 = [number, number, number];
 export interface SourceFrame {
@@ -77,7 +88,10 @@ export type SourceCollision = SourceHeightfield | {
 export interface SourceModelCollision {
   /** Model-local metres (Source axes); apply the entity placement once. */
   hulls: { brush: number; contents: number; vertices: Float64Array }[];
+  /** Brushes whose authored half-spaces provably enclose no volume. */
   skippedDegenerateBrushes: number[];
+  /** Not provably empty and narrower than SOURCE_MIN_HULL_WIDTH_UNITS: blocking, never skipped. */
+  unrepresentableBrushes: { brush: number; contents: number; widthUnits: number }[];
 }
 export interface SourceWorld {
   bsp: SourceBsp;
@@ -119,6 +133,27 @@ class Table {
     return value;
   }
 }
+
+/** One import-owned geometry lifetime shared by the world and every later
+ * brush-model decode. Retained arrays are charged before allocation and never
+ * recycled; transient construction is released once its arrays are unreachable. */
+class GeometryBudget {
+  bytes = 0;
+  vertices = 0;
+  constructor(readonly maxBytes: number, readonly maxVertices: number) {}
+  reserve(bytes: number, vertices = 0): void {
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > this.maxBytes - this.bytes
+      || !Number.isSafeInteger(vertices) || vertices < 0 || vertices > this.maxVertices - this.vertices)
+      throw new RangeError('Source world geometry limit exceeded');
+    this.bytes += bytes; this.vertices += vertices;
+  }
+  release(bytes: number): void { this.bytes -= bytes; }
+}
+function geometryLimit(value: number | undefined, fallback: number, name: string): number {
+  const result = value ?? fallback;
+  if (!Number.isSafeInteger(result) || result <= 0) throw new Error(`Invalid Source world ${name} limit`);
+  return result;
+}
 function range(first: number, count: number, total: number, name: string): void {
   if (!Number.isInteger(first) || !Number.isInteger(count) || first < 0 || count < 0 || first > total || count > total - first) throw new Error(`${name} range out of bounds`);
 }
@@ -155,6 +190,9 @@ async function sourcePhase(signal?: AbortSignal): Promise<void> {
 export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptions = {}): Promise<SourceWorld> {
   const signal = options.signal;
   sourceAbort(signal);
+  // Defaults match the downstream world/prop writers' 256 MiB and 4M-vertex ceilings.
+  const budget = new GeometryBudget(geometryLimit(options.maxGeometryBytes, 256 * 1024 ** 2, 'geometry byte'),
+    geometryLimit(options.maxVertices, 4_000_000, 'vertex'));
   const load = async (index: number, stride: number, name: string, versions: readonly number[] = [0]) => {
     const bytes = await bsp.getLump(index, signal);
     if (bytes.length && !versions.includes(bsp.lumps[index].version)) throw new Error(`Unsupported ${name} lump version ${bsp.lumps[index].version}`);
@@ -183,6 +221,7 @@ export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptio
   const strings = await bsp.getLump(43, signal), stringTable = await load(44, 4, 'texture string table');
   const dispTags = await load(48, 2, 'displacement triangle tags');
   if (models.count === 0) throw new Error('BSP has no worldmodel 0');
+  budget.reserve((faces.count + 1) * 4);
   const normalStarts = new Uint32Array(faces.count + 1);
   for (let i = 0; i < faces.count; i++) {
     const count = faces.s(i, 8);
@@ -202,10 +241,34 @@ export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptio
     materialCache.set(td, value);
     return value;
   };
+  /** Exact typed-array bytes and vertices one decoded face owns; undefined for skipped faces. */
+  const surfaceCost = (fi: number): [number, number] | undefined => {
+    const edgeCount = faces.s(fi, 8), ti = faces.s(fi, 10), di = faces.s(fi, 12);
+    range(faces.i(fi, 4), edgeCount, surfedges.count, 'Face surfedges');
+    if (edgeCount < 3 || ti < 0) return undefined;
+    // Float64 source corners, Float32 position/normal/uv/luxel (12+12+8+8) and tangent (16), Uint32 indices.
+    if (di < 0) return [edgeCount * 80 + (edgeCount - 2) * 12 + SURFACE_RECORD_BYTES, edgeCount];
+    if (edgeCount !== 4) throw new Error('Displacement base is not a quad');
+    const power = dispinfo.i(di, 20);
+    if (power < 2 || power > 4) throw new Error(`Unsupported displacement power ${power}`);
+    const side = (1 << power) + 1, count = side * side, cells = (side - 1) ** 2;
+    // Transient base corners; Float64 points/base and Float32 alpha plus render attributes; indices and tags.
+    return [96 + count * 108 + cells * (24 + (dispTags.count ? 4 : 0)) + SURFACE_RECORD_BYTES, count];
+  };
   const decodeRawModelSurfaces = async (modelIndex: number, signal?: AbortSignal): Promise<SourceSurface[]> => {
     const firstFace = models.i(modelIndex, 40), faceCount = models.i(modelIndex, 44);
     range(firstFace, faceCount, faces.count, 'Model faces');
+    // Every face (repeated surfedge references included) is charged before any is decoded.
+    let modelBytes = 0, modelVertices = 0;
+    for (let fi = firstFace; fi < firstFace + faceCount; fi++) {
+      if (((fi - firstFace) & 4095) === 4095) await sourcePhase(signal);
+      const cost = surfaceCost(fi);
+      if (cost) { modelBytes += cost[0]; modelVertices += cost[1]; }
+    }
+    sourceAbort(signal);
+    budget.reserve(modelBytes, modelVertices);
     const surfaces: SourceSurface[] = [];
+    const vectors = new Float64Array(16), rowStart = new Float64Array(3), rowDelta = new Float64Array(3);
     for (let fi = firstFace; fi < firstFace + faceCount; fi++) {
       if ((fi & 127) === 0) await sourcePhase(signal);
       const edgeCount = faces.s(fi, 8), firstEdge = faces.i(fi, 4), ti = faces.s(fi, 10), di = faces.s(fi, 12);
@@ -216,7 +279,6 @@ export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptio
       if (td < 0) throw new Error(`Face ${fi} has no texture data`);
       const name = material(td), width = texdata.i(td, 16), height = texdata.i(td, 20);
       if (width <= 0 || height <= 0) throw new Error('Invalid texture dimensions');
-      const vectors = new Float64Array(16);
       for (let k = 0; k < 16; k++) vectors[k] = texinfo.f(ti, k * 4);
       const corners = new Float64Array(edgeCount * 3);
       for (let j = 0; j < edgeCount; j++) {
@@ -242,7 +304,7 @@ export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptio
           if (d < distance) { distance = d; closest = j; }
         }
         points = new Float64Array(count * 3); base = new Float64Array(count * 3); alpha = new Float32Array(count);
-        const rowStart = new Float64Array(3), rowDelta = new Float64Array(3), inverse = 1 / (gridSide - 1);
+        const inverse = 1 / (gridSide - 1);
         for (let y = 0; y < gridSide; y++) {
           for (let k = 0; k < 3; k++) {
             rowStart[k] = corners[closest * 3 + k] + (corners[((closest + 1) % 4) * 3 + k] - corners[closest * 3 + k]) * y * inverse;
@@ -385,6 +447,9 @@ export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptio
       surface.tangents[t] = cos * tx - sin * ty; surface.tangents[t + 1] = sin * tx + cos * ty;
     }
   }
+  // Uint8 traversal state, its number[] stack (at most 1 + 2 per node) and brush/leaf id lists.
+  const reachableWorking = nodes.count + leaves.count + brushes.count + 8 * (1 + 2 * nodes.count + brushes.count + leaves.count);
+  budget.reserve(reachableWorking);
   const reachable = reachableWorld(nodes, leaves, leafbrushes, brushes.count, models.i(0, 36), signal);
   const collision: SourceCollision[] = [], skippedDegenerateBrushes: number[] = [], requirements: SourceLightingRequirement[] = [];
   if (frame.spawnClass === 'map centre') requirements.push({ code: 'spawn-unresolved', blocking: true,
@@ -394,8 +459,13 @@ export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptio
     const bi = reachable.brushes[at], contents = brushes.i(bi, 8);
     if (!(contents & SOURCE_COLLISION_CONTENTS)) continue;
     const firstSide = brushes.i(bi), sideCount = brushes.i(bi, 4);
-    const hull = await brushHull(planes, sides, firstSide, sideCount, signal);
-    if (!hull) { skippedDegenerateBrushes.push(bi); continue; }
+    const result = await brushHull(planes, sides, firstSide, sideCount, budget, signal);
+    if (result.kind === 'degenerate') { skippedDegenerateBrushes.push(bi); continue; }
+    if (result.kind === 'unrepresentable') {
+      requirements.push({ code: 'brush-collision-unrepresentable', blocking: true, detail: unrepresentableBrushDetail(`World brush ${bi}`, contents, result.widthUnits) });
+      continue;
+    }
+    const hull = result.vertices;
     let axial = true, nonBevel = 0;
     for (let j = 0; j < sideCount; j++) {
       if (sides.s(firstSide + j, 6)) continue;
@@ -415,6 +485,8 @@ export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptio
         position: [scale * (cos * x - sin * y), scale * (sin * x + cos * y), scale * ((minZ + maxZ) / 2 - frame.origin[2])],
         halfExtents: [scale * (maxX - minX) / 2, scale * (maxY - minY) / 2, scale * (maxZ - minZ) / 2],
         quaternion: [Math.cos(theta / 2), 0, 0, Math.sin(theta / 2)] });
+      // The box replaces its vertex array.
+      budget.release(hull.byteLength);
       continue;
     }
     for (let j = 0; j < hull.length; j += 3) {
@@ -436,29 +508,39 @@ export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptio
         detail: `This displacement enables ${[physics && 'physics', hull && 'player', ray && 'ray'].filter(Boolean).join('/')} collision only; one shared collision surface cannot separate physics, player and ray collision.` });
       continue;
     }
-    if (physics) appendDisplacementCollision(surface, frame, cos, sin, collision);
+    if (physics) appendDisplacementCollision(surface, frame, cos, sin, collision, budget);
   }
   const decodeModelCollision = async (modelIndex: number, requestedSignal?: AbortSignal): Promise<SourceModelCollision> => {
     const activeSignal = requestedSignal ?? signal;
+    sourceAbort(activeSignal);
     if (!Number.isSafeInteger(modelIndex) || modelIndex < 1 || modelIndex >= models.count) throw new Error(`Brush model *${modelIndex} is not an entity model`);
-    const reachableModel = reachableWorld(nodes, leaves, leafbrushes, brushes.count, models.i(modelIndex, 36), activeSignal);
-    const result: SourceModelCollision = { hulls: [], skippedDegenerateBrushes: [] };
-    for (let at = 0; at < reachableModel.brushes.length; at++) {
-      if ((at & 31) === 0) await sourcePhase(activeSignal);
-      const bi = reachableModel.brushes[at], contents = brushes.i(bi, 8);
-      if (!(contents & SOURCE_COLLISION_CONTENTS)) continue;
-      const vertices = await brushHull(planes, sides, brushes.i(bi), brushes.i(bi, 4), activeSignal);
-      if (!vertices) { result.skippedDegenerateBrushes.push(bi); continue; }
-      for (let j = 0; j < vertices.length; j++) vertices[j] *= scale;
-      result.hulls.push({ brush: bi, contents, vertices });
-    }
-    return result;
+    budget.reserve(reachableWorking);
+    try {
+      const reachableModel = reachableWorld(nodes, leaves, leafbrushes, brushes.count, models.i(modelIndex, 36), activeSignal);
+      const result: SourceModelCollision = { hulls: [], skippedDegenerateBrushes: [], unrepresentableBrushes: [] };
+      for (let at = 0; at < reachableModel.brushes.length; at++) {
+        if ((at & 31) === 0) await sourcePhase(activeSignal);
+        const bi = reachableModel.brushes[at], contents = brushes.i(bi, 8);
+        if (!(contents & SOURCE_COLLISION_CONTENTS)) continue;
+        const hull = await brushHull(planes, sides, brushes.i(bi), brushes.i(bi, 4), budget, activeSignal);
+        if (hull.kind === 'degenerate') { result.skippedDegenerateBrushes.push(bi); continue; }
+        if (hull.kind === 'unrepresentable') { result.unrepresentableBrushes.push({ brush: bi, contents, widthUnits: hull.widthUnits }); continue; }
+        const vertices = hull.vertices;
+        for (let j = 0; j < vertices.length; j++) vertices[j] *= scale;
+        result.hulls.push({ brush: bi, contents, vertices });
+      }
+      return result;
+    } finally { budget.release(reachableWorking); }
   };
-  return { bsp, frame, surfaces, collision, decodeModelSurfaces, decodeModelCollision, reachableBrushes: Uint32Array.from(reachable.brushes), reachableLeaves: Uint32Array.from(reachable.leaves),
+  budget.reserve((reachable.brushes.length + reachable.leaves.length) * 4);
+  const reachableBrushes = Uint32Array.from(reachable.brushes), reachableLeaves = Uint32Array.from(reachable.leaves);
+  budget.release(reachableWorking);
+  return { bsp, frame, surfaces, collision, decodeModelSurfaces, decodeModelCollision, reachableBrushes, reachableLeaves,
     requirements, skippedDegenerateBrushes,
     limitations: [
       'World-model collision only; brush-entity collision is assembled from entities by raw-source-collision, and studio-prop collision other than documented non-solid placements is refused there.',
       'Displacement collision follows dispinfo contents and SURF_NOPHYSICS/NOHULL/NORAY flags with the native alternating triangulation; triangle tags (walkable/buildable/surfprop) are retained, not simulated.',
+      `Brushes whose half-spaces provably enclose no volume are skipped as degenerate; any other brush narrower than ${SOURCE_MIN_HULL_WIDTH_UNITS} Source units is a blocking brush-collision-unrepresentable requirement.`,
       'Spawn floor probing does not establish robot clearance against invisible clip brushes or props.',
       'Geometry alone does not resolve materials, props, overlays, lighting atlases, PVS or certify complete raw-map support.'
     ] };
@@ -503,39 +585,76 @@ function reachableWorld(nodes: Table, leaves: Table, leafbrushes: Table, brushCo
   return { brushes: brushIds, leaves: leafIds };
 }
 
-async function brushHull(planes: Table, sides: Table, first: number, count: number, signal?: AbortSignal): Promise<Float64Array | undefined> {
+type BrushHull = { kind: 'hull'; vertices: Float64Array } | { kind: 'degenerate' } | { kind: 'unrepresentable'; widthUnits: number };
+export function unrepresentableBrushDetail(label: string, contents: number, widthUnits: number): string {
+  return `${label} (contents 0x${contents.toString(16)}) is not provably empty, but its convex collision would be only ${widthUnits.toPrecision(3)} Source units wide; at least ${SOURCE_MIN_HULL_WIDTH_UNITS} units are needed, so it is refused rather than flattened or skipped.`;
+}
+
+/** Half-space intersection of an authored brush in Source units. Only provably
+ * volume-free brushes are degenerate: an exactly opposed side pair with zero or
+ * negative separation, or no vertex at all with every plane triple well
+ * conditioned. Anything else too narrow for the rounded emitted hull, however
+ * thin, is unrepresentable and blocks admission; it is never skipped. */
+async function brushHull(planes: Table, sides: Table, first: number, count: number, budget: GeometryBudget, signal?: AbortSignal): Promise<BrushHull> {
   range(first, count, sides.count, 'Brush sides');
-  if (count < 4) return undefined;
+  // Fewer than four half-spaces bound no closed volume.
+  if (count < 4) return { kind: 'degenerate' };
   // Match VBSP's MAX_BRUSH_SIDES before cubic plane-triple enumeration.
   if (count > 128) throw new Error('Source brush exceeds the 128-side VBSP hull limit');
-  const p = new Float64Array(count * 4);
-  for (let j = 0; j < count; j++) for (let k = 0; k < 4; k++) p[j * 4 + k] = planes.f(sides.h(first + j), k * 4);
-  const points: number[] = [], seen = new Set<string>();
-  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  for (let a = 0; a < count - 2; a++) {
-    if (a > 0 && (a & 7) === 0) await sourcePhase(signal);
-    sourceAbort(signal);
-    for (let b = a + 1; b < count - 1; b++) for (let c = b + 1; c < count; c++) {
-      const i = a * 4, j = b * 4, k = c * 4;
-      const cx = p[j + 1] * p[k + 2] - p[j + 2] * p[k + 1], cy = p[j + 2] * p[k] - p[j] * p[k + 2], cz = p[j] * p[k + 1] - p[j + 1] * p[k];
-      const det = p[i] * cx + p[i + 1] * cy + p[i + 2] * cz;
-      if (Math.abs(det) <= 1e-6) continue;
-      let x = (p[i + 3] * cx + p[j + 3] * (p[k + 1] * p[i + 2] - p[k + 2] * p[i + 1]) + p[k + 3] * (p[i + 1] * p[j + 2] - p[i + 2] * p[j + 1])) / det;
-      let y = (p[i + 3] * cy + p[j + 3] * (p[k + 2] * p[i] - p[k] * p[i + 2]) + p[k + 3] * (p[i + 2] * p[j] - p[i] * p[j + 2])) / det;
-      let z = (p[i + 3] * cz + p[j + 3] * (p[k] * p[i + 1] - p[k + 1] * p[i]) + p[k + 3] * (p[i] * p[j + 1] - p[i + 1] * p[j])) / det;
-      let inside = true;
-      for (let n = 0; n < count; n++) if (p[n * 4] * x + p[n * 4 + 1] * y + p[n * 4 + 2] * z > p[n * 4 + 3] + 0.05) { inside = false; break; }
-      if (!inside) continue;
-      x = Math.round(x * 1000) / 1000; y = Math.round(y * 1000) / 1000; z = Math.round(z * 1000) / 1000;
-      const key = `${x},${y},${z}`;
-      if (seen.has(key)) continue;
-      seen.add(key); points.push(x, y, z);
-      minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z);
-      maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z);
+  // Planes and per-side vertex extents, then every unique candidate before it is kept.
+  let working = count * 48;
+  budget.reserve(working);
+  try {
+    const p = new Float64Array(count * 4), extent = new Float64Array(count * 2);
+    for (let j = 0; j < count; j++) {
+      for (let k = 0; k < 4; k++) p[j * 4 + k] = planes.f(sides.h(first + j), k * 4);
+      extent[j * 2] = Infinity; extent[j * 2 + 1] = -Infinity;
     }
-  }
-  if (points.length < 12 || Math.min(maxX - minX, maxY - minY, maxZ - minZ) < 0.5) return undefined;
-  return Float64Array.from(points);
+    // Opposed float32 normals are exact negatives; the sign of the double sum of two
+    // float32 distances is exact, so a non-positive separation proves zero volume.
+    for (let a = 0; a < count - 1; a++) for (let b = a + 1; b < count; b++) {
+      const i = a * 4, j = b * 4;
+      if (p[i] === -p[j] && p[i + 1] === -p[j + 1] && p[i + 2] === -p[j + 2] && p[i + 3] + p[j + 3] <= 0) return { kind: 'degenerate' };
+    }
+    const points: number[] = [], seen = new Set<string>();
+    let illConditioned = false;
+    for (let a = 0; a < count - 2; a++) {
+      if (a > 0 && (a & 7) === 0) await sourcePhase(signal);
+      sourceAbort(signal);
+      for (let b = a + 1; b < count - 1; b++) for (let c = b + 1; c < count; c++) {
+        const i = a * 4, j = b * 4, k = c * 4;
+        const cx = p[j + 1] * p[k + 2] - p[j + 2] * p[k + 1], cy = p[j + 2] * p[k] - p[j] * p[k + 2], cz = p[j] * p[k + 1] - p[j + 1] * p[k];
+        const det = p[i] * cx + p[i + 1] * cy + p[i + 2] * cz;
+        if (Math.abs(det) <= 1e-6) { if (det !== 0) illConditioned = true; continue; }
+        const x = (p[i + 3] * cx + p[j + 3] * (p[k + 1] * p[i + 2] - p[k + 2] * p[i + 1]) + p[k + 3] * (p[i + 1] * p[j + 2] - p[i + 2] * p[j + 1])) / det;
+        const y = (p[i + 3] * cy + p[j + 3] * (p[k + 2] * p[i] - p[k] * p[i + 2]) + p[k + 3] * (p[i + 2] * p[j] - p[i] * p[j + 2])) / det;
+        const z = (p[i + 3] * cz + p[j + 3] * (p[k] * p[i + 1] - p[k + 1] * p[i]) + p[k + 3] * (p[i] * p[j + 1] - p[i + 1] * p[j])) / det;
+        let inside = true;
+        for (let n = 0; n < count; n++) if (p[n * 4] * x + p[n * 4 + 1] * y + p[n * 4 + 2] * z > p[n * 4 + 3] + HULL_PLANE_SLACK_UNITS) { inside = false; break; }
+        if (!inside) continue;
+        const rx = Math.round(x * HULL_STEPS_PER_UNIT), ry = Math.round(y * HULL_STEPS_PER_UNIT), rz = Math.round(z * HULL_STEPS_PER_UNIT);
+        const key = `${rx},${ry},${rz}`;
+        if (seen.has(key)) continue;
+        budget.reserve(HULL_POINT_WORKING_BYTES); working += HULL_POINT_WORKING_BYTES;
+        seen.add(key); points.push(rx / HULL_STEPS_PER_UNIT, ry / HULL_STEPS_PER_UNIT, rz / HULL_STEPS_PER_UNIT);
+        for (let n = 0; n < count; n++) {
+          const along = p[n * 4] * x + p[n * 4 + 1] * y + p[n * 4 + 2] * z;
+          if (along < extent[n * 2]) extent[n * 2] = along;
+          if (along > extent[n * 2 + 1]) extent[n * 2 + 1] = along;
+        }
+      }
+    }
+    const vertexCount = points.length / 3;
+    // Every well-conditioned vertex satisfies all planes far inside the slack, so no
+    // vertex proves an empty intersection only when no triple was ill-conditioned.
+    if (!vertexCount && !illConditioned) return { kind: 'degenerate' };
+    // Unrounded extents along every authored side normal.
+    let width = vertexCount ? Infinity : 0;
+    for (let n = 0; vertexCount && n < count; n++) width = Math.min(width, extent[n * 2 + 1] - extent[n * 2]);
+    if (vertexCount < 4 || !(width >= SOURCE_MIN_HULL_WIDTH_UNITS)) return { kind: 'unrepresentable', widthUnits: width };
+    budget.reserve(points.length * 8);
+    return { kind: 'hull', vertices: Float64Array.from(points) };
+  } finally { budget.release(working); }
 }
 
 async function chooseFrame(bsp: SourceBsp, models: Table, surfaces: SourceSurface[], options: SourceWorldOptions): Promise<SourceFrame> {
@@ -575,7 +694,13 @@ async function chooseFrame(bsp: SourceBsp, models: Table, surfaces: SourceSurfac
   return { ...common, origin: [(models.f(0) + models.f(0, 12)) / 2, (models.f(0, 4) + models.f(0, 16)) / 2, (models.f(0, 8) + models.f(0, 20)) / 2], yaw: 0, spawnClass: 'map centre', floorFound: false };
 }
 
-function appendDisplacementCollision(surface: SourceSurface, frame: SourceFrame, cos: number, sin: number, output: SourceCollision[]): void {
+function appendDisplacementCollision(surface: SourceSurface, frame: SourceFrame, cos: number, sin: number, output: SourceCollision[], budget: GeometryBudget): void {
+  // Two framed double-precision copies of the grid are transient; emitted shapes are retained.
+  const working = surface.sourcePositions.length * 16;
+  budget.reserve(working);
+  try { appendFramedDisplacementCollision(surface, frame, cos, sin, output, budget); } finally { budget.release(working); }
+}
+function appendFramedDisplacementCollision(surface: SourceSurface, frame: SourceFrame, cos: number, sin: number, output: SourceCollision[], budget: GeometryBudget): void {
   const side = surface.gridSide!, tolerance = SOURCE_COLLISION_TOLERANCE_METRES;
   const framed = (source: Float64Array) => {
     const out = new Float64Array(source.length);
@@ -604,6 +729,7 @@ function appendDisplacementCollision(surface: SourceSurface, frame: SourceFrame,
     // Source's alternating one). Otherwise the exact convex path below is used.
     y = normal(z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]);
     const center: Vec3 = [base[0] + (e1[0] + e2[0]) / 2, base[1] + (e1[1] + e2[1]) / 2, base[2] + (e1[2] + e2[2]) / 2];
+    budget.reserve(side * side * 4);
     const elevations = new Float32Array(side * side);
     let lo = Infinity, hi = -Infinity, lateral = 0, planarity = 0;
     const width = swap ? l1 : l2, height = swap ? l2 : l1;
@@ -627,6 +753,8 @@ function appendDisplacementCollision(surface: SourceSurface, frame: SourceFrame,
         approximation: { maxLateralErrorMetres: lateral, baseRectangleErrorMetres: rectangleError, maxCellPlanarityErrorMetres: planarity } });
       return;
     }
+    // The rejected heightfield's elevations are unreachable.
+    budget.release(elevations.byteLength);
   }
   // Exact convex decomposition of the authored triangles: a 2x2-cell patch or a
   // cell becomes one hull only when every one of its triangles is a front hull
@@ -637,6 +765,7 @@ function appendDisplacementCollision(surface: SourceSurface, frame: SourceFrame,
     const ids = new Set<number>();
     for (const t of triangles) for (let k = 0; k < 3; k++) ids.add(indices[t + k]);
     if (!exactDisplacementGroup(points, indices, triangles, loop, ids, front)) return false;
+    budget.reserve(ids.size * 48);
     const vertices = new Float64Array(ids.size * 6);
     let at = 0;
     for (const id of ids) {
@@ -656,6 +785,7 @@ function appendDisplacementCollision(surface: SourceSurface, frame: SourceFrame,
       for (const t of triangles) {
         const n = triangleNormal(points, indices[t], indices[t + 1], indices[t + 2]);
         if (!n) continue;
+        budget.reserve(144);
         const vertices = new Float64Array(18);
         for (let k = 0; k < 3; k++) for (let axis = 0; axis < 3; axis++) {
           const value = points[indices[t + k] * 3 + axis];

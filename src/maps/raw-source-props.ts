@@ -1,7 +1,8 @@
 // Adapted from noclip.website StaticDetailObject.ts (Copyright 2018 Jasper
 // St. Pierre, MIT; see LICENSE.noclip) and scripts/import_source_props.py.
 import type { SourceWorld, SourceFrame, SourceSurface } from './raw-source-geometry';
-import type { SourceEntity } from './raw-source-bsp';
+import { sourceLzmaWorkingBytes, type SourceBspReservation, type SourceEntity } from './raw-source-bsp';
+import type { SourceLightingRequirement } from './raw-source-lighting';
 import type { SourceFileSystem } from './raw-source-files';
 import { decodeValveLzma, sourceAbort } from './raw-source-lzma';
 import { SourceModelBinary as Binary, sourceModelPath, sourceQAngle, sourceModelMultiply, sourceModelPoint, type SourceModelVector } from './raw-source-model-binary';
@@ -76,10 +77,17 @@ export interface SourceProps {
    * resources ONLY. Resolving brush VMTs and all shader/texture dependencies is
    * the caller's separate requirement; never map-support qualification. */
   completeResources: boolean; frame: SourceFrame; originalBspBlob: Blob;
+  /** Blocking admission for retained authored visual payloads this importer cannot
+   * emit (populated detail objects, overlays). Never satisfied by limitations text. */
+  requirements: readonly SourceLightingRequirement[];
   limitations: readonly string[];
 }
 export interface SourcePropsOptions extends SourceStudioOptions {
+  /** Aggregate logical decoded payload bytes of ALL game lumps (each record is
+   * also bounded by it). Retained copies and codec workspace are additionally
+   * charged to the owning BSP import's aggregate ceilings before any read. */
   maxGameLumpBytes?: number;
+  maxGameLumps?: number;
   /** Branches reused sprp version numbers with different layouts; never guess an
    * equal-length ambiguous fork. Default follows BSP19/20 TF2 vs BSP21/22 CS:GO. */
   staticPropVariant?: 'source2007' | 'left4dead';
@@ -122,78 +130,176 @@ function entityRender(entity: SourceEntity): SourceEntityRender {
 }
 const staticRender=():SourceEntityRender=>({mode:0,effect:0,color:[255,255,255],amount:255,initiallyDisabled:false,renderFx:'',castShadow:true,receiveShadow:true});
 
-async function gameLumps(world:SourceWorld,maximum:number,signal?:AbortSignal):Promise<SourceGameLump[]> {
-  const bsp=world.bsp, container=bsp.lumps[35], bytes=await bsp.getLump(35,signal);
+const DETAIL_PROPS = 0x64707270, DETAIL_PROPS_VERSION = 4;
+interface GameLumpEntry { id: number; flags: number; version: number; offset: number; length: number; end: number; stored: number; workspace: number }
+/** Ownership of every record is validated and charged before any payload read:
+ * aliased/overlapping records are refused, never multiplied or shared. */
+async function gameLumps(world:SourceWorld,maximum:number,maxCount:number,signal?:AbortSignal):Promise<SourceGameLump[]> {
+  const bsp=world.bsp,container=bsp.lumps[35],bytes=await bsp.getLump(35,signal);sourceAbort(signal);
   if(!bytes.length)return [];
-  const table=new Binary(bytes,'BSP game-lump directory'),count=table.u(0);table.range(4,count,16);
-  const result:SourceGameLump[]=[];
+  const table=new Binary(bytes,'BSP game-lump directory'),count=table.u(0);
+  if(count>maxCount)throw new Error('Source game-lump count limit exceeded');
+  table.range(4,count,16);
+  // Offsets are absolute BSP positions; an outer-compressed container maps them
+  // into its own decoded bytes, which the BSP import already owns.
+  const inner=!!container.uncompressedSize,base=container.offset,payloadStart=base+4+count*16,limitEnd=inner?base+bytes.length:base+container.length;
+  const entries:GameLumpEntry[]=[];
   for(let i=0;i<count;i++){
-    sourceAbort(signal);const p=4+i*16,id=table.u(p),flags=table.h(p+4),version=table.h(p+6),offset=table.u(p+8),length=table.u(p+12);
-    // Compressed game lumps use uncompressed filelen; the next directory
-    // offset (including Valve's empty sentinel) bounds their stored payload.
-    if(!length){result.push({id,flags,version,absoluteOffset:offset,length,rawBlob:new Blob(),decodedBlob:new Blob()});continue;}
-    if(flags&~1)throw new Error(`Unsupported game-lump flags ${flags}`);
+    const p=4+i*16,id=table.u(p),flags=table.h(p+4),version=table.h(p+6),offset=table.u(p+8),length=table.u(p+12);
     let end=offset+length;
-    if(flags&1){end=container.uncompressedSize?container.offset+bytes.length:container.offset+container.length;for(let j=0;j<count;j++){const next=table.u(4+j*16+8);if(next>offset&&next<end)end=next;}}
-    if(length>maximum||end<offset||end-offset>maximum)throw new Error('Source game-lump allocation limit or invalid range');
-    let rawBlob:Blob;
-    if(container.uncompressedSize){const local=offset-container.offset;table.range(local,end-offset);if(local<4+count*16)throw new Error('Game lump overlaps directory');rawBlob=new Blob([bytes.subarray(local,local+end-offset)]);}
-    else {if(offset<container.offset+4+count*16||offset>container.offset+container.length||end>container.offset+container.length||end>bsp.file.size)throw new Error('Absolute BSP game-lump offset out of bounds');rawBlob=bsp.file.slice(offset,end);}
-    let decodedBlob=rawBlob;
-    if(flags&1){const raw=new Uint8Array(await rawBlob.arrayBuffer());if(raw.length<17)throw new Error('Truncated compressed game lump');const header=new Binary(raw,'compressed game lump'),storedLength=17+header.u(8);header.range(0,storedLength); // Padding may separate the next game lump.
-      decodedBlob=new Blob([await decodeValveLzma(raw.subarray(0,storedLength),length,maximum,signal)]);}
-    result.push({id,flags,version,absoluteOffset:offset,length,rawBlob,decodedBlob});
+    if(length){
+      if(flags&~1)throw new Error(`Unsupported game-lump flags ${flags}`);
+      // Compressed game lumps use uncompressed filelen; the next directory
+      // offset (including Valve's empty sentinel) bounds their stored payload.
+      if(flags&1){end=limitEnd;for(let j=0;j<count;j++){const next=table.u(4+j*16+8);if(next>offset&&next<end)end=next;}}
+      if(length>maximum||end<offset||end-offset>maximum)throw new Error('Source game-lump allocation limit or invalid range');
+      if(offset<payloadStart||end>limitEnd||(!inner&&end>bsp.file.size))throw new Error('Game-lump payload outside its container or overlapping the directory');
+    }
+    entries.push({id,flags,version,offset,length,end,stored:end-offset,workspace:0});
   }
+  const owned=entries.filter(e=>e.length).sort((a,b)=>a.offset-b.offset);
+  for(let i=1;i<owned.length;i++)if(owned[i].offset<owned[i-1].end)throw new Error('Aliased or overlapping Source game-lump payloads');
+  // Bounded 17-byte headers fix each codec's exact workspace before any payload read.
+  const compressed=owned.filter(e=>e.flags&1);
+  const headerReservation=bsp.reserve(0,inner?0:compressed.length*17);
+  try{
+    for(const e of compressed){
+      const header=inner?new DataView(bytes.buffer,bytes.byteOffset+e.offset-base,Math.min(17,e.end-e.offset)):new DataView(await bsp.file.slice(e.offset,Math.min(e.offset+17,e.end)).arrayBuffer());
+      sourceAbort(signal);
+      if(header.byteLength!==17||header.getUint32(0,true)!==0x414d5a4c)throw new Error('Invalid Valve LZMA game-lump header');
+      const stored=17+header.getUint32(8,true),property=header.getUint8(12),dictionary=header.getUint32(13,true);
+      // Padding may separate the next game lump; stored bytes never exceed the owned range.
+      if(header.getUint32(4,true)!==e.length||stored>e.end-e.offset)throw new Error('Compressed game-lump size mismatch or stored bytes outside its range');
+      if(property>=225||dictionary>maximum)throw new Error('Unsupported or excessive game-lump LZMA properties');
+      e.stored=stored;e.workspace=sourceLzmaWorkingBytes(stored,stored,e.length,property,dictionary);
+    }
+    headerReservation.complete();
+  }catch(error){headerReservation.fail(false);throw error;}
+  // Decodes run sequentially, so one maximal workspace covers them; every
+  // retained Blob copy (inner slices, decoded outputs) is charged in full.
+  let logical=0,retained=0,workspace=0;
+  for(const e of owned){
+    logical+=e.length;
+    if(inner)retained+=e.end-e.offset;
+    if(e.flags&1){retained+=e.length;workspace=Math.max(workspace,e.workspace);}
+  }
+  if(logical>maximum)throw new Error('Source aggregate game-lump decoded limit exceeded');
+  const reservation=bsp.reserve(retained,workspace),result:SourceGameLump[]=[];
+  let codecStarted=false;
+  try{
+    for(const e of entries){
+      sourceAbort(signal);
+      if(!e.length){result.push({id:e.id,flags:e.flags,version:e.version,absoluteOffset:e.offset,length:0,rawBlob:new Blob(),decodedBlob:new Blob()});continue;}
+      const rawBlob=inner?new Blob([bytes.subarray(e.offset-base,e.end-base)]):bsp.file.slice(e.offset,e.end);let decodedBlob=rawBlob;
+      if(e.flags&1){
+        const raw=new Uint8Array(await rawBlob.slice(0,e.stored).arrayBuffer());sourceAbort(signal);
+        codecStarted=true;decodedBlob=new Blob([await decodeValveLzma(raw,e.length,maximum,signal)]);
+      }
+      result.push({id:e.id,flags:e.flags,version:e.version,absoluteOffset:e.offset,length:e.length,rawBlob,decodedBlob});
+    }
+    reservation.complete();
+  }catch(error){reservation.fail(codecStarted);throw error;}
   return result;
 }
+/** Bounded count reads: object-free detail metadata draws nothing and is admitted;
+ * populated or unrecognized payloads block; malformed layouts are refused. */
+async function detailPropRequirement(lumps:readonly SourceGameLump[],signal?:AbortSignal):Promise<SourceLightingRequirement|undefined>{
+  const matches=lumps.filter(l=>l.id===DETAIL_PROPS&&l.length);
+  if(matches.length>1)throw new Error('Duplicate Source detail-prop game lump');
+  if(!matches.length)return undefined;
+  const blob=matches[0].decodedBlob,version=matches[0].version;
+  if(version!==DETAIL_PROPS_VERSION)return {code:'detail-prop-runtime',blocking:true,detail:`Detail-prop game lump version ${version} (${blob.size} bytes) is unrecognized; no detail objects are emitted.`};
+  const u32=async(p:number)=>{
+    if(p+4>blob.size)throw new Error('Truncated Source detail-prop lump');
+    const value=new DataView(await blob.slice(p,p+4).arrayBuffer()).getUint32(0,true);sourceAbort(signal);return value;
+  };
+  // DetailObjectDictLump_t 128 B, DetailSpriteDictLump_t 32 B, DetailObjectLump_t 52 B.
+  const models=await u32(0),sprites=await u32(4+models*128),objects=await u32(8+models*128+sprites*32);
+  if(12+models*128+sprites*32+objects*52!==blob.size)throw new Error('Invalid Source detail-prop lump layout');
+  return objects?{code:'detail-prop-runtime',blocking:true,detail:`${objects} authored detail objects (${models} model and ${sprites} sprite dictionary entries) require detail-prop assembly; none are emitted.`}:undefined;
+}
+/** doverlay_t is 352 B; any populated overlay lump blocks admission. */
+function overlayRequirement(world:SourceWorld):SourceLightingRequirement|undefined{
+  const lump=world.bsp.lumps[45],size=lump.uncompressedSize||lump.length;
+  if(!size)return undefined;
+  if(lump.version===0&&size%352)throw new Error('Truncated Source overlay lump');
+  return {code:'overlay-runtime',blocking:true,detail:lump.version===0?`${size/352} authored overlays require overlay assembly; none are emitted.`:`Overlay lump version ${lump.version} (${size} bytes) is unrecognized; no overlays are emitted.`};
+}
 
-/** Strict native sprp decoding; rejects unrecognized fork record sizes. */
+/** Logical retained-ownership units, not engine heap metrics: one static-prop
+ * record's placement object, vectors, matrix, render state and raw slice, and one
+ * model path string. Authored leaf IDs are charged at 2 bytes each. */
+const STATIC_PROP_RECORD_BYTES=2048,STATIC_PROP_NAME_BYTES=320;
+/** Strict native sprp decoding; rejects unrecognized fork record sizes. The
+ * plain clone is working capacity of the owning BSP import for its whole parse;
+ * every retained name/record/leaf is charged to that import before allocation. */
 export async function readSourceStaticProps(world: SourceWorld, lumps: readonly SourceGameLump[], options: SourcePropsOptions = {}): Promise<SourcePropPlacement[]> {
   const matches=lumps.filter(l=>l.id===0x73707270&&l.length);
   if(matches.length>1)throw new Error('Duplicate Source static-prop game lump');
   if(!matches.length)return [];
-  const lump=matches[0],version=lump.version;
+  const lump=matches[0],version=lump.version,bsp=world.bsp,signal=options.signal;
   if(version<4||version>11)throw new Error(`Unsupported Source static-prop version ${version}`);
-  const data=new Binary(new Uint8Array(await lump.decodedBlob.arrayBuffer()),'sprp');sourceAbort(options.signal);
-  const names:string[]=[],nameCount=data.u(0);data.range(4,nameCount,128);
-  for(let i=0;i<nameCount;i++)names.push(sourceModelPath(data.string(4+i*128,128)));
-  let p=4+nameCount*128;const leafCount=data.u(p);p+=4;data.range(p,leafCount,2);const leafStart=p;p+=leafCount*2;
-  const count=data.u(p);p+=4;
-  const fork=options.staticPropVariant??(world.bsp.version>=21?'left4dead':'source2007');
-  const size=56+(version>=5?4:0)+(version>=6&&version<=7?4:0)+(version>=8?4:0)+(fork==='left4dead'?((version>=7?4:0)+(version>=9?4:0)+(version>=10?4:0)+(version>=11?4:0)):(version>=7?8:0));
-  data.range(p,count,size);if(p+count*size!==data.bytes.length)throw new Error(`Unsupported sprp v${version}/${fork} record size; select the actual branch, not an inferred stride`);
-  // Validate authored leaf IDs against the original BSP, not just reachable leaves.
-  const leafBytes=await world.bsp.getLump(10,options.signal),leafStride=world.bsp.lumps[10].version===0?56:32,totalLeaves=leafBytes.length/leafStride;
-  if(!Number.isInteger(totalLeaves))throw new Error('Malformed BSP leaves for prop visibility');
-  const props:SourcePropPlacement[]=[];
-  const worldFrameMatrix=sourcePropMatrix(world.frame,[0,0,0],[0,0,0]);
-  for(let i=0;i<count;i++){
-    if((i&1023)===0){if(i)await new Promise<void>(resolve=>setTimeout(resolve,0));sourceAbort(options.signal);}
-    const start=p,origin=data.vec(p),angles=data.vec(p+12),modelIndex=data.h(p+24),first=data.h(p+26),n=data.h(p+28),solid=data.b(p+30);let flags=data.b(p+31);
-    if(modelIndex>=names.length||first>leafCount||n>leafCount-first)throw new Error('sprp model/leaf range out of bounds');
-    const leaves=new Uint16Array(n);for(let j=0;j<n;j++){leaves[j]=data.h(leafStart+(first+j)*2);if(leaves[j]>=totalLeaves)throw new Error('sprp BSP leaf index out of bounds');}
-    const skin=data.i(p+32),fadeMinDistance=data.f(p+36),fadeMaxDistance=data.f(p+40);p+=56;
-    let forcedFadeScale=1,flagsEx=0,scale=1,dxLevels:SourcePropPlacement['dxLevels'],cpuLevels:SourcePropPlacement['cpuLevels'],gpuLevels:SourcePropPlacement['gpuLevels'],lightmapResolution:SourcePropPlacement['lightmapResolution'],disableX360:number|undefined;
-    const diffuseModulation:SourcePropPlacement['diffuseModulation']=[255,255,255,255];
-    if(version>=5){forcedFadeScale=data.f(p);p+=4;}
-    if(version>=6&&version<=7){dxLevels=[data.h(p),data.h(p+2)];p+=4;}
-    if(version>=8){cpuLevels=[data.b(p),data.b(p+1)];gpuLevels=[data.b(p+2),data.b(p+3)];p+=4;}
-    if(fork==='left4dead'){
-      if(version>=7){for(let k=0;k<4;k++)diffuseModulation[k]=data.b(p+k);p+=4;}
-      if(version>=9){disableX360=data.u(p);p+=4;}
-      if(version>=10){flagsEx=data.u(p);p+=4;}
-      if(version>=11){scale=data.f(p);p+=4;}
-    }else if(version>=7){flags=data.u(p);lightmapResolution=[data.h(p+4),data.h(p+6)];p+=8;}
-    const sourceLightingOrigin=flags&2?data.vec(start+44):undefined,render=staticRender();render.castShadow=!(flags&16);
-    props.push({kind:'static-prop',index:i,modelPath:names[modelIndex],classname:'prop_static',sourceOrigin:origin,sourceAngles:angles,scale,matrix:sourcePropMatrix(world.frame,origin,angles,scale),matrixInputUnits:'metres',skin,body:0,solid,flags,flagsEx,leaves,sourceLightingOrigin,worldLightingOrigin:sourceLightingOrigin?sourceModelPoint(worldFrameMatrix,sourceLightingOrigin.map(v=>v*world.frame.metresPerUnit)):undefined,castShadow:render.castShadow,fadeMinDistance,fadeMaxDistance,forcedFadeScale,diffuseModulation,dxLevels,cpuLevels,gpuLevels,lightmapResolution,disableX360,render,rawBlob:lump.decodedBlob.slice(start,p)});
-  }
-  return props;
+  const working=bsp.reserve(0,lump.decodedBlob.size);
+  let ownership:SourceBspReservation|undefined;
+  try{
+    const data=new Binary(new Uint8Array(await lump.decodedBlob.arrayBuffer()),'sprp');sourceAbort(signal);
+    const nameCount=data.u(0);data.range(4,nameCount,128);
+    let p=4+nameCount*128;const leafCount=data.u(p);p+=4;data.range(p,leafCount,2);const leafStart=p;p+=leafCount*2;
+    const count=data.u(p);p+=4;
+    const fork=options.staticPropVariant??(bsp.version>=21?'left4dead':'source2007');
+    const size=56+(version>=5?4:0)+(version>=6&&version<=7?4:0)+(version>=8?4:0)+(fork==='left4dead'?((version>=7?4:0)+(version>=9?4:0)+(version>=10?4:0)+(version>=11?4:0)):(version>=7?8:0));
+    data.range(p,count,size);if(p+count*size!==data.bytes.length)throw new Error(`Unsupported sprp v${version}/${fork} record size; select the actual branch, not an inferred stride`);
+    // Lean preflight: authored leaf ranges may be reused by any number of records,
+    // so every record's own expansion is charged in full before anything is allocated.
+    let leafIds=0;
+    for(let i=0,q=p;i<count;i++,q+=size){
+      if((i&65535)===65535){await new Promise<void>(resolve=>setTimeout(resolve,0));sourceAbort(signal);}
+      const modelIndex=data.h(q+24),first=data.h(q+26),n=data.h(q+28);
+      if(modelIndex>=nameCount||first>leafCount||n>leafCount-first)throw new Error('sprp model/leaf range out of bounds');
+      leafIds+=n;
+    }
+    const retained=nameCount*STATIC_PROP_NAME_BYTES+count*STATIC_PROP_RECORD_BYTES+leafIds*2;
+    if(!Number.isSafeInteger(retained))throw new Error('Source static-prop ownership exceeds the safe integer range');
+    // Validate authored leaf IDs against the original BSP, not just reachable leaves.
+    const leafBytes=await bsp.getLump(10,signal),leafStride=bsp.lumps[10].version===0?56:32,totalLeaves=leafBytes.length/leafStride;
+    if(!Number.isInteger(totalLeaves))throw new Error('Malformed BSP leaves for prop visibility');
+    sourceAbort(signal);ownership=bsp.reserve(retained,0);
+    const names:string[]=[];
+    for(let i=0;i<nameCount;i++)names.push(sourceModelPath(data.string(4+i*128,128)));
+    const props:SourcePropPlacement[]=[];
+    const worldFrameMatrix=sourcePropMatrix(world.frame,[0,0,0],[0,0,0]);
+    for(let i=0;i<count;i++){
+      if((i&1023)===0){if(i)await new Promise<void>(resolve=>setTimeout(resolve,0));sourceAbort(signal);}
+      const start=p,origin=data.vec(p),angles=data.vec(p+12),modelIndex=data.h(p+24),first=data.h(p+26),n=data.h(p+28),solid=data.b(p+30);let flags=data.b(p+31);
+      const leaves=new Uint16Array(n);for(let j=0;j<n;j++){leaves[j]=data.h(leafStart+(first+j)*2);if(leaves[j]>=totalLeaves)throw new Error('sprp BSP leaf index out of bounds');}
+      const skin=data.i(p+32),fadeMinDistance=data.f(p+36),fadeMaxDistance=data.f(p+40);p+=56;
+      let forcedFadeScale=1,flagsEx=0,scale=1,dxLevels:SourcePropPlacement['dxLevels'],cpuLevels:SourcePropPlacement['cpuLevels'],gpuLevels:SourcePropPlacement['gpuLevels'],lightmapResolution:SourcePropPlacement['lightmapResolution'],disableX360:number|undefined;
+      const diffuseModulation:SourcePropPlacement['diffuseModulation']=[255,255,255,255];
+      if(version>=5){forcedFadeScale=data.f(p);p+=4;}
+      if(version>=6&&version<=7){dxLevels=[data.h(p),data.h(p+2)];p+=4;}
+      if(version>=8){cpuLevels=[data.b(p),data.b(p+1)];gpuLevels=[data.b(p+2),data.b(p+3)];p+=4;}
+      if(fork==='left4dead'){
+        if(version>=7){for(let k=0;k<4;k++)diffuseModulation[k]=data.b(p+k);p+=4;}
+        if(version>=9){disableX360=data.u(p);p+=4;}
+        if(version>=10){flagsEx=data.u(p);p+=4;}
+        if(version>=11){scale=data.f(p);p+=4;}
+      }else if(version>=7){flags=data.u(p);lightmapResolution=[data.h(p+4),data.h(p+6)];p+=8;}
+      const sourceLightingOrigin=flags&2?data.vec(start+44):undefined,render=staticRender();render.castShadow=!(flags&16);
+      props.push({kind:'static-prop',index:i,modelPath:names[modelIndex],classname:'prop_static',sourceOrigin:origin,sourceAngles:angles,scale,matrix:sourcePropMatrix(world.frame,origin,angles,scale),matrixInputUnits:'metres',skin,body:0,solid,flags,flagsEx,leaves,sourceLightingOrigin,worldLightingOrigin:sourceLightingOrigin?sourceModelPoint(worldFrameMatrix,sourceLightingOrigin.map(v=>v*world.frame.metresPerUnit)):undefined,castShadow:render.castShadow,fadeMinDistance,fadeMaxDistance,forcedFadeScale,diffuseModulation,dxLevels,cpuLevels,gpuLevels,lightmapResolution,disableX360,render,rawBlob:lump.decodedBlob.slice(start,p)});
+    }
+    // Placements own their charge for the import lifetime; the plain clone does not.
+    ownership.complete();working.complete();
+    return props;
+  }catch(error){ownership?.fail(false);working.fail(false);throw error;}
 }
 
 export async function readSourceProps(world: SourceWorld, filesystem: Pick<SourceFileSystem,'readFile'>, options: SourcePropsOptions = {}): Promise<SourceProps> {
   sourceAbort(options.signal);
   const maximum=options.maxGameLumpBytes??128*1024*1024;if(!Number.isSafeInteger(maximum)||maximum<=0)throw new Error('Invalid Source game-lump limit');
-  const lumps=await gameLumps(world,maximum,options.signal),placements=await readSourceStaticProps(world,lumps,options),brushes:SourceBrushVisual[]=[],entities:SourceEntityVisual[]=[];
+  const maxCount=options.maxGameLumps??4096;if(!Number.isSafeInteger(maxCount)||maxCount<=0)throw new Error('Invalid Source game-lump count limit');
+  const requirements:SourceLightingRequirement[]=[],overlays=overlayRequirement(world);if(overlays)requirements.push(overlays);
+  const lumps=await gameLumps(world,maximum,maxCount,options.signal),details=await detailPropRequirement(lumps,options.signal);if(details)requirements.push(details);
+  const placements=await readSourceStaticProps(world,lumps,options),brushes:SourceBrushVisual[]=[],entities:SourceEntityVisual[]=[];
   const modelsBytes=await world.bsp.getLump(14,options.signal),modelTable=new Binary(modelsBytes,'BSP models');if(modelsBytes.length%48)throw new Error('Malformed BSP model table');
   const facesLump=world.bsp.lumps[53].length&&world.bsp.lumps[58].length?58:7,faceBytes=await world.bsp.getLump(facesLump,options.signal);if(faceBytes.length%56)throw new Error('Malformed BSP face table');
   const brushModels=new Map<number,{faces:Uint32Array;surfaces:readonly SourceSurface[]}>();
@@ -240,5 +346,5 @@ export async function readSourceProps(world: SourceWorld, filesystem: Pick<Sourc
     }
     if(p.sourceLightingOrigin&&!p.worldLightingOrigin)p.worldLightingOrigin=sourceModelPoint(worldMatrix,p.sourceLightingOrigin.map(v=>v*world.frame.metresPerUnit));
   }
-  return {placements,brushes,entities,gameLumps:lumps,models,missingModels,missingMaterials,missingAnimationResources,completeResources:!missingModels.length&&!missingMaterials.length&&!missingAnimationResources.length,frame:world.frame,originalBspBlob:world.bsp.file,limitations:['Authored baseline studio and brush placements only; moving doors/platforms, entity parenting, outputs, gameplay and ragdolls are not simulated. Static collision is assembled separately by raw-source-collision.','Native animation channels, sequences and external/include-model resources are retained, not sampled or qualified for recording/export.','All entities and game lumps are retained; sprite/rope/particle/detail-prop game-lump visuals require their own assembly. Missing resources are reported explicitly, never replaced with meshes or fake collision.']};
+  return {placements,brushes,entities,gameLumps:lumps,models,missingModels,missingMaterials,missingAnimationResources,completeResources:!missingModels.length&&!missingMaterials.length&&!missingAnimationResources.length,frame:world.frame,originalBspBlob:world.bsp.file,requirements,limitations:['Authored baseline studio and brush placements only; moving doors/platforms, entity parenting, outputs, gameplay and ragdolls are not simulated. Static collision is assembled separately by raw-source-collision.','Native animation channels, sequences and external/include-model resources are retained, not sampled or qualified for recording/export.','All entities and game lumps are retained; sprite/rope/particle visuals require their own assembly, and populated detail-prop or overlay payloads are blocking requirements. Missing resources are reported explicitly, never replaced with meshes or fake collision.']};
 }

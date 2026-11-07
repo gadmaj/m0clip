@@ -144,6 +144,7 @@ export async function assembleSourceMap(file: Blob, options: SourceMapAssemblyOp
   };
   const propResult = await appendSourceProps(propGlb, propMaterials, props, world, {
     signal, maxGeometryBytes: Math.min(256 * MIB, remaining()), maxVertices: 4_000_000,
+    maxMetadataBytes: maxAllocation,
     collisionForPlacement: placement => entityCollision.props.get(placement),
     cubeForPlacement: placement => propCubes.cubeAt(lightOrigin(placement)),
     lightingForPlacement(placement) {
@@ -162,7 +163,7 @@ export async function assembleSourceMap(file: Blob, options: SourceMapAssemblyOp
   if (propVisual.size > remaining()) throw new RangeError('Source assembly output limit exceeded');
   ownedOutput += propVisual.size;
   stage('packaging');
-  const requirements: SourceLightingRequirement[] = [...world.requirements, ...entityCollision.requirements,
+  const requirements: SourceLightingRequirement[] = [...world.requirements, ...props.requirements, ...entityCollision.requirements,
     ...worldResult.requirements, ...propResult.requirements,
     ...worldMaterials.requirements, ...propMaterials.requirements, ...sky.requirements];
   // Only the exact writer-resolved unlit faces lose their missing-bake requirement.

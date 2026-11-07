@@ -3,7 +3,7 @@
  * absent; every other authored collision is a blocking requirement, never a
  * guessed shape and never silently non-solid. */
 import { sourceAbort } from './raw-source-lzma';
-import type { SourceCollision, SourceModelCollision, SourceWorld } from './raw-source-geometry';
+import { unrepresentableBrushDetail, type SourceCollision, type SourceModelCollision, type SourceWorld } from './raw-source-geometry';
 import type { SourceProps, SourcePropPlacement } from './raw-source-props';
 import type { SourceLightingRequirement } from './raw-source-lighting';
 
@@ -50,6 +50,8 @@ export async function assembleSourceEntityCollision(world: Pick<SourceWorld, 'de
       if (!model) { model = await world.decodeModelCollision(brush.model, signal); models.set(brush.model, model); }
       for (const hull of model.hulls) collision.push({ kind: 'entity-brush', entity: brush.entityIndex, model: brush.model,
         brush: hull.brush, contents: hull.contents, vertices: placed(brush.matrix, hull.vertices) });
+      for (const thin of model.unrepresentableBrushes) block('brush-collision-unrepresentable',
+        unrepresentableBrushDetail(`Entity ${brush.entityIndex} (${brush.classname}) model *${brush.model} brush ${thin.brush}`, thin.contents, thin.widthUnits));
     } else if (brush.classname === 'func_clip_vphysics') {
       block('brush-clip-collision-runtime', `Entity ${brush.entityIndex}: func_clip_vphysics blocks physics objects but not players; one shared collision world cannot separate them.`);
     } else if (brush.classname !== 'func_illusionary' && brush.capability !== 'nonvisual-brush') {

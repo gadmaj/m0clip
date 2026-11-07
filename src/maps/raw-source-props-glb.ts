@@ -1,7 +1,7 @@
 /** Native studio geometry assembly; Source conventions follow noclip.website and
  * scripts/import_source_props.py (MIT, LICENSE.noclip). No file/network ownership. */
 import { SourceGlb, type SourceGltfRoot } from './raw-source-gltf';
-import type { SourceMaterialExport } from './raw-source-materials';
+import { sourceLinearColor, type SourceMaterialExport } from './raw-source-materials';
 import type { SourceWorld } from './raw-source-geometry';
 import type { SourceProps, SourcePropPlacement } from './raw-source-props';
 import { selectSourceStudioMeshes, sourceStudioMeshMaterial, type SourceStudioModel, type SourceStudioMesh } from './raw-source-studio';
@@ -12,6 +12,13 @@ import { sourceAbort } from './raw-source-lzma';
 import { sampleSourceStudioSequence, sourceStudioSequenceIndex, SourceStudioClipWriter, type SourceStudioSample } from './raw-source-animation';
 
 const METRES = .0254;
+/** Conservative LOGICAL bytes of retained glTF JSON metadata: UTF-16 strings,
+ * numbers at their longest JSON text, plus per-record object overhead. */
+const META_NUMBER = 24, META_RECORD = 128;
+const metaString = (text: string | undefined) => 32 + 2 * (text?.length ?? 0);
+/** Fixed placement node/extras/mesh records and their scalar/vector fields. */
+const PLACEMENT_RECORDS = 16, PLACEMENT_NUMBERS = 96;
+const CACHE_METADATA = 8 * META_RECORD + 100 * META_NUMBER;
 type Primitive = SourceGltfRoot['meshes'][number]['primitives'][number];
 export interface SourcePropsGlbOptions {
   lightingForPlacement(placement: SourcePropPlacement): PropLightCache | undefined;
@@ -22,6 +29,9 @@ export interface SourcePropsGlbOptions {
   /** Unique emitted vertex/accessor payloads, including inverse-bind matrices. */
   maxGeometryBytes: number;
   maxVertices: number;
+  /** Aggregate logical bytes of retained placement/node/mesh/primitive/bone/skin
+   * JSON metadata, authored leaf IDs and visibility clusters. Default 128 MiB. */
+  maxMetadataBytes?: number;
   /** Import-owned aggregate limits; defaults are finite even for API callers. */
   animation?: {
     maxFrames?: number; maxSamples?: number; maxInputBytes?: number;
@@ -36,6 +46,8 @@ export interface SourcePropsGlbResult {
   requirements: SourceLightingRequirement[];
   geometryBytes: number;
   vertices: number;
+  /** Logical metadata bytes reserved against maxMetadataBytes (separate from geometry). */
+  metadataBytes: number;
   /** Borrowed originals remain available even for blocked/missing placements.
    * Retaining native MDL/ANI is explicitly NOT sampled animation support. */
   original: SourceProps;
@@ -64,9 +76,11 @@ export async function appendSourceProps(glb: SourceGlb, materials: SourceMateria
   sourceAbort(options.signal);
   for (const value of [options.maxGeometryBytes, options.maxVertices])
     if (!Number.isSafeInteger(value) || value < 1) throw new Error('Invalid Source prop geometry limit');
+  const maxMetadataBytes = options.maxMetadataBytes ?? 128 * 1024 ** 2;
+  if (!Number.isSafeInteger(maxMetadataBytes) || maxMetadataBytes < 1) throw new Error('Invalid Source prop metadata limit');
   if (props.frame.yaw !== world.frame.yaw || props.frame.origin.some((v, i) => v !== world.frame.origin[i]) || props.frame.metresPerUnit !== METRES || world.frame.metresPerUnit !== METRES)
     throw new Error('Source props and world must share the same native frame');
-  const result: SourcePropsGlbResult = { placements: [], requirements: [], geometryBytes: 0, vertices: 0,
+  const result: SourcePropsGlbResult = { placements: [], requirements: [], geometryBytes: 0, metadataBytes: 0, vertices: 0,
     original: props, animationSamples: 0, animationBytes: 0, animationInputBytes: 0 };
   let sprites = 0, ropes = 0;
   for (const entity of props.entities) {
@@ -144,6 +158,12 @@ export async function appendSourceProps(glb: SourceGlb, materials: SourceMateria
       throw new Error('Source prop geometry limit exceeded');
     result.geometryBytes += bytes; result.vertices += vertices;
   };
+  const reserveMetadata = (bytes: number) => {
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > maxMetadataBytes - result.metadataBytes)
+      throw new Error('Source prop metadata limit exceeded');
+    result.metadataBytes += bytes;
+  };
+  const boneNameMetadata = new Map<SourceStudioModel, number>();
   const geometry = new Map<SourceStudioMesh, { attributes: Record<string, number>; indices: number }>();
   const inverseBinds = new Map<SourceStudioModel, number>();
   const variants = new Map<string, number>();
@@ -202,8 +222,10 @@ export async function appendSourceProps(glb: SourceGlb, materials: SourceMateria
     const cached = variants.get(key); if (cached !== undefined) return cached;
     const base = glb.json.materials[baseIndex];
     const factor = base.pbrMetallicRoughness?.baseColorFactor ?? [1, 1, 1, 1];
+    // The base factor is linear; byte modulation is a gamma-space colour that
+    // multiplies Source's gamma tint before linearization, so linearize it too.
     const variant: SourceGltfRoot['materials'][number] = { ...base,
-      pbrMetallicRoughness: { ...base.pbrMetallicRoughness, baseColorFactor: factor.map((v, i) => v * (i === 3 ? alpha : modulation[i] / 255)) },
+      pbrMetallicRoughness: { ...base.pbrMetallicRoughness, baseColorFactor: factor.map((v, i) => v * (i === 3 ? alpha : sourceLinearColor(modulation[i] / 255))) },
       extras: { ...base.extras, sourceVertexLighting: 6 },
     };
     if (alpha < 1 && variant.alphaMode !== 'MASK') variant.alphaMode = 'BLEND';
@@ -258,6 +280,26 @@ export async function appendSourceProps(glb: SourceGlb, materials: SourceMateria
     if (!cache) block('prop-light-cache', model.path, `Placement ${placement.index}: actual sampled PropLightCache is required; no ambient substitute was emitted.`);
     const cube = options.cubeForPlacement?.(placement)?.slice();
     if (cube && (cube.length !== 6 || cube.some(i => !Number.isSafeInteger(i) || i < 0 || i >= glb.json.textures.length))) throw new Error('Invalid actual Source prop cube binding');
+    // Charge every retained JSON record below before it is built: placement node,
+    // extras and mesh records, primitives, bone nodes/extras/children, skin joints,
+    // authored leaf IDs and their visibility clusters. The aggregate counter makes
+    // placements that alias one leaf array or model pay for every emitted copy.
+    const name = `${placement.classname}:${placement.index}:${model.name}`;
+    let boneNames = boneNameMetadata.get(model);
+    if (boneNames === undefined) {
+      boneNames = 0; for (const bone of model.bones) boneNames += metaString(bone.name);
+      boneNameMetadata.set(model, boneNames);
+    }
+    const staticLeaves = placement.kind === 'static-prop' ? placement.leaves.length : 0;
+    const optionalNumbers = (placement.dxLevels?.length ?? 0) + (placement.cpuLevels?.length ?? 0) + (placement.gpuLevels?.length ?? 0)
+      + (placement.lightmapResolution?.length ?? 0);
+    reserveMetadata(PLACEMENT_RECORDS * META_RECORD + PLACEMENT_NUMBERS * META_NUMBER
+      + 3 * metaString(name) + metaString(model.path) + metaString(placement.classname) + metaString(placement.render.renderFx)
+      + metaString(animation?.defaultAnimation) + metaString(animation?.sequence)
+      + (placement.leaves.length + 2 * staticLeaves + optionalNumbers) * META_NUMBER
+      + (cache ? CACHE_METADATA : 0) + (cube ? 6 * META_NUMBER : 0)
+      + selected.length * (3 * META_RECORD + 8 * META_NUMBER)
+      + model.bones.length * (3 * META_RECORD + 12 * META_NUMBER + metaString(name)) + 2 * boneNames);
     const primitives: Primitive[] = [];
     const emittedMeshes: SourceStudioMesh[] = [];
     for (const mesh of selected) {
@@ -278,7 +320,6 @@ export async function appendSourceProps(glb: SourceGlb, materials: SourceMateria
       if (!leafView || leaf >= leafView.byteLength / leafStride) throw new Error('Source static prop leaf out of range');
       const cluster = leafView.getUint16(leaf * leafStride + 4, true); if (cluster !== 65535) clusters.add(cluster);
     }
-    const name = `${placement.classname}:${placement.index}:${model.name}`;
     const node = glb.json.nodes.length;
     const extras: Record<string, unknown> = {
       sourceProp: model.path, sourceClass: placement.classname, skin: placement.skin, body: placement.body, solid: placement.solid,
