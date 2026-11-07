@@ -327,7 +327,7 @@ function repeatedFaces(worldFaces, modelFaces = 0) {
   }));
   return f;
 }
-const admitted = promise => promise.then(() => true, error => { if (!(error instanceof RangeError)) throw error; return false; });
+const admitted = async attempt => { try { await attempt(); return true; } catch (error) { if (!(error instanceof RangeError)) throw error; return false; } };
 /** Smallest limit in (fails, passes] that admits the attempt. */
 async function smallestAdmitted(fails, passes, attempt) {
   while (passes - fails > 1) { const middle = Math.floor((fails + passes) / 2); if (await attempt(middle)) passes = middle; else fails = middle; }
@@ -361,8 +361,8 @@ async function smallestAdmitted(fails, passes, attempt) {
 }
 {
   const bsp = await readSourceBsp(thinFixture(0.25).blob());
-  const worldBytes = await smallestAdmitted(0, 1 << 24, limit => admitted(decodeSourceWorld(bsp, { maxGeometryBytes: limit })));
-  const bothBytes = await smallestAdmitted(worldBytes, 1 << 24, async limit => admitted(entityCollision(await decodeSourceWorld(bsp, { maxGeometryBytes: limit }))));
+  const worldBytes = await smallestAdmitted(0, 1 << 24, limit => admitted(() => decodeSourceWorld(bsp, { maxGeometryBytes: limit })));
+  const bothBytes = await smallestAdmitted(worldBytes, 1 << 24, limit => admitted(async () => entityCollision(await decodeSourceWorld(bsp, { maxGeometryBytes: limit }))));
   assert.ok(bothBytes > worldBytes, 'Late entity hulls are charged to the same geometry lifetime');
   await assert.rejects(entityCollision(await decodeSourceWorld(bsp, { maxGeometryBytes: worldBytes })), RangeError);
   assert.equal((await entityCollision(await decodeSourceWorld(bsp, { maxGeometryBytes: bothBytes }))).collision.length, 1);
@@ -379,11 +379,13 @@ async function smallestAdmitted(fails, passes, attempt) {
   assert.ok(Math.abs(extents[1][1] - 1) < 1e-12 && Math.abs(extents[1][0] - (1 - 0.25 * 0.0254)) < 1e-12, 'A distinct placement keeps its own transform');
   assert.deepEqual(extents[2], extents[0]);
   assert.notStrictEqual(result.collision[2].vertices, result.collision[0].vertices, 'A repeated alias owns its own placed vertices');
-  const minimum = brushes => smallestAdmitted(0, 1 << 24, async limit => admitted(assemble(await decodeSourceWorld(bsp, { maxGeometryBytes: limit }), brushes)));
-  const one = await minimum([funcWall]), two = await minimum([funcWall, funcWall]), three = await minimum([funcWall, shifted, funcWall]);
+  const minimum = brushes => smallestAdmitted(0, 1 << 24, limit => admitted(async () => assemble(await decodeSourceWorld(bsp, { maxGeometryBytes: limit }), brushes)));
+  // Retained placed hulls must exceed the earlier transient hull-construction peak.
+  const prefix = Array.from({ length: 32 }, () => funcWall);
+  const one = await minimum([...prefix, funcWall]), two = await minimum([...prefix, funcWall, funcWall]), three = await minimum([...prefix, funcWall, shifted, funcWall]);
   assert.ok(two - one >= result.collision[0].vertices.byteLength, 'A repeated placement pays at least its placed vertices');
   assert.equal(three - two, two - one, 'Aliased and distinct placements each pay the same independent quota');
-  await assert.rejects(assemble(await decodeSourceWorld(bsp, { maxGeometryBytes: two }), [funcWall, funcWall, funcWall]), RangeError,
+  await assert.rejects(assemble(await decodeSourceWorld(bsp, { maxGeometryBytes: two }), [...prefix, funcWall, funcWall, funcWall]), RangeError,
     'A third placement beyond the shared quota is refused before its copy is allocated');
 }
 {
