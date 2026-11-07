@@ -8,7 +8,7 @@ import type { PackInfo, PolicyInfo } from "../sim/protocol";
 import { TERRAINS, type MapEntry, type TerrainName } from "../sim/terrain";
 import type { SceneMode } from "../player/types";
 import { mapEntryLabel, TERRAIN_LABELS } from './launch';
-import { POLICY_ACTIVITIES, policyPresentation } from './policy-names';
+import { policyPresentation, policySections, policyVariantRank } from './policy-names';
 import { TerrainPicker } from './terrain-picker';
 import { VisualPicker } from './visual-picker';
 import { previewImage, staticPreviewOptions, policyPreview } from './preview-catalog';
@@ -121,7 +121,7 @@ export class Panel {
   private screenshotBtn!:HTMLButtonElement;
   private screenshotInfo!:HTMLElement;
   private recInfo!: HTMLElement;
-  private recordInfo = "Recording and playback shortcuts: Help.";
+  private recordInfo = "No take yet.";
   private navigationNotice: string | null = null;
   private timelineBtn!: HTMLButtonElement;
   private hoistBtn!: HTMLButtonElement;
@@ -143,6 +143,8 @@ export class Panel {
   private packCount = 0;
   private reviewing = false;
   private liveSections: HTMLElement[] = [];
+  /** Live sections inside the Play window share its single scope line instead of repeating their own. */
+  private playSections = new WeakSet<HTMLElement>();
   private liveControls: (HTMLButtonElement | HTMLInputElement | HTMLSelectElement)[] = [];
   private liveDisabled = new WeakMap<HTMLElement, boolean>();
   private reviewScope!: HTMLElement;
@@ -164,8 +166,8 @@ export class Panel {
     root.append(el("header.p-head", null,
       el("h1", null, "Play"), this.mgrToggleBtn));
     this.updateMgrToggle();
+    // One scope line for the whole Play window: LIVE, or why its live controls are locked.
     this.reviewScope = el('div.blk.sub', { role: 'note' });
-    this.reviewScope.hidden = true;
     root.append(this.reviewScope);
 
     // setup: robot → terrain → policy
@@ -205,10 +207,12 @@ export class Panel {
     setup.append(el('div', { style: 'display:flex;align-items:center;gap:8px' }, policyDescription, this.runAgainBtn));
     root.append(setup);
     this.liveSections.push(setup);
+    this.playSections.add(setup);
 
     // FSM state: segmented control
     const stateBlk = block(root, "State", el("span", null, el("kbd", null, "0"), "–", el("kbd", null, "4")));
     stateBlk.dataset.robotOnly = "";
+    this.playSections.add(stateBlk);
     const seg = el("div.seg", { role: "radiogroup", "aria-label": "FSM state" });
     for (const s of STATES) {
       const b = el("button", { type: "button", role: "radio", "aria-checked": "false", title: STATE_UI[s].title },
@@ -241,19 +245,18 @@ export class Panel {
     const stopButton = button("Stop", { key: "Space", title: "Zero the command and re-arm the gamepad (Space)", onclick: cb.onZeroCmd });
     const recenterButton = button("Recenter", { key: "C", title: "Recenter the camera (C)", onclick: cb.onRecenter });
     this.liveControls.push(resetButton, stopButton, recenterButton, this.hoistBtn, this.noclipBtn);
-    sim.append(el('div.sub', null, 'LIVE'));
+    this.hoistBtn.dataset.robotOnly = "";
+    this.noclipBtn.dataset.robotOnly = "";
+    // Flight keys live in the Flight HUD and Help; Player scenes keep only Flashlight here.
     sim.append(
       el("div.row", { "data-robot-only": "" },
         resetButton,
         recenterButton,
         stopButton),
-      el("div.row", { "data-robot-only": "" },
+      el("div.row.wrap", null,
         this.hoistBtn,
-        this.noclipBtn),
-      el("div.row", null,
-        this.flashlightBtn,
-        this.screenshotBtn),this.screenshotInfo,
-      el("div.sub.navigation-help", { "data-robot-only": "" }, "Arrows or numpad start camera flight. Numpad 8/2/4/6 move, 9/3 up/down, 5 stops; +/− change speed. Drag to look; Shift faster, Backslash for precision, X for level flight. N exits."));
+        this.noclipBtn,
+        this.flashlightBtn));
 
     // recording: motion + inputs into a take → timeline → video / Blender export
     const rec = block(root, "Recording", el("kbd", null, "V"));
@@ -264,6 +267,8 @@ export class Panel {
     this.timelineBtn = button("Timeline", { icon: "timeline", title: "Open the last take on the timeline",
                                             onclick: cb.onOpenTimeline });
     this.timelineBtn.disabled = true;
+    // The take line below says why Timeline is unavailable ("No take yet.") and what it would open.
+    this.timelineBtn.setAttribute("aria-describedby", "record-status");
     const takeInput = el("input", { type: "file", accept: ".zip,.take.zip", style: "display:none" });
     takeInput.onchange = () => {
       const f = takeInput.files?.[0];
@@ -286,6 +291,7 @@ export class Panel {
     this.remoteEl = el("section.blk", { style: "display:none", "data-robot-only": "" });
     root.append(this.remoteEl);
     this.liveSections.push(this.remoteEl);
+    this.playSections.add(this.remoteEl);
 
     // kinematic reference clip (mimic)
     const clip = el("section.blk", { "aria-label": "Reference clip", "data-robot-only": "" });
@@ -316,43 +322,13 @@ export class Panel {
     this.statusEl = el("div", { id: "status" });
     st.append(this.statusEl);
 
-    // gamepad debug + key reference (collapsed)
+    // gamepad debug (collapsed); the key and gamepad reference is Help (?)
     const dbg = el("details.fold", { "data-robot-only": "" }, el("summary", null, "Gamepad debug"));
     dbg.dataset.workspace = 'inspector';
     this.padDebugEl = el("div.pad-debug");
     dbg.append(el("div.fold-body", null, this.padDebugEl));
     root.append(dbg);
     this.padDebugOpen = () => dbg.open;
-
-    const keys = el("details.fold", { "data-robot-only": "" }, el("summary", null, "Live keys and gamepad"));
-    keys.dataset.workspace = 'inspector';
-    const k = (...ks: string[]) => {
-      const dt = el("dt");
-      ks.forEach((x, i) => { if (i) dt.append(" "); dt.append(x === "/" ? "/" : el("kbd", null, x)); });
-      return dt;
-    };
-    keys.append(el("div.fold-body", null,
-      el("dl.keys", null,
-        k("W", "A", "S", "D"), el("dd", null, "Hold to move forward / turn"),
-        k("Q", "E"), el("dd", null, "Hold to strafe"),
-        k("Shift"), el("dd", null, "Full speed while held (default half)"),
-        k("0", "/", "4"), el("dd", null, "FSM state"),
-        k("[", "]"), el("dd", null, "Previous / next policy"),
-        k("G", "/", "Shift+G"), el("dd", null, "Next / previous move"),
-        k("R"), el("dd", null, "Reset"),
-        k("C"), el("dd", null, "Recenter camera"),
-        k("H"), el("dd", null, "Toggle hoist"),
-        k("N"), el("dd", null, "Toggle noclip: drag look, WASD fly, E / Q up / down"),
-        k("Arrows"), el("dd", null, "Start camera flight and move"),
-        k("Numpad"), el("dd", null, "8/2 forward/back, 4/6 left/right, 9/3 up/down, 5 stop"),
-        k("F"), el("dd", null, "Toggle camera flashlight"),
-        k("V"), el("dd", null, "Start / stop recording a take"),
-        k("Space"), el("dd", null, "Stop and re-arm the pad")),
-      el("p.keys-note", null,
-        "Gamepad: left stick vx / vy, right stick yaw. LT+Up stance, LT+B damping, RT+A policy, " +
-        "RT+Left / Right switch policy. LB / RB / LT / RT act as the robot remote's L1 / R1 / L2 / R2; " +
-        "a policy's own move combos take precedence over the app combo they shadow.")));
-    root.append(keys);
 
     // Keep the canonical gallery roots, inputs and capture state outside the advanced panels.
     const actions = el("section", { id: "scene-actions", "aria-label": "Scene actions" });
@@ -373,7 +349,8 @@ export class Panel {
     document.getElementById("viewport")!.after(actions);
 
     // Move the existing navigation buttons, retaining ids and wireNavigation's handlers.
-    const tools = el("details.fold", null, el("summary", null, "Workspace tools"));
+    // Window chrome, not scene settings: FloatingWorkspace places it after the Scene folds.
+    const tools = el("details.fold", { "data-workspace": "tools" }, el("summary", null, "Workspace tools"));
     const toolsBody = el("div.fold-body.workspace-tools");
     for (const id of ["reset-workspace", "toggle-inspector", "toggle-panels", "fullscreen"]) {
       toolsBody.append(document.getElementById(id)!);
@@ -393,18 +370,18 @@ export class Panel {
     this.flashlightKey.hidden = reviewing;
   }
 
-  /** Scope labels and review locks for live sections; rebuilt sections reuse it without touching the pictured pickers. */
+  /** Scope lines and review locks for live sections; rebuilt sections reuse it without touching the pictured pickers. */
   private applyLiveScope(): void {
     const reviewing = this.reviewing;
     const reason = reviewing ? 'LIVE · Recorded motion is fixed. Close timeline to change live settings.' : 'LIVE';
     this.reviewScope.textContent = reason;
-    this.reviewScope.hidden = !reviewing;
-    const playBody = this.reviewScope.parentElement!;
     for (const section of this.liveSections) {
-      let label = section.querySelector<HTMLElement>(':scope > .live-scope');
-      if (!label) { label = el('div.sub.live-scope', { style: 'grid-column:1 / -1' }); section.prepend(label); }
-      label.textContent = playBody.contains(section) ? 'LIVE' : reason;
-      label.title = reviewing ? reason : '';
+      // Surfaces outside the Play window (scene dock, Reference clip, Policy packs) carry their own line.
+      if (!this.playSections.has(section)) {
+        let label = section.querySelector<HTMLElement>(':scope > .live-scope');
+        if (!label) { label = el('div.sub.live-scope', { style: 'grid-column:1 / -1' }); section.prepend(label); }
+        label.textContent = reason;
+      }
       for (const control of section.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input, select, button')) {
         if (reviewing) {
           if (!this.liveDisabled.has(control)) this.liveDisabled.set(control, control.disabled);
@@ -577,7 +554,7 @@ export class Panel {
     this.cb.onPolicy(target);
   }
 
-  setPolicies(entries: PolicyInfo[], active: string, robot = "") {
+  setPolicies(entries: PolicyInfo[], active: string, robot = "", robotSpec = "") {
     this.policySel.innerHTML = "";
     const description = document.getElementById('policy-description')!;
     if (!entries.length) {
@@ -593,25 +570,11 @@ export class Panel {
       this.syncRunAgain();
       return;
     }
-    // Activity sections first (one Locomotion section across R1 / R1 Air / R1 EDU); within a section
-    // Air-only, then Air + EDU, then EDU-only. The variant, canonical name and FSM State are card detail.
+    // Activity sections (one Locomotion section across R1 / R1 Air / R1 EDU); within a section the policies
+    // for the running Air or EDU body first, then the rest. The variant, canonical name and FSM State are card detail.
     const fam = robot.toUpperCase() || "G1";
-    const variant = (e: PolicyInfo): [number, string] => {
-      const m = e.models;
-      if (!m?.length) return [3, ""];
-      const air = m.includes("air"), edu = m.includes("edu");
-      return air && !edu ? [0, `${fam} Air`] : air && edu ? [1, `${fam} Air + EDU`] : [2, `${fam} EDU`];
-    };
-    const ordered = [...entries].sort((a, b) =>
-      variant(a)[0] - variant(b)[0] || (a.fsmId ?? 1e9) - (b.fsmId ?? 1e9) || a.name.localeCompare(b.name));
-    const byGroup = new Map<string, PolicyInfo[]>();
-    for (const e of ordered) {
-      const g = policyPresentation(e.name).category;
-      if (!byGroup.has(g)) byGroup.set(g, []);
-      byGroup.get(g)!.push(e);
-    }
-    const activities: readonly string[] = POLICY_ACTIVITIES;
-    for (const [g, list] of [...byGroup].sort((a, b) => activities.indexOf(a[0]) - activities.indexOf(b[0]))) {
+    const variants = [`${fam} Air`, `${fam} Air + EDU`, `${fam} EDU`, ""];
+    for (const [g, list] of policySections(entries, robotSpec)) {
       const grp = document.createElement("optgroup");
       grp.label = g;
       for (const e of list) {
@@ -619,7 +582,7 @@ export class Panel {
         const option = new Option(presentation.title, e.name);
         option.dataset.label=presentation.title;
         option.dataset.previewRobot=e.previewRobot;
-        option.dataset.detail=[variant(e)[1], e.name, e.fsmId===undefined?'':`State ${e.fsmId}`].filter(Boolean).join(' · ');
+        option.dataset.detail=[variants[policyVariantRank(e.models)], e.name, e.fsmId===undefined?'':`State ${e.fsmId}`].filter(Boolean).join(' · ');
         option.title = presentation.description;
         grp.appendChild(option);
       }

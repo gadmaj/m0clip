@@ -1,11 +1,11 @@
 /** Chromium: real noclip roll -> take -> review -> viewport PNG and animated GLB camera. */
-const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),fs=require('node:fs');
-(async()=>{const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});try{
+const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),fs=require('node:fs'),{readyApp}=require('./attach-ready-app.cjs');
+(async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{
  const page=await browser.newPage({viewport:{width:1280,height:800},deviceScaleFactor:.25}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
- const expose=source=>require('./expose-app.cjs')(source).replaceAll('this.view.render()','void 0');
- for(const pattern of['**/src/main.ts*','**/assets/main-*.js'])await page.route(pattern,async r=>{const response=await r.fetch();await r.fulfill({response,body:expose(await response.text())})});
- await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page,{terrain:'flat'}));await page.waitForFunction(()=>window.__app?.lastFrame&&document.getElementById('overlay').classList.contains('hidden'),null,{timeout:120000});
- await page.evaluate(()=>{const a=window.__app;window.__draw=a.view.renderWith.bind(a.view);a.view.renderWith=()=>{};a.view.renderFramed=()=>({x:0,y:0,w:1,h:1});a.setNoclip(true);window.__initial=a.view.camera.quaternion.toArray();a.startRecording()});
+ // The release chunk stays byte-identical; the real Ready App is attached through CDP. Only the App's
+ // own viewport draws (SceneView.render, called from the live tick and review) are skipped.
+ await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page,{terrain:'flat'}));await readyApp(page);
+ await page.evaluate(()=>{const a=window.__app;a.view.render=()=>{};window.__draw=a.view.renderWith.bind(a.view);a.view.renderWith=()=>{};a.view.renderFramed=()=>({x:0,y:0,w:1,h:1});a.setNoclip(true);window.__initial=a.view.camera.quaternion.toArray();a.startRecording()});
  await page.waitForFunction(()=>window.__app.rec?.frames>5);
  await page.locator('#viewport canvas').focus();await page.keyboard.down('o');
  await page.waitForFunction(()=>{const a=window.__app,q=a.view.camera.quaternion,s=window.__initial;return 2*Math.acos(Math.min(1,Math.abs(q.x*s[0]+q.y*s[1]+q.z*s[2]+q.w*s[3])))>.4});

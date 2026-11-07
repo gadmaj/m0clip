@@ -2,19 +2,21 @@
 const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const {chooseVisual}=require('./choose-visual.cjs');
-(async()=>{const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});try{
+const {readyApp}=require('./attach-ready-app.cjs');
+(async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{
  const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:.5}),errors=[],requests=[];
  page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});page.on('request',r=>{if(r.url().includes('/source-robots/'))requests.push(r.url())});
- for(const pattern of ['**/src/main.ts*','**/assets/main-*.js'])await page.route(pattern,async route=>{const response=await route.fetch(),original=await response.text(),body=require('./expose-app.cjs')(original).replaceAll('this.view.render()','void 0');await route.fulfill({response,body})});
  const base=process.env.BASE_URL||'http://127.0.0.1:5176',output=path.join(os.homedir(),'.local/state/unitree-renderer/robot-modules');await fs.mkdir(output,{recursive:true});
- const ready=()=>page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});
+ // The release chunk stays byte-identical; the real Ready App is attached through CDP. Only the App's
+ // own viewport draws (live tick and review) are skipped; the checks below draw explicitly.
+ const ready=async()=>{await readyApp(page);await page.evaluate(()=>{const v=window.__app.view;window.__render=v.render.bind(v);v.render=()=>{};});};
  await page.goto(base+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await ready();await page.getByText('Robot appearance',{exact:true}).click();
  const before=await page.evaluate(()=>{const a=window.__app;a.setHoist(true);return{ngeom:a.model.ngeom,robot:a.model.robot};});
  const snapshots=[];
  for(const style of ['boxy','round','prism']) {
   await chooseVisual(page,'character',style);
   const proof=await page.evaluate(()=>{
-   const a=window.__app,v=a.view;v.camera.position.set(1.6,-2.4,1.5);v.controls.target.set(0,0,.7);v.camera.lookAt(v.controls.target);v.render();
+   const a=window.__app,v=a.view;v.camera.position.set(1.6,-2.4,1.5);v.controls.target.set(0,0,.7);v.camera.lookAt(v.controls.target);window.__render();
    const parts=[...v.parts.values()].filter(p=>p.mesh.userData.robotModule);
    return{ngeom:a.model.ngeom,robot:a.model.robot,parts:parts.length,styles:[...new Set(parts.map(p=>p.mesh.userData.robotModule.style))],appearance:v.getAppearance()};
   });
@@ -38,9 +40,9 @@ const {chooseVisual}=require('./choose-visual.cjs');
   await page.waitForFunction(robot=>window.__app.model?.robot===robot&&window.__app.viewModel?.robot===robot&&document.querySelector('#overlay').classList.contains('hidden'),robot,{timeout:120000});
   const proof=await page.evaluate(()=>{
    const a=window.__app,v=a.view;const modules=Object.fromEntries(['head','torso','arms','hands','legs','feet'].map(r=>[r,'round']));
-   a.look.restoreAppearance(a.viewModel.robot,{...v.getAppearance(),modules});v.render();
+   a.look.restoreAppearance(a.viewModel.robot,{...v.getAppearance(),modules});window.__render();
    const count=[...v.parts.values()].filter(p=>p.mesh.userData.robotModule).length;
-   a.look.restoreAppearance(a.viewModel.robot,{...v.getAppearance(),modules:{}});v.render();
+   a.look.restoreAppearance(a.viewModel.robot,{...v.getAppearance(),modules:{}});window.__render();
    return{robot:a.model.robot,count,restored:[...v.parts.values()].every(p=>!p.mesh.userData.robotModule)};
   });assert.ok(proof.count>5&&proof.restored);crossRobot.push(proof);
  }

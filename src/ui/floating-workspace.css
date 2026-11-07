@@ -80,8 +80,7 @@ body.x-open #scene-actions { display: none; }
 .floating-window .blk:last-child, .floating-window details.fold:last-child { border-bottom: 0; }
 .floating-window details.fold > summary { padding: 13px 14px; }
 .floating-window .fold-body { padding: 0 14px 14px; }
-.floating-window .sub, .floating-window .keys-note, .floating-window .pm-note { line-height: 1.55; }
-.floating-window .navigation-help { display: none; } /* Full reference remains in Keys and gamepad. */
+.floating-window .sub, .floating-window .pm-note { line-height: 1.55; }
 .floating-window .p-head { background: transparent; }
 .floating-window .p-head h1 { white-space: normal; }
 .floating-window .floating-body > .p-head h1 { display: none; }

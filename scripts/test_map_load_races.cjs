@@ -1,6 +1,7 @@
 /** Chromium regression: concurrent loads of one map source retain only the current scene. */
 const assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const {readyApp}=require('./attach-ready-app.cjs');
 const {buildSync}=require('esbuild');
 const pngModule={exports:{}};
 new Function('module','exports','require',buildSync({entryPoints:['src/record/png.ts'],bundle:true,platform:'node',format:'cjs',write:false}).outputFiles[0].text)(pngModule,pngModule.exports,require);
@@ -18,12 +19,9 @@ function fixture(id){
   textures:[{source:0},{source:1}],images:[{uri:'base-'+id+'.png'},{uri:'frame-'+id+'.png'}]};
 }
 (async()=>{
- const browser=await chromium.launch({headless:false,executablePath:process.env.CHROMIUM_PATH||undefined,args:['--no-sandbox','--ozone-platform=x11']});
+ const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH||undefined,args:['--no-sandbox','--ozone-platform=x11']});
  try{
   const page=await browser.newPage({deviceScaleFactor:.25}),errors=[];page.on('pageerror',e=>errors.push(e.message));
-  for(const pattern of ['**/src/main.ts*','**/assets/main-*.js'])await page.route(pattern,async route=>{
-   const response=await route.fetch();await route.fulfill({response,body:require('./expose-app.cjs')(await response.text())});
-  });
   await page.addInitScript(()=>localStorage.setItem('ume-prefs',JSON.stringify({robot:'r1',terrain:'flat'})));
   if(process.env.DIRECT_SCENE){
    await page.route('**/__map-race-test',route=>route.fulfill({contentType:'text/html',body:'<style>html,body,#view{width:100%;height:100%;margin:0}</style><div id="view"></div><script type="module">import {SceneView} from "/src/render/scene.ts";import {mapSource} from "/src/maps/source.ts";window.__app={view:new SceneView(document.querySelector("#view")),sourceForTerrain:mapSource};</script>'}));
@@ -31,7 +29,8 @@ function fixture(id){
   }else{
    await page.goto(base+'/?plain&body=stock');
    await require('./launch-scene.cjs').launchScene(page);
-   await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});
+   // The release chunk stays byte-identical; the real Ready App is attached through CDP.
+   await readyApp(page);
   }
   let request=0,holdWorld=false,holdFrame=false,fail=false,rejectCurrent=false,held,notifyHeld;
   let waiting=new Promise(resolve=>notifyHeld=resolve);
@@ -71,7 +70,10 @@ function fixture(id){
     for(const resource of v.sourceMaterials.resources)resource.addEventListener?.('dispose',()=>window.__activeDisposals++);
    });
    const expected=request;
-   if(mode!=='world')await held();await page.evaluate(()=>window.__oldLoad.catch(error=>{if(error.name!=='AbortError'&&!String(error).includes('texture'))throw error;}));
+   if(mode!=='world')await held();
+   const retired=await page.evaluate(()=>window.__oldLoad.then(()=>({rejected:false}),error=>({rejected:true,name:error.name})));
+   if(mode==='failed-texture')assert.equal(retired.rejected,true,'The deliberately missing retired texture must reject its own load');
+   else if(retired.rejected)assert.equal(retired.name,'AbortError','A healthy retired load may only reject as cancellation');
    const proof=await page.evaluate(()=>{
     const v=window.__app.view,c=v.sourceMaterials;c.update(.5);
     return {sameScene:v.terrainObject===window.__active,sameContext:c===window.__activeContext,id:v.terrainObject.userData.loadGeneration,
@@ -81,7 +83,7 @@ function fixture(id){
    });
    assert.equal(proof.id,expected);assert.ok(proof.sameScene&&proof.sameContext&&proof.oldDisposed&&proof.frame);assert.equal(proof.scenes,1);
    assert.equal(proof.sky,1);assert.equal(proof.sprites,1);assert.equal(proof.details,1);assert.equal(proof.activeDisposals,0);assert.equal(proof.oldResources,0);assert.equal(proof.animated,1);assert.equal(proof.clock,.5);
-   proofs.push({mode,...proof});await page.evaluate(()=>window.__app.view.setTerrainVisual(null));
+   proofs.push({mode,retired,...proof});await page.evaluate(()=>window.__app.view.setTerrainVisual(null));
   }
   rejectCurrent=true;
   const failure=await page.evaluate(async()=>{

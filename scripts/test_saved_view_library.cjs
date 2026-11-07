@@ -1,20 +1,22 @@
 /** Chromium: searchable view library, editing, reversible deletion and storage failures. */
-const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict');
-(async()=>{const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});try{
+const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),{readyApp}=require('./attach-ready-app.cjs');
+(async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{
  const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:1}),errors=[];page.on('pageerror',e=>errors.push(e.message));
- const expose=source=>require('./expose-app.cjs')(source).replaceAll('this.renderLoop()','void 0');
- for(const pattern of['**/src/main.ts*','**/assets/main-*.js'])await page.route(pattern,async route=>{const response=await route.fetch();await route.fulfill({response,body:expose(await response.text())})});
- await page.addInitScript(()=>localStorage.setItem('ume-prefs',JSON.stringify({robot:'r1',terrain:'flat'})));
+ await require('./render-on-demand.cjs')(page);await page.addInitScript(()=>localStorage.setItem('ume-prefs',JSON.stringify({robot:'r1',terrain:'flat'})));
  const base=process.env.BASE_URL||'http://127.0.0.1:5176';
- const ready=()=>page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});
+ // The release chunk stays byte-identical; the real Ready App is attached through CDP after launch.
+ const ready=()=>readyApp(page);
+ // Compact layouts show one advanced panel at a time; wide layouts may keep Scene collapsed.
+ const showScene=async()=>{const compact=page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}),expand=page.getByRole('button',{name:'Expand Scene panel',exact:true});if(await compact.isVisible())await compact.click();else if(await expand.isVisible())await expand.click();};
  await page.goto(base+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await ready();
  const original=await page.evaluate(()=>{
   const a=window.__app,view=a.captureView();view.position=[2,3,4];view.target=[0,0,1];
   const legacy={...view};delete legacy.orientation;delete legacy.appearance;delete legacy.sourceHead;delete legacy.flight;delete legacy.noclip;
   const bookmarks=[{name:'Conveyor lighting study',view:{...view,terrain:'map:nt_ghost_ctg'}},{name:'Roof entrance / 入口 / مدخل',view:legacy},{name:'Long title '+ 'reference '.repeat(7),view}];
-  localStorage.setItem('ume-saved-views-v1',JSON.stringify(bookmarks));return bookmarks;
+  // Compare against what storage holds: JSON drops undefined view fields such as localMap.
+  const stored=JSON.stringify(bookmarks);localStorage.setItem('ume-saved-views-v1',stored);return JSON.parse(stored);
  });
- await page.reload().then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await ready();{const expandScene=page.getByRole('button',{name:'Expand Scene panel',exact:true});if(await expandScene.isVisible())await expandScene.click();}await page.getByText('Saved views',{exact:true}).click();
+ await page.reload().then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await ready();await showScene();await page.getByText('Saved views',{exact:true}).click();
  const search=page.getByRole('searchbox',{name:'Search saved views'}),list=page.getByRole('list',{name:'Saved views'}),name=page.getByLabel('View name',{exact:true});
  assert.equal(await list.getByRole('listitem').count(),3);assert.equal(await page.getByRole('button',{name:'Undo delete',exact:true}).isVisible(),false);
  await search.fill('GHOST .bsp R1');assert.equal(await list.getByRole('listitem').count(),1);assert.ok(await list.getByText('nt_ghost_ctg.bsp · R1',{exact:true}).count());
@@ -55,7 +57,7 @@ const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=requ
  if(!process.env.SKIP_SCREENSHOTS){
   await name.fill('');await page.evaluate(()=>{const e=window.__app.explore;e.link.hidden=true;e.showMessage('');});
   await search.scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-library-desktop.png'});
-  await page.setViewportSize({width:390,height:844});await search.scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-library-mobile.png'});
+  await page.setViewportSize({width:390,height:844});await showScene();await search.scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-library-mobile.png'});
  }
  const layout=await list.evaluate(element=>({scrollWidth:element.scrollWidth,width:element.clientWidth,maxHeight:getComputedStyle(element).maxHeight,buttons:[...element.querySelectorAll('.saved-view-actions .btn')].map(b=>b.getBoundingClientRect().height)}));assert.ok(layout.scrollWidth<=layout.width);if(!process.env.SKIP_SCREENSHOTS)assert.ok(layout.buttons.every(h=>h>=44));
  const persisted=await page.evaluate(()=>localStorage.getItem('ume-saved-views-v1'));
@@ -69,6 +71,6 @@ const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=requ
   const built=performance.now();e.search.value='inspection 0499 ghost .bsp';e.renderBookmarks();const filtered=performance.now(),matches=e.list.querySelectorAll('[role=listitem]').length;
   e.bookmarks=original;e.search.value='';e.renderBookmarks();return{size:500,matches,renderMs:built-start,searchMs:filtered-built};
  });assert.equal(largeLibrary.matches,1);
- await page.reload().then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await ready();{const expandScene=page.getByRole('button',{name:'Expand Scene panel',exact:true});if(await expandScene.isVisible())await expandScene.click();}await page.getByText('Saved views',{exact:true}).click();assert.ok(await page.getByRole('button',{name:'Conveyor / 台 / سقف',exact:true}).count());assert.ok(await page.getByRole('button',{name:'Keyboard saved view',exact:true}).count());assert.equal(await page.getByRole('button',{name:'Partial restore',exact:true}).count(),0);
+ await page.reload().then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await ready();await showScene();await page.getByText('Saved views',{exact:true}).click();assert.ok(await page.getByRole('button',{name:'Conveyor / 台 / سقف',exact:true}).count());assert.ok(await page.getByRole('button',{name:'Keyboard saved view',exact:true}).count());assert.equal(await page.getByRole('button',{name:'Partial restore',exact:true}).count(),0);
  assert.deepEqual(errors,[]);console.log(JSON.stringify({search:true,filenames:true,rename:true,cancel:true,undo:true,legacy:true,storageFailure:true,keyboardSave:true,blankName:true,followHint:true,liveLock:true,restore:true,share:true,partialRestoreGuard:true,persistence:true,layout,largeLibrary,errors}));
 }finally{await browser.close()}})().catch(e=>{console.error(e);process.exitCode=1});
