@@ -37,7 +37,11 @@ try{
 }
 const binary=await blob.arrayBuffer();window.__bodyExport=blob;const loaded=await new GLTFLoader().parseAsync(binary,'');const meshes=[];
 // The map can contain skinned props too; compare only the exported robot's native body.
-loaded.scene.traverse(o=>{if(o.isSkinnedMesh&&o.userData.sourceRobotPart===rig.root.userData.sourceRobotPart)meshes.push(o)});const mixer=new THREE.AnimationMixer(loaded.scene);mixer.clipAction(loaded.animations[0]).play();mixer.setTime(.2);loaded.scene.updateMatrixWorld(true);
+loaded.scene.traverse(o=>{
+  if(!o.isSkinnedMesh)return;
+  let owner=o;while(owner&&!owner.userData.sourceRobotPart)owner=owner.parent;
+  if(owner?.userData.sourceRobotPart===rig.root.userData.sourceRobotPart)meshes.push(o);
+});const mixer=new THREE.AnimationMixer(loaded.scene);mixer.clipAction(loaded.animations[0]).play();mixer.setTime(.2);loaded.scene.updateMatrixWorld(true);
 const expected=rig.retarget.createPose();rig.retarget.fromRecorded(a.take.sampleGeometry([.2]),0,expected);
 const rootMatrix=new THREE.Matrix4().compose(expected.position,expected.quaternion,new THREE.Vector3().setScalar(rig.retarget.scale));const expectedWorld=[],up=new THREE.Matrix4().makeRotationX(-Math.PI/2);let poseError=0;
 for(let i=0;i<rig.retarget.native.bones.length;i++){const bone=rig.retarget.native.bones[i],local=new THREE.Matrix4().compose(new THREE.Vector3(...bone.position),expected.bones[i],new THREE.Vector3(1,1,1));const world=(bone.parent<0?rootMatrix:expectedWorld[bone.parent]).clone().multiply(local);expectedWorld.push(world);const matrix=up.clone().multiply(world);poseError=Math.max(poseError,...matrix.elements.map((v,j)=>Math.abs(v-meshes[0].skeleton.bones[i].matrixWorld.elements[j])));}
