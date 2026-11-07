@@ -206,6 +206,8 @@ const stateFs=await filesystem({
   'materials/scalar.vmt':'UnlitGeneric { "$alpha" ".25" }',
   'materials/scalartested.vmt':'VertexLitGeneric { "$basetexture" "alpha" "$alpha" ".5" "$alphatest" "1" "$alphatestreference" ".4" }',
   'materials/scalarglow.vmt':'VertexLitGeneric { "$basetexture" "alpha" "$alpha" ".5" "$translucent" "1" "$selfillum" "1" }',
+  'materials/scalarglowopaque.vmt':'VertexLitGeneric { "$basetexture" "alpha" "$alpha" ".5" "$selfillum" "1" }',
+  'materials/scalarmask.vmt':'VertexLitGeneric { "$basetexture" "alpha" "$alpha" ".5" "$basealphaenvmapmask" "1" }',
   'materials/scalaradd.vmt':'VertexLitGeneric { "$basetexture" "opaque" "$alpha" ".5" "$additive" "1" }',
   'materials/maskedadd.vmt':'VertexLitGeneric { "$basetexture" "alpha" "$additive" "1" "$alphatest" "1" "$alphatestreference" ".4" }',
   'materials/rotated.vmt':`LightmappedGeneric { "$basetexture" "opaque" "$basetexturetransform" "${ROTATED}" }`,
@@ -222,7 +224,7 @@ const stateFs=await filesystem({
 const stateGlb=new SourceGlb(),stateExporter=new SourceMaterialExport(stateGlb,stateFs);
 // Companions follow the effective base UVs in the renderer (WebGL coordinates:
 // scripts/test_source_base_uv_runtime.cjs), so these combinations are now accepted.
-const stateNames=['before','scalar','scalarglow','scalaradd','maskedadd','rotated','cutout','scrolled','animated','detailed','bumped','maskedvertex'];
+const stateNames=['before','scalar','scalaradd','maskedadd','rotated','cutout','scrolled','animated','detailed','bumped','maskedvertex'];
 const stateIndex=Object.fromEntries(await Promise.all(stateNames.map(async name=>[name,await stateExporter.material(name)])));
 assert.deepEqual(stateExporter.requirements,[],'common static transforms, companions and scalar alpha are bound, not blocked');
 // Still explicit: per-axis detail scale and an independent authored detail matrix.
@@ -232,7 +234,8 @@ for(const [name,code] of [['skewdetail','material-detail-scale-runtime'],['detai
   assert(companionBlocked.requirements.some(r=>r.blocking&&r.code===code&&r.path===`materials/${name}.vmt`),name);
 }
 // Unsupported raw states must stop before verification can assign an installable identity.
-for (const [name, code] of [['scalartested', 'material-alpha-test-blend-runtime'], ['maskedlightmap', 'material-lightmapped-selfillum-mask-runtime']]) {
+for (const [name, code] of [['scalartested', 'material-alpha-test-blend-runtime'], ['maskedlightmap', 'material-lightmapped-selfillum-mask-runtime'],
+  ['scalarglow', 'material-alpha-lighting-mask-runtime'], ['scalarglowopaque', 'material-alpha-lighting-mask-runtime'], ['scalarmask', 'material-alpha-lighting-mask-runtime']]) {
   const blocked = new SourceMaterialExport(new SourceGlb(), stateFs);
   assert.equal(await blocked.material(name), undefined);
   assert(blocked.requirements.some(requirement => requirement.code === code && requirement.blocking));
@@ -253,8 +256,6 @@ async function patched(name,resources={}){
 {
   const scalar=await state.material(stateIndex.scalar);
   assert.equal(scalar.transparent,true);assert.equal(scalar.opacity,.25);assert.equal(scalar.alphaTest,0);
-  const glow=await state.material(stateIndex.scalarglow);
-  assert.equal(glow.transparent,true,'selfillum suppresses texture-alpha blending, not constant alpha modulation');
   // BT_BLENDADD is the material's own blend state: the Studio (PBR) original and the
   // Source variant both add alpha-weighted colour without depth writes.
   const add=await patched('scalaradd');

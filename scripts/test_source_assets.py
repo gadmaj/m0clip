@@ -54,6 +54,38 @@ class AssetTests(unittest.TestCase):
         self.assertEqual(factor[3], .25)
         self.assertEqual(record['alphaMode'], 'BLEND')
 
+    def test_unrepresentable_material_states_do_not_replace_material(self):
+        from import_source_props import GLB
+        header = bytearray(80); header[:4] = b'VTF\0'
+        struct.pack_into('<IIIHHIHH', header, 4, 7, 2, 80, 1, 1, 0, 1, 0xffff)
+        struct.pack_into('<f', header, 48, 1)
+        struct.pack_into('<iBiBB', header, 52, 0, 1, -1, 0, 0)
+        struct.pack_into('<H', header, 63, 1)
+        class FS:
+            def read(self, path):
+                if path == 'materials/unsupported.vmt':
+                    return ('VertexLitGeneric { "$basetexture" "mask" ' + self.parameters + ' }').encode()
+                if path == 'materials/mask.vtf':
+                    return bytes(header) + bytes([255, 255, 255, 0])
+        for parameters in (
+            '"$selfillum" "1" "$alpha" ".5"',
+            '"$selfillum" "1" "$translucent" "1" "$alpha" ".5"',
+            '"$basealphaenvmapmask" "1" "$alpha" ".5"',
+            '"$alphatest" "1" "$alphatestreference" ".5" "$alpha" ".75"',
+            '"$color2" "[2 1 1]"',
+            '"$color2" "[-.1 1 1]"',
+            '"$color2" "[1e999 1 1]"',
+            '"$alpha" "nan"',
+            '"$alpha" "-.01"',
+            '"$alpha" "1.01"',
+        ):
+            with self.subTest(parameters=parameters):
+                fs = FS(); fs.parameters = parameters
+                record = dict(name='existing', pbrMetallicRoughness=dict(baseColorFactor=[1, 1, 1, 1]))
+                with self.assertRaises(ValueError):
+                    MaterialExport(GLB(), fs).apply(record, 'unsupported')
+                self.assertEqual(record, dict(name='existing', pbrMetallicRoughness=dict(baseColorFactor=[1, 1, 1, 1])))
+
     def test_cutout_culling_replaces_legacy_double_sided_flag(self):
         class FS:
             nocull = False

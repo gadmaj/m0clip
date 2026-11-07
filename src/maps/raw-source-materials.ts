@@ -347,6 +347,14 @@ export class SourceMaterialExport {
     }
     for(const flag of ['ignorez','znearer','decal','selfillumfresnel','vertexalpha'])if(descriptor.metadata[flag])
       this.block('material-flag-runtime',path,`Authored $${flag} requires native shader/state support.`);
+    if (descriptor.metadata.alphatest && alpha < 1) {
+      this.block('material-alpha-test-blend-runtime', path, 'Authored alpha testing and scalar-alpha blending require simultaneous cutout and blended rendering, which this map format cannot represent.');
+      return undefined;
+    }
+    if (alpha < 1 && (descriptor.metadata.selfillum || descriptor.metadata.basealphaenvmapmask)) {
+      this.block('material-alpha-lighting-mask-runtime', path, 'Authored scalar opacity with a base-alpha lighting mask requires independent opacity and mask channels, which this renderer does not yet separate.');
+      return undefined;
+    }
     const base=descriptor.textures.find(texture=>texture.parameter==='$basetexture'&&texture.kind==='file');
     const baseLayout=base?.path?await this.layout(base.path):undefined;
     const alphaTexture=!!baseLayout&&!!(baseLayout.header.flags&0x3000)&&descriptor.metadata.translucent
@@ -354,10 +362,6 @@ export class SourceMaterialExport {
     // SDK 2013 BaseVSShader::EvaluateBlendRequirements: constant alpha modulation
     // (IsAlphaModulating) or vertex alpha blends independently of texture alpha.
     const translucent=alphaTexture||!!descriptor.metadata.vertexalpha||alpha<1;
-    if (descriptor.metadata.alphatest && alpha < 1) {
-      this.block('material-alpha-test-blend-runtime', path, 'Authored alpha testing and scalar-alpha blending require simultaneous cutout and blended rendering, which this map format cannot represent.');
-      return undefined;
-    }
     if (descriptor.metadata.selfillum
       && (descriptor.shader === 'lightmappedgeneric' || descriptor.shader === 'sdk_lightmappedgeneric')
       && descriptor.textures.some(texture => texture.parameter === '$selfillummask')) {

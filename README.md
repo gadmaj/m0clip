@@ -215,6 +215,8 @@ Not every prop, material or gameplay entity carries over.
 The material converter multiplies `$color` by `$color2` and preserves `$alpha`
 opacity. VMT colour vectors such as `{255 128 64}` use byte channels; `[1 .5 .25]`
 uses normalized channels.
+Unsupported tint ranges and alpha/mask combinations stop conversion instead of
+changing authored values.
 
 </details>
 
