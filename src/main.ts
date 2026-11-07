@@ -952,9 +952,10 @@ class App {
       requestLock: () => this.player?.input.requestLock(),
       spawnRobot: robot => this.send({ t: 'playerSpawnRobot', robot }),
     });
+    const blocked = () => this.inputBlocked || this.timeline.isOpen || this.exporting || this.dialog.isOpen
+      || this.model?.mode !== 'player' || !!document.getElementById('policy-notice');
     const input = new PlayerInputController(this.view.renderer.domElement, {
-      blocked: () => this.inputBlocked || this.timeline.isOpen || this.exporting || this.dialog.isOpen
-        || this.model?.mode !== 'player' || !!document.getElementById('policy-notice'),
+      blocked,
       input: frame => {
         Object.assign(this.playerSentInput, frame);
         this.playerInputSent = true;
@@ -976,8 +977,8 @@ class App {
       holdDistance: direction => this.send({ t: 'playerWheel', direction }),
       locked: locked => {
         // Pointer lock owns the keyboard immediately, before the HUD's next frame.
-        if (locked) this.view.renderer.domElement.focus({ preventScroll: true });
-        else this.send({ t: 'playerStop' });
+        if (!locked) this.send({ t: 'playerStop' });
+        else if (!blocked()) this.view.renderer.domElement.focus({ preventScroll: true });
       },
       // The held view is part of every input frame; the camera reads the controller directly.
       thirdPerson: () => {},
