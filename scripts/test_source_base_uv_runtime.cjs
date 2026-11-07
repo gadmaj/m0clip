@@ -196,11 +196,15 @@ const buildFixture=require('./build-fixture.cjs');
       const decoded=spawnSync(process.env.PYTHON||'python3',['-B','-c',
         'import json,sys;from PIL import Image;print(json.dumps({p:list(Image.open(p).convert("RGBA").getpixel((0,0))) for p in sys.argv[1:]}))',...files],{encoding:'utf8',timeout:30000});
       assert.equal(decoded.status,0,decoded.stderr);const pixels=JSON.parse(decoded.stdout);
-      for(const binding of ['studio map','studio normalMap','source map'])for(const [u,v] of [[.125,.125],[.375,.125],[.125,.625],[.875,.625]]){
-        const row=proof.cases.find(row=>row.binding===binding&&row.uv[0]===u&&row.uv[1]===v);
-        assert(row,`Blender missed ${binding} (${u},${v})`);
-        const actual=pixels[row.actual],reference=pixels[row.reference];
-        actual.forEach((value,i)=>assert(Math.abs(value-reference[i])<=1,`${binding} (${u},${v}): ${actual} != authored-coordinate sample ${reference}`));
+      for(const binding of ['studio map','studio normalMap','source map']){
+        const referenceColors=new Set(proof.cases.filter(row=>row.binding===binding).map(row=>pixels[row.reference].slice(0,3).join(',')));
+        assert.equal(referenceColors.size,4,`${binding}: reference pixels do not distinguish the four authored coordinates`);
+        for(const [u,v] of [[.125,.125],[.375,.125],[.125,.625],[.875,.625]]){
+          const row=proof.cases.find(row=>row.binding===binding&&row.uv[0]===u&&row.uv[1]===v);
+          assert(row,`Blender missed ${binding} (${u},${v})`);
+          const actual=pixels[row.actual],reference=pixels[row.reference];
+          actual.forEach((value,i)=>assert(Math.abs(value-reference[i])<=1,`${binding} (${u},${v}): ${actual} != authored-coordinate sample ${reference}`));
+        }
       }
       blender={version:proof.blender,samples:proof.cases.length,passed:true};
     }
