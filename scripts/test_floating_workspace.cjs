@@ -128,6 +128,8 @@ async function pngCapture(page, directory, name, action) {
 async function activateAdvancedPanel(page, id, touch = false, key = null, { required = false } = {}) {
   const button = page.locator(`#workspace-panels button[aria-controls="${id}"]`);
   if (!await button.isVisible()) { assert.equal(required, false, `Advanced panel navigation must offer ${id} in this layout`); return null; }
+  // Opening Controls changes toolbar bounds; baseline its completed ResizeObserver layout.
+  await raf(page, 2);
   const compact = await page.evaluate(() => matchMedia('(max-width: 760px)').matches);
   const others = async () => page.locator('#panel .floating-window').evaluateAll((roots, chosen) => roots.filter(root => root.id !== chosen).map(root => ({ id: root.id, x: root.getBoundingClientRect().x, y: root.getBoundingClientRect().y, expanded: root.querySelector('.floating-collapse').getAttribute('aria-expanded'), hidden: root.getClientRects().length === 0 })), id);
   const before = await others(); await hit(button);

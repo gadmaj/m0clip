@@ -354,6 +354,16 @@ export class SourceMaterialExport {
     // SDK 2013 BaseVSShader::EvaluateBlendRequirements: constant alpha modulation
     // (IsAlphaModulating) or vertex alpha blends independently of texture alpha.
     const translucent=alphaTexture||!!descriptor.metadata.vertexalpha||alpha<1;
+    if (descriptor.metadata.alphatest && alpha < 1) {
+      this.block('material-alpha-test-blend-runtime', path, 'Authored alpha testing and scalar-alpha blending require simultaneous cutout and blended rendering, which this map format cannot represent.');
+      return undefined;
+    }
+    if (descriptor.metadata.selfillum
+      && (descriptor.shader === 'lightmappedgeneric' || descriptor.shader === 'sdk_lightmappedgeneric')
+      && descriptor.textures.some(texture => texture.parameter === '$selfillummask')) {
+      this.block('material-lightmapped-selfillum-mask-runtime', path, 'LightmappedGeneric uses base-texture alpha for self-illumination; a separate self-illumination mask would render differently.');
+      return undefined;
+    }
     // The renderer places detail at scalar $detailscale × the effective base UVs
     // (SDK SetVertexShaderTextureScaledTransform). A two-component scale scales
     // the matrix columns and rows differently; it is not reduced to one component.
