@@ -974,7 +974,11 @@ class App {
       },
       spawnMenu: () => hud.openSpawnMenu(),
       holdDistance: direction => this.send({ t: 'playerWheel', direction }),
-      locked: locked => { if (!locked) this.send({ t: 'playerStop' }); },
+      locked: locked => {
+        // Pointer lock owns the keyboard immediately, before the HUD's next frame.
+        if (locked) this.view.renderer.domElement.focus({ preventScroll: true });
+        else this.send({ t: 'playerStop' });
+      },
       // The held view is part of every input frame; the camera reads the controller directly.
       thirdPerson: () => {},
       lockError: () => hud.lockFailed(),
