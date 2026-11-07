@@ -34,8 +34,8 @@ const buildFixture = require('./build-fixture.cjs');
     await page.locator('#robot-dull').check();
     const dull=await page.evaluate(async()=>{const v=window.__app.view;await v.setSourceHead('ghost');const mats=[...v.parts.values()].flatMap(p=>[p.mesh.material].flat());return {settings:v.getAppearance().robotLight,materials:mats.length,allDull:mats.every(m=>m.roughness===1&&m.metalness===0&&m.envMapIntensity===0&&m.emissiveIntensity===0&&(!('clearcoat'in m)||m.clearcoat===0)&&(!('specularIntensity'in m)||m.specularIntensity===0))};});assert.ok(dull.allDull);assert.equal(dull.settings.brightness,0);assert.equal(await page.locator('#robot-light-brightness').isDisabled(),true);
     if (!process.env.SKIP_SCREENSHOTS) await page.screenshot({path:'/tmp/robot-dull-desktop.png'});
-    // Compact layouts show one advanced panel at a time; Robot appearance lives in Scene.
-    const showScene=async()=>{const compact=page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true});if(await compact.isVisible())await compact.click();};
+    // Compact layouts select Scene; desktop layouts restore their remembered collapse state.
+    const showScene=async()=>{const compact=page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}),expand=page.getByRole('button',{name:'Expand Scene panel',exact:true});if(await compact.isVisible())await compact.click();else if(await expand.isVisible())await expand.click();};
     await page.setViewportSize({width:390,height:844});await showScene();await page.locator('#robot-dull').scrollIntoViewIfNeeded();if (!process.env.SKIP_SCREENSHOTS) await page.screenshot({path:'/tmp/robot-light-mobile.png'});
     await page.reload().then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await readyApp(page,{timeout:180000});
     // The reload is a returning visit, so the optional storage notice can cover the compact panel.
@@ -43,7 +43,7 @@ const buildFixture = require('./build-fixture.cjs');
     await page.waitForFunction(()=>{const notice=document.querySelector('.storage-consent');return !notice||notice.dataset.state!=='checking'&&notice.dataset.state!=='requesting';},null,{timeout:30000});
     const storageNotice=page.locator('.storage-consent');if(await storageNotice.isVisible()){await storageNotice.getByRole('button',{name:/^(Not now|Close)$/}).click();await storageNotice.waitFor({state:'hidden'});}
     assert.equal(await page.locator('#robot-dull').isChecked(),true);await showScene();await page.getByText('Robot appearance',{exact:true}).click();
-    await page.setViewportSize({width:1440,height:1000});await page.locator('#robot-dull').uncheck();await page.locator('#robot-light-brightness').evaluate(e=>e.value='25');await page.locator('#robot-light-brightness').dispatchEvent('input');
+    await page.setViewportSize({width:1440,height:1000});await showScene();await page.locator('#robot-dull').uncheck();await page.locator('#robot-light-brightness').evaluate(e=>e.value='25');await page.locator('#robot-light-brightness').dispatchEvent('input');
     await page.evaluate(()=>window.__app.startRecording());await page.waitForFunction(()=>!!window.__app.rec);assert.equal(await page.locator('#robot-dull').isDisabled(),true);await page.waitForTimeout(800);await page.evaluate(()=>window.__app.stopRecording());await page.waitForFunction(()=>window.__app.timeline.isOpen);
     await page.addScriptTag({content:fixture.code});
     if(fixture.css)await page.addStyleTag({content:fixture.css});
