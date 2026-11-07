@@ -563,17 +563,10 @@ class App {
     });
     window.addEventListener("keydown", (e) => this.onKey(e));
     window.addEventListener("keyup", (e) => this.onKeyUp(e));
-    // Return keyboard control to the simulation after a dropdown or ordinary action.
-    // Dropdowns consume W/S and buttons consume Space; dialogs and navigation own their focus.
+    // Native dropdowns consume driving keys; buttons keep focus and own Space/Enter in onKey.
     document.addEventListener("change", (e) => {
       if (this.inputBlocked) return;
       if (e.target instanceof HTMLSelectElement && !e.target.closest('dialog,[role="dialog"]')) e.target.blur();
-    });
-    document.addEventListener("click", (e) => {
-      if (this.inputBlocked) return;
-      if ((e.target as Element | null)?.closest?.('dialog,[role="dialog"],.help-trigger,[data-visual-picker],#workspace-panels')) return;
-      const b = (e.target as Element | null)?.closest?.("button");
-      if (b instanceof HTMLButtonElement) b.blur();
     });
     // a key released while the window is unfocused never sends keyup — stop instead of walking on
     window.addEventListener("blur", () => {

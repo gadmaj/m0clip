@@ -37,7 +37,15 @@ const {readyApp}=require('./attach-ready-app.cjs');
     await page.evaluate(()=>{const a=window.__app;a.look.setState({...a.look.getState(),antialiasing:'none'});a.look.restoreAppearance(a.viewModel.robot,{colorway:'product',sourceBody:'stock',parts:{},robotLight:{brightness:0,color:0xffffff,range:5,dull:true}});a.setNoclip(false);a.setFlashlight(false);a.flight.speed=12;a.flight.hover=false;a.view.camera.position.set(8,8,8);});
     await page.getByRole('button',{name:'Dog inspection',exact:true}).click();await restored(page);await page.waitForTimeout(150);await matches(page,saved);
     assert.equal(await page.evaluate(()=>window.__app.view.getBodyVisualState().applied),'dog');
-    const viewLink=await page.evaluate(async()=>{const a=window.__app;await a.explore.share(a.captureView());return document.querySelector('[aria-label="Shareable view link"]').value;});assert.equal(new URL(viewLink).searchParams.get('body'),'dog');
+    await context.grantPermissions(['clipboard-read','clipboard-write'],{origin:new URL(base).origin});
+    const share=page.getByRole('button',{name:'Share Dog inspection',exact:true});
+    await share.click();
+    const viewLink=await page.getByLabel('Shareable view link',{exact:true}).inputValue();
+    await page.waitForFunction(expected=>navigator.clipboard.readText().then(value=>value===expected),viewLink);
+    assert.equal(new URL(viewLink).searchParams.get('body'),'dog');
+    assert.ok(await share.evaluate(button=>document.activeElement===button),'Sharing must keep focus on its button');
+    await page.keyboard.press('Tab');
+    assert.ok(await page.getByRole('button',{name:'Rename Dog inspection',exact:true}).evaluate(button=>document.activeElement===button),'Tab must continue within the saved-view row');
     // A fresh receiver's robot, lighting and paint preferences must not replace the shared view.
     const receiver=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:Number(process.env.TEST_DPR||1)});await receiver.addInitScript(()=>{localStorage.setItem('ume-prefs',JSON.stringify({robot:'go2',terrain:'park',policy:'does-not-exist'}));localStorage.setItem('ume-appearance',JSON.stringify({r1:{colorway:'product',sourceBody:'stock',parts:{}}}));});
     const fresh=await pageIn(receiver);await fresh.goto(viewLink).then(() => require('./launch-scene.cjs').launchScene(fresh, { controls: true }));await ready(fresh);await restored(fresh);await matches(fresh,saved);
