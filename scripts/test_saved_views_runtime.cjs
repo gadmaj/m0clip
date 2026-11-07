@@ -46,6 +46,21 @@ const {readyApp}=require('./attach-ready-app.cjs');
     assert.ok(await share.evaluate(button=>document.activeElement===button),'Sharing must keep focus on its button');
     await page.keyboard.press('Tab');
     assert.ok(await page.getByRole('button',{name:'Rename Dog inspection',exact:true}).evaluate(button=>document.activeElement===button),'Tab must continue within the saved-view row');
+    // A short nested library must hand its wheel to the containing Scene panel.
+    const viewport=page.viewportSize();
+    await page.setViewportSize({width:390,height:844});
+    await page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}).click();
+    await page.getByRole('button',{name:'Dog inspection',exact:true}).hover();
+    const wheelStart=await page.locator('#saved-view-list').evaluate(list=>({
+      top:list.closest('.floating-body').scrollTop,overflow:list.scrollHeight>list.clientHeight,
+    }));
+    assert.equal(wheelStart.overflow,false,'Exercise the non-overflowing nested library');
+    assert.ok(wheelStart.top>0,'The Scene panel must be scrolled before wheeling up');
+    await page.mouse.wheel(0,-120);
+    await page.waitForFunction(top=>document.getElementById('saved-view-list').closest('.floating-body').scrollTop<top,wheelStart.top);
+    await page.setViewportSize(viewport);
+    const expandScene=page.getByRole('button',{name:'Expand Scene panel',exact:true});
+    if(await expandScene.isVisible())await expandScene.click();
     // A fresh receiver's robot, lighting and paint preferences must not replace the shared view.
     const receiver=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:Number(process.env.TEST_DPR||1)});await receiver.addInitScript(()=>{localStorage.setItem('ume-prefs',JSON.stringify({robot:'go2',terrain:'park',policy:'does-not-exist'}));localStorage.setItem('ume-appearance',JSON.stringify({r1:{colorway:'product',sourceBody:'stock',parts:{}}}));});
     const fresh=await pageIn(receiver);await fresh.goto(viewLink).then(() => require('./launch-scene.cjs').launchScene(fresh, { controls: true }));await ready(fresh);await restored(fresh);await matches(fresh,saved);
