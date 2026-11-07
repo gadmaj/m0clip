@@ -1,17 +1,11 @@
 /** Each converted-map Load owns one worker; no main-thread decoder fallback. */
 import type { DecodedMapBundle } from './bundle';
-import type { TransferUpdate } from '../loading/transfers';
+import type { WorkerTransferObserver } from '../loading/transfers';
 import { verifiedBundle, verificationRecord, verificationTransfers,
   type BundleVerificationRequest } from './bundle-verification-protocol';
 
-/** Root ownership is metadata; only transfers report actual consumed HTTP bytes. */
-export interface BundleVerificationObserver {
-  root(url: string): void;
-  transfers(updates: TransferUpdate[]): void;
-}
-
 export function verifyMapBundle(file: Blob, signal?: AbortSignal,
-  observer?: BundleVerificationObserver): Promise<DecodedMapBundle> {
+  observer?: WorkerTransferObserver): Promise<DecodedMapBundle> {
   const { promise, resolve, reject } = Promise.withResolvers<DecodedMapBundle>();
   if (signal?.aborted) {
     reject(signal.reason ?? new DOMException('Map loading cancelled.', 'AbortError'));
@@ -78,7 +72,7 @@ export function verifyMapBundle(file: Blob, signal?: AbortSignal,
             if (!/^https?:$/.test(url.protocol) || url.origin !== location.origin || url.href !== message.url)
               throw new Error('Invalid worker root URL.');
             rootUrl = url.href;
-            try { observer?.root(rootUrl); } catch { /* Metadata observation cannot break verification. */ }
+            try { observer?.root(rootUrl, 'map-verification'); } catch { /* Metadata observation cannot break verification. */ }
             accountRoot(resources?.takeRecords() ?? []);
             accountRoot(performance.getEntriesByType('resource'));
             return;

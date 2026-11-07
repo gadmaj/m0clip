@@ -415,10 +415,10 @@ class App {
       onExportSetup: () => this.openExport("video"),
       onOpenShots:()=>{void this.openShots();},
       onLoadTake: (file) => void this.openTakeFile(file),
-      onLocalMap: async file=>{
+      onLocalMap: async (file,signal)=>{
         if(this.rec||this.playerRec||this.recordStarting||this.timeline.isOpen||this.exporting||(this.mapPreparing&&!this.viewRestoreAbort))throw new Error('Finish the current recording, review or export before loading a map.');
         await this.cancelViewRestore();
-        try{await openLocalMap(file,undefined,(source,signal,onCommit)=>this.changeTerrain(`map:${source.id}`,source,{signal,onCommit}));}
+        try{await openLocalMap(file,undefined,(source,signal,onCommit)=>this.changeTerrain(`map:${source.id}`,source,{signal,onCommit}),signal);}
         catch(error){if(!(error instanceof DOMException&&error.name==='AbortError'))throw error;}
       },
       onLoadCsv: (file, fps) => this.loadCsv(file, fps),
@@ -644,6 +644,29 @@ class App {
     this.send({ t: "inspect", on: true });   // left column always streams
   }
 
+  /** Both scene modes count the same owned module intakes without crediting independent visual reads. */
+  private plannedStartupAssets(plan: WorkerAssetPlan, visuals: VisualAssetPlan, prepared: PlannedAsset[]): PlannedAsset[] {
+    const catalogue = this.startupCatalogue;
+    const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+    const priorLocalAssets = priorIntakeAssets(catalogue, launch.priorLocalMapIntake, entries, catalogue.runtime.localMap);
+    const priorSourceAssets = priorIntakeAssets(catalogue, launch.priorSourceMapIntake, entries, catalogue.runtime.sourceClient);
+    const priorPageAssets = priorSourceAssets.length ? [...priorLocalAssets, ...priorSourceAssets] : priorLocalAssets;
+    const pageRoots = launch.usesSourceAssembly || launch.usesSourceMetadata
+      ? [...catalogue.runtime.page, ...catalogue.runtime.sourceClient] : catalogue.runtime.page;
+    const assets = plannedAssets(catalogue, pageRoots, [], priorPageAssets);
+    assets.push(...plannedAssets(catalogue, [...plan.urls, ...visuals.urls, ...prepared.map(asset => asset.url)], prepared));
+    if (launch.usesLocalMapVerification) for (const asset of plannedAssets(catalogue, catalogue.runtime.localMapVerification, [])) {
+      asset.realm = 'map-verification'; assets.push(asset);
+    }
+    if (launch.usesSourceMetadata) for (const asset of plannedAssets(catalogue, catalogue.runtime.sourceMetadata, [])) {
+      asset.realm = 'source-metadata'; assets.push(asset);
+    }
+    if (launch.usesSourceAssembly) for (const asset of plannedAssets(catalogue, catalogue.runtime.sourceAssembly, [])) {
+      asset.realm = 'source-assembly'; assets.push(asset);
+    }
+    return assets;
+  }
+
   /** Player startup plan: the map and flashlight visuals, plus the chosen body's exact fetched files. */
   private async preparePlayerStartupAssets(plan: WorkerAssetPlan) {
     if (!launch.active || plan.generation !== launch.loadingId || this.launchPlanToken !== null) return;
@@ -659,15 +682,7 @@ class App {
       for (const [tool, path] of Object.entries(PLAYER_VIEW_MODELS) as [PlayerTool, string][]) if (content?.has(path)) views[tool] = path;
       this.playerLiveActors = { body: studioBodyPath(bodyId) ?? bodyId, content, views };
       const prepared = [...plan.prepared, ...visuals.prepared, ...body.planned];
-      const priorPageAssets = priorIntakeAssets(catalogue, launch.priorLocalMapIntake,
-        performance.getEntriesByType('resource') as PerformanceResourceTiming[]);
-      const assets = [
-        ...plannedAssets(catalogue, catalogue.runtime.page, [], priorPageAssets),
-        ...plannedAssets(catalogue, [...plan.urls, ...visuals.urls, ...prepared.map(asset => asset.url)], prepared),
-        ...(launch.usesLocalMapVerification
-          ? plannedAssets(catalogue, catalogue.runtime.localMapVerification, []).map(asset => ({ ...asset, realm: 'map-verification' as const }))
-          : []),
-      ];
+      const assets = this.plannedStartupAssets(plan, visuals, prepared);
       launch.freezeAssets(plan.generation, assets, prepared);
       this.send({ t: 'loadingProceed', generation: plan.generation, token: plan.token });
       this.prepareMapVisual(selection.terrain);
@@ -758,17 +773,7 @@ class App {
         return;
       }
       const prepared = [...plan.prepared, ...visuals.prepared];
-      // File intake can have already evaluated page dependencies before Load.
-      // Exclude only that page scope; independent worker/visual reads still count.
-      const priorPageAssets = priorIntakeAssets(catalogue, launch.priorLocalMapIntake,
-        performance.getEntriesByType('resource') as PerformanceResourceTiming[]);
-      const assets = [
-        ...plannedAssets(catalogue, catalogue.runtime.page, [], priorPageAssets),
-        ...plannedAssets(catalogue, [...plan.urls, ...visuals.urls, ...prepared.map(asset => asset.url)], prepared),
-        ...(launch.usesLocalMapVerification
-          ? plannedAssets(catalogue, catalogue.runtime.localMapVerification, []).map(asset => ({ ...asset, realm: 'map-verification' as const }))
-          : []),
-      ];
+      const assets = this.plannedStartupAssets(plan, visuals, prepared);
       launch.freezeAssets(plan.generation, assets, prepared);
       this.send({ t: 'loadingProceed', generation: plan.generation, token: plan.token });
       this.prepareMapVisual(selection.terrain);
@@ -865,9 +870,9 @@ class App {
     catch(error){
       if(!terrain.startsWith('map:local-'))throw error;
       const id=terrain.slice(4),fingerprint=id.slice(6);
-      if(!/^[a-f0-9]{64}$/.test(fingerprint))throw new Error('Choose a verified map bundle before restoring this view.');
+      if(!/^[a-f0-9]{64}$/.test(fingerprint))throw new Error('Choose the original local map files before restoring this view.');
       const expected=identity??this.sessionMaps.get(id)?.identity??{id,fingerprint,name:'Local map',game:'Local'};
-      const observer = launch.active ? launch.beginLocalMapVerification() : undefined;
+      const observer = launch.active ? launch.beginLocalMapIntake() : undefined;
       return openLocalMap(undefined,expected,undefined,signal,observer).then(source=>{
         signal?.throwIfAborted();
         this.sessionMaps.set(source.id,{identity:expected,source:new WeakRef(source)});

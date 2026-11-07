@@ -154,7 +154,7 @@ export async function buildStartupCatalogue(directory, runtime, options = {}) {
   // Runtime edges are static imports/CSS only. ORT URL assets are separately gated
   // by selected inference; never attach them to the worker's unconditional graph.
   for (const [key, values] of Object.entries(options.dependencies ?? {})) links(key, values);
-  for (const group of ['page', 'worker', 'inference', 'localMap', 'localMapVerification']) {
+  for (const group of ['page', 'worker', 'inference', 'localMap', 'localMapVerification', 'sourceClient', 'sourceMetadata', 'sourceAssembly']) {
     for (const key of runtime[group]) requireAsset(key, '/');
   }
   const sceneDependencies = new Set([...Object.values(dependencies).flat(), ...Object.values(runtime).flat(), ...Object.values(mapVisuals).flat(), ...Object.values(modelBundles).flat()]);
@@ -170,7 +170,7 @@ export async function buildStartupCatalogue(directory, runtime, options = {}) {
 /** Record real Rollup chunks, including optimized dynamic entries without a facade.
  * @param {import('rollup').OutputBundle} bundle
  * @param {boolean} workerBuild
- * @returns {Array<{url: string, role?: 'page'|'worker'|'shell'|'localMap'|'localMapVerification', imports: string[], dynamicImports: string[], css: string[], assets: string[]}>}
+ * @returns {Array<{url: string, role?: 'page'|'worker'|'shell'|'localMap'|'localMapVerification'|'sourceImport'|'sourceMetadata'|'sourceAssembly', imports: string[], dynamicImports: string[], css: string[], assets: string[]}>}
  */
 export function captureRuntimeChunks(bundle, workerBuild = false) {
   const chunks = [], url = file => '/' + file.replace(/^\//, '');
@@ -180,7 +180,10 @@ export function captureRuntimeChunks(bundle, workerBuild = false) {
     const owns = pattern => pattern.test(facade) || chunk.moduleIds.some(id => pattern.test(id.replaceAll('\\', '/')));
     const role = workerBuild && owns(/\/src\/worker\/sim\.worker\.ts(?:\?|$)/) ? 'worker'
       : workerBuild && owns(/\/src\/maps\/bundle-verification\.worker\.ts(?:\?|$)/) ? 'localMapVerification'
-      : owns(/\/src\/main\.ts(?:\?|$)/) ? 'page'
+      : workerBuild && owns(/\/src\/maps\/source-inspect\.worker\.ts(?:\?|$)/) ? 'sourceMetadata'
+      : workerBuild && owns(/\/src\/maps\/source-assemble\.worker\.ts(?:\?|$)/) ? 'sourceAssembly'
+      : !workerBuild && owns(/\/src\/main\.ts(?:\?|$)/) ? 'page'
+      : !workerBuild && owns(/\/src\/maps\/source-import\.ts(?:\?|$)/) ? 'sourceImport'
       : !workerBuild && chunk.isEntry ? 'shell'
       : !workerBuild && owns(/\/src\/maps\/bundle\.ts(?:\?|$)/) ? 'localMap' : undefined;
     chunks.push({ url: url(chunk.fileName), role, imports: chunk.imports.map(url),
@@ -201,8 +204,13 @@ export async function buildRuntimeGraph(directory, chunks) {
   const shell = chunks.find(chunk => chunk.role === 'shell');
   const localMap = chunks.find(chunk => chunk.role === 'localMap');
   const localMapVerification = chunks.find(chunk => chunk.role === 'localMapVerification');
+  const sourceImport = chunks.find(chunk => chunk.role === 'sourceImport');
+  const sourceMetadata = chunks.find(chunk => chunk.role === 'sourceMetadata');
+  const sourceAssembly = chunks.find(chunk => chunk.role === 'sourceAssembly');
   if (!page || !worker || !shell || !localMap || !localMapVerification)
     throw Error('Startup catalogue requires the launch, main, simulation worker, local-map intake and verification worker output graphs');
+  if (!sourceImport || !sourceMetadata || !sourceAssembly)
+    throw Error('Startup catalogue requires separate Source client, inspection worker and conversion worker output graphs');
   const dependencies = {};
   for (const chunk of chunks) dependencies[chunk.url] = unique([...chunk.imports, ...chunk.css, ...chunk.assets.filter(key => !/\.(?:js|mjs|wasm)$/.test(key))]);
   function closure(roots) {
@@ -221,6 +229,9 @@ export async function buildRuntimeGraph(directory, chunks) {
   const localMapFiles = [...closure([localMap.url])].filter(key => !shellFiles.has(key));
   // An independent realm needs its full static graph, even shared page/shell URLs.
   const localMapVerificationFiles = closure([localMapVerification.url]);
+  const sourceClientFiles = [...closure([sourceImport.url])].filter(key => !shellFiles.has(key));
+  const sourceMetadataFiles = closure([sourceMetadata.url]);
+  const sourceAssemblyFiles = closure([sourceAssembly.url]);
   for (const key of pageFiles) if (dependencies[key]) dependencies[key] = dependencies[key].filter(child => !shellFiles.has(child));
   const workerFiles = closure([worker.url]);
   const inferenceFiles = new Set(), queue = [...workerFiles];
@@ -242,7 +253,8 @@ export async function buildRuntimeGraph(directory, chunks) {
   return {
     runtime: { page: unique(pageFiles), worker: unique([...workerFiles, '/wasm/mujoco.js', '/wasm/mujoco.wasm']),
       inference: unique([...inferenceFiles]), localMap: unique(localMapFiles),
-      localMapVerification: unique([...localMapVerificationFiles]) },
+      localMapVerification: unique([...localMapVerificationFiles]), sourceClient: unique(sourceClientFiles),
+      sourceMetadata: unique([...sourceMetadataFiles]), sourceAssembly: unique([...sourceAssemblyFiles]) },
     dependencies,
   };
 }
@@ -277,7 +289,11 @@ export async function buildDevelopmentCatalogue(publicDirectory, loadModule) {
   }
   const page = '/src/main.ts', worker = '/src/worker/sim.worker.ts?worker_file&type=module', localMap = '/src/maps/bundle.ts';
   const localMapVerification = '/src/maps/bundle-verification.worker.ts?worker_file&type=module';
+  const sourceImport = '/src/maps/source-import.ts';
+  const sourceMetadata = '/src/maps/source-inspect.worker.ts?worker_file&type=module';
+  const sourceAssembly = '/src/maps/source-assemble.worker.ts?worker_file&type=module';
   await scan('/src/start.ts'); await scan(page); await scan(worker); await scan(localMap); await scan(localMapVerification);
+  await scan(sourceImport); await scan(sourceMetadata); await scan(sourceAssembly);
   function closure(root) {
     const found = new Set();
     function add(key) { if (found.has(key)) return; found.add(key); for (const child of modules.get(key) ?? []) add(child); }
@@ -306,11 +322,15 @@ export async function buildDevelopmentCatalogue(publicDirectory, loadModule) {
   const pageFiles = [...closure(page)].filter(key => !shell.has(key)).sort();
   const localMapFiles = [...closure(localMap)].filter(key => !shell.has(key)).sort();
   const localMapVerificationFiles = [...closure(localMapVerification)].sort();
+  const sourceClientFiles = [...closure(sourceImport)].filter(key => !shell.has(key)).sort();
+  const sourceMetadataFiles = [...closure(sourceMetadata)].sort();
+  const sourceAssemblyFiles = [...closure(sourceAssembly)].sort();
   for (const key of pageFiles) dependencies[key] = dependencies[key].filter(child => !shell.has(child));
   const runtime = { page: pageFiles, worker: unique([...workerFiles, '/wasm/mujoco.js', '/wasm/mujoco.wasm']),
-    inference: unique([...inference]), localMap: localMapFiles, localMapVerification: localMapVerificationFiles };
+    inference: unique([...inference]), localMap: localMapFiles, localMapVerification: localMapVerificationFiles,
+    sourceClient: sourceClientFiles, sourceMetadata: sourceMetadataFiles, sourceAssembly: sourceAssemblyFiles };
   const catalogue = await buildStartupCatalogue(publicDirectory, { page: [], worker: ['/wasm/mujoco.js', '/wasm/mujoco.wasm'],
-    inference: [], localMap: [], localMapVerification: [] });
+    inference: [], localMap: [], localMapVerification: [], sourceClient: [], sourceMetadata: [], sourceAssembly: [] });
   Object.assign(catalogue.sizes, sizes);
   Object.assign(catalogue.dependencies, dependencies);
   catalogue.runtime = runtime;

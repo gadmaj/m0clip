@@ -12,7 +12,7 @@ import { FINISH, hasPalette, resolve, type Finish, type Paint, type Region } fro
 import { sourceMaterial, sourceVertexMaterial } from "./source-lighting";
 import { SourceAmbient, type SourceAmbientData } from "./source-ambient";
 import { SourceLightStyles } from "./source-lightstyles";
-import { patchSourceMaterial, SourceMaterials, type MaterialResources, type PropLightCache } from "./source-materials";
+import { bindSourceTemporalShadows, patchSourceMaterial, SourceMaterials, type MaterialResources, type PropLightCache } from "./source-materials";
 import { SourceNativeTextures, sourceNativeCube } from './source-vtf';
 import type { GLTFParser } from 'three/addons/loaders/GLTFLoader.js';
 import { RobotIllumination, robotLightSettings, type RobotLight } from "./robot-light";
@@ -41,18 +41,22 @@ import type { CharacterAsset, CharacterBody } from './characters/types';
 import type { GeometryTrack } from '../core/geometry';
 import { applyPartPaint, readPartPaint } from './paint-material';
 import { normalizeDisplay, type SceneDisplay } from './display';
-import type { MapSource } from '../maps/source';
+import { sourceMapPropView, type MapSource, type SourceMapPropView } from '../maps/source';
 import { PlayerView } from './player/view';
 import { PLAYER_VIEWMODEL_LAYER } from './player/viewmodel';
+import { SourceAnimations } from './source-animations';
+import { SourceProps, type SourcePropView } from './source-props';
 export interface PreparedTerrainVisual { commit(): void; dispose(): void }
 
 import { renderPreview, antialiasingPreview, type PreviewRequest } from './previews';
+
 export type HeadVisual = "stock" | "ghost";
 export interface HeadVisualState { choice: HeadVisual; available: boolean; loading: boolean; error: string | null }
 interface SourceMapVisuals {
   visual?:string;
   props?:{visual?:string};
   native_textures?:{visual?:string;props?:string};
+  source_prop_view?: SourceMapPropView;
 }
 
 /** How the robot is painted: one plain grey (default), the product colourway from paint.ts, or the
@@ -1133,7 +1137,8 @@ export class SceneView {
     const time = this.getSourceTime();
     if (this.sourceLighting) this.sourceStyles?.update(time);
     this.sourceMaterials.update(time);
-    this.sourceMixer?.setTime(time);
+    this.sourceAnimations?.update(time);
+    this.updateSourceProps(camera);
     for (const sky of this.sourceSky) {
       sky.position.copy(camera.position); sky.visible = !this.offscreen?.transparent;
     }
@@ -1152,7 +1157,7 @@ export class SceneView {
   render() {
     if (this.controls.enabled) this.controls.update();
     this.prepareSourceView(this.camera);
-    this.flashlight.renderDepth(this.renderer, this.scene, this.camera);
+    this.flashlight.renderDepth(this.renderer, this.scene, this.camera, this.sourceProps);
     this.renderSourceScene(this.camera);
   }
 
@@ -1164,6 +1169,14 @@ export class SceneView {
     }else draw();
   }
 
+  /** Authored prop fades depend on the actual draw camera and viewport. */
+  private updateSourceProps(camera: THREE.Camera) {
+    if (!this.sourceProps) return;
+    this.renderer.getCurrentViewport(this.sourcePropViewport);
+    this.sourcePropView.viewportHeight = this.sourcePropViewport.w;
+    this.sourceProps.update(camera, this.sourcePropView);
+  }
+
   /** The world, then (Player mode) the view-model pass with its own FOV after clearing depth. */
   private drawSourceScene(camera: THREE.Camera) {
     this.drawSourceWorld(camera);
@@ -1172,7 +1185,7 @@ export class SceneView {
 
   private drawSourceWorld(camera: THREE.Camera) {
     const sky = this.sourceSky3D, renderer = this.renderer;
-    const drawWorld = () => renderer.render(this.scene,camera);
+    const drawWorld = () => { this.updateSourceProps(camera); renderer.render(this.scene,camera); };
     const drawVisibleWorld = () => this.sourceVisibility && this.display.map
       ? this.sourceVisibility.draw(camera,drawWorld) : drawWorld();
     if (!sky || !this.display.map || this.offscreen?.transparent) {
@@ -1190,7 +1203,10 @@ export class SceneView {
     try {
       this.robotLight.brightness.value = 0;
       this.shotLights.count.value = 0;
-      this.flashlight.withoutLight(() => renderer.render(sky.scene,sky.camera));
+      this.flashlight.withoutLight(() => {
+        this.updateSourceProps(sky.camera);
+        renderer.render(sky.scene,sky.camera);
+      });
       this.robotLight.brightness.value = brightness;
       this.shotLights.count.value = lightCount;
       renderer.clearDepth();
@@ -1208,8 +1224,6 @@ export class SceneView {
   /** Render through `cam` into the largest centred rect of the given aspect (letterboxed), the way
    * an export with that camera will frame it. Returns the rect in CSS pixels, top-left origin. */
   renderFramed(cam: THREE.PerspectiveCamera, aspect: number): { x: number; y: number; w: number; h: number } {
-    this.prepareSourceView(cam);
-    this.flashlight.renderDepth(this.renderer, this.scene, cam);
     const r = this.renderer, size = r.getSize(new THREE.Vector2());
     let w = size.x, h = size.x / aspect;
     if (h > size.y) { h = size.y; w = h * aspect; }
@@ -1221,6 +1235,8 @@ export class SceneView {
     r.setViewport(x, y, w, h);
     r.setScissor(x, y, w, h);
     r.setScissorTest(true);
+    this.prepareSourceView(cam);
+    this.flashlight.renderDepth(this.renderer, this.scene, cam, this.sourceProps);
     this.renderSourceScene(cam);
     r.setScissorTest(false);
     r.setViewport(0, 0, size.x, size.y);
@@ -1250,7 +1266,7 @@ export class SceneView {
   /** Render through another camera (export frames at the offscreen size, the recorded-camera view). */
   renderWith(cam: THREE.Camera) {
     this.prepareSourceView(cam);
-    this.flashlight.renderDepth(this.renderer, this.scene, cam);
+    this.flashlight.renderDepth(this.renderer, this.scene, cam, this.sourceProps);
     this.renderSourceScene(cam);
   }
 
@@ -1352,7 +1368,10 @@ export class SceneView {
   private terrainVisual: THREE.Object3D | null = null;
   private sourceLighting = true;
   private sourceExposure = { value: 1 };
-  private sourceMixer: THREE.AnimationMixer | null = null;
+  private sourceAnimations: SourceAnimations | null = null;
+  private sourceProps: SourceProps | null = null;
+  private sourcePropViewport = new THREE.Vector4();
+  private sourcePropView: SourcePropView = { distanceScale: 1 };
   private sourceSky: THREE.Mesh[] = [];
   private sourceSky3D: SourceSky3D | null = null;
   private sourceVisibility: SourceVisibility | null = null;
@@ -1419,7 +1438,9 @@ export class SceneView {
       this.terrainRequestedId=source?.id??null;this.terrainRequest=Promise.resolve();
       if(this.terrainVisual)this.scene.remove(this.terrainVisual);
       this.terrainVisual=null;this.terrainMaterials=[];
-      this.sourceMixer?.stopAllAction();this.sourceMixer=null;
+      this.sourceAnimations=null;
+      this.sourceProps=null;
+      this.sourcePropView.levelScreenFade=undefined;
       this.sourceSky=[];this.sourceSprites=[];this.sourceDetails=[];
       this.sourceSky3D=null;this.sourceSkyLights=[];this.sourceVisibility=null;this.sourceStyles=null;
       this.sourceAmbient.styleValue=()=>1;this.sourceAmbient.setData(null);
@@ -1427,7 +1448,11 @@ export class SceneView {
       this.sourceColorMap=false;
       if(this.player)this.player.worldRevision=++this.playerWorldRevision;
     };
-    if (!source) return {commit:()=>{if(!current()){context.dispose();return;}clear();this.configureCamera(this.camera);this.setSourceLighting(this.sourceLighting);},dispose:()=>context.dispose()};
+    if (!source) {
+      let settled=false;
+      return {commit:()=>{if(settled)return;settled=true;if(!current()){context.dispose();return;}clear();this.configureCamera(this.camera);this.setSourceLighting(this.sourceLighting);},
+        dispose:()=>{if(!settled){settled=true;context.dispose();}}};
+    }
     try {
     const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
     const ambient = source.has('lighting.json') ? source.read('lighting.json')
@@ -1470,7 +1495,9 @@ export class SceneView {
       if(resourceErrors.length)throw new Error(`Map texture failed in ${path}: ${resourceErrors[0]}`);
       return result;
     };
-    const manifest = source.json<SourceMapVisuals & Parameters<typeof loadSourceColorLayers>[0] & {visibility?:string;source_renderer?:{version?:number}}>('manifest.json');
+    let propView: SourceMapPropView | undefined;
+    const manifest = source.json<SourceMapVisuals & Parameters<typeof loadSourceColorLayers>[0] & {visibility?:string;source_renderer?:{version?:number}}>('manifest.json')
+      .then(m=>{propView=sourceMapPropView(m.source_prop_view);return m;});
     const colorLayers=manifest.then(m=>loadSourceColorLayers(m,source));
     const visibility = manifest.then(async (m: { visibility?: string }) => {
       if (!m.visibility) return null;
@@ -1483,13 +1510,12 @@ export class SceneView {
     const [gltf, propGltf, visibilityData, mapManifest, grading, sourceStyles, ambientData] = await Promise.all(work).catch(async error=>{await Promise.allSettled(work);throw error;});
     report('preparing materials', 0, 0);
     if (!current()) throw new DOMException('Map loading cancelled.','AbortError');
-    let mixer:THREE.AnimationMixer|null=null;
+    const animations = gltf.animations.length || propGltf?.animations.length
+      ? context.own(new SourceAnimations(propGltf ? [gltf, propGltf] : [gltf])) : null;
+    const level = propView?.levelScreenFade, viewer = this.sourcePropView.viewScreenFade;
+    const propDisplay = context.own(new SourceProps(propGltf ? [gltf.scene, propGltf.scene] : [gltf.scene],
+      { forcedScreenFade: !!level && level[0] > 0 || !!viewer && viewer[0] > 0 }));
     const sky:THREE.Mesh[]=[],sprites:THREE.Mesh[]=[],details:THREE.Mesh[]=[];
-    if (propGltf?.animations.length) {
-      mixer = new THREE.AnimationMixer(propGltf.scene);
-      for (const clip of propGltf.animations) mixer.clipAction(clip).play();
-      const ownedMixer=mixer;context.own({dispose:()=>{ownedMixer.stopAllAction();ownedMixer.uncacheRoot(propGltf.scene)}});
-    }
     const materialParsers = new Map<THREE.Material, typeof gltf.parser>();
     if (propGltf) {
       propGltf.scene.traverse((o) => {
@@ -1515,7 +1541,8 @@ export class SceneView {
         texture(metadata.bumpmapIndex), texture(metadata.envmapmaskIndex),
         texture(metadata.phongexponenttextureIndex), texture(metadata.selfillummaskIndex),
         Promise.all((metadata.animationFrames ?? []).map((index:number)=>nativeTextures.get(parser)!.get(index,THREE.SRGBColorSpace))),
-        Promise.all((original.userData.sourceBumpLightmaps ?? []).map((index: number) => texture(index) as Promise<THREE.Texture>)),
+        Promise.all((original.userData.sourceBumpLightmaps ?? []).map(async (index: number) =>
+          (parser === gltf.parser ? sourceStyles?.lightmap(index, 'bump') : undefined) ?? await texture(index) as THREE.Texture)),
         texture(metadata.basetexture2Index,THREE.SRGBColorSpace), texture(metadata.detailIndex),
       ]);
       for (const lightmap of lightmaps) {
@@ -1547,8 +1574,7 @@ export class SceneView {
     const pending: Promise<void>[] = [];
     gltf.scene.traverse((o) => {
       if (o instanceof THREE.Mesh) {
-        o.receiveShadow = true;
-        o.castShadow = true;
+        if (!propDisplay.owns(o)) { o.receiveShadow = true; o.castShadow = true; }
         for (const m of [o.material].flat()) {
           const t = (m as THREE.MeshStandardMaterial).map;
           if (t&&!t.userData.sourceNativeTexture) t.anisotropy = Math.min(16,this.renderer.capabilities.getMaxAnisotropy());
@@ -1556,7 +1582,7 @@ export class SceneView {
         pending.push((async () => {
           const original = o.material;
           const materials = await Promise.all([original].flat().map(async (m) => {
-            if (!(m instanceof THREE.MeshStandardMaterial)) return m;
+            if (!(m instanceof THREE.MeshStandardMaterial)) { propDisplay.bindMaterial(o,m); return m; }
             const vertexScale = m.userData.sourceVertexLighting;
             if (typeof vertexScale === 'number') {
               const source = context.own(sourceVertexMaterial(m, vertexScale, this.sourceExposure,this.sourceAmbient.linearOutput,o.userData.sourceSky===true));
@@ -1569,18 +1595,21 @@ export class SceneView {
                 o.castShadow = false; sprites.push(o);
               } else if (o.userData.sourceDetail) { details.push(o);patchDetailBatchMaterial(o,source); }
               else await effects(source, m, o);
+              propDisplay.bindMaterial(o,m); propDisplay.bindMaterial(o,source);
               if (!o.userData.sourceSky && !o.userData.sourceSprite && !o.userData.sourceDetail && !m.userData.sourceUnlit) {
                 this.patchDynamicLighting(source); this.patchDynamicLighting(m);
               }
               return source;
             }
             const index = m.userData.sourceLightmap;
-            if (typeof index !== 'number') return m;
-            const lightmap = (!m.userData.sourcePropBrush ? sourceStyles?.textures.get(index) : null)
-              ?? await (materialParsers.get(m) ?? gltf.parser).getDependency('texture', index) as THREE.Texture;
+            if (typeof index !== 'number') { propDisplay.bindMaterial(o,m); return m; }
+            const parser = materialParsers.get(m) ?? gltf.parser;
+            const lightmap = (parser === gltf.parser ? sourceStyles?.lightmap(index, 'flat') : undefined)
+              ?? await parser.getDependency('texture', index) as THREE.Texture;
             context.own(lightmap);
             const source = context.own(sourceMaterial(m, lightmap, this.sourceExposure,this.sourceAmbient.linearOutput));
             await effects(source, m, o);
+            propDisplay.bindMaterial(o,m); propDisplay.bindMaterial(o,source);
             this.patchDynamicLighting(source);
             this.patchDynamicLighting(m);
             return source;
@@ -1592,28 +1621,40 @@ export class SceneView {
     });
     await Promise.all(pending).catch(async error=>{await Promise.allSettled(pending);throw error;});
     if (!current()) throw new DOMException('Map loading cancelled.','AbortError');
+    // Studio (non-Source) lighting draws these meshes through Three's shadow map;
+    // base-transformed (static or TextureScroll) cutouts cast the same silhouette in every lighting variant.
+    for (const variant of variants) bindSourceTemporalShadows(variant.mesh, [variant.original, variant.source].flat());
     const mainVisibility=visibilityData?context.own(new SourceVisibility(visibilityData,gltf.scene)):null;
     let sky3D:SourceSky3D|null=null;
     let skyLights:[THREE.Light,THREE.Light][]=[];
     if (visibilityData?.sky) {
       const byMesh = new Map(variants.map(v => [v.mesh,v]));
       sky3D = context.own(new SourceSky3D(visibilityData,gltf.scene,(original,clone) => {
+        propDisplay.linkClone(original,clone);
         const variant = byMesh.get(original);
         if (variant) variants.push({...variant,mesh:clone});
       }));
       skyLights = [this.hemi,this.sun,this.fill].map(light => [light,light.clone()]);
       for (const [, light] of skyLights) sky3D.scene.add(light);
     }
+    // Exercise the staged, view-dependent prop state with the current camera and
+    // actual viewport before exposure: a display contract error rejects staging
+    // instead of throwing from the first draw of a half-installed map.
+    this.renderer.getCurrentViewport(this.sourcePropViewport);
+    propDisplay.update(this.camera, { ...this.sourcePropView, levelScreenFade: propView?.levelScreenFade, viewportHeight: this.sourcePropViewport.w });
     let settled=false;
     return {dispose:()=>{if(!settled){settled=true;context.dispose();}},commit:()=>{
     if(settled)return;
     settled=true;
     if(!current()){context.dispose();return;}
     clear();
+    this.sourcePropView.levelScreenFade=propView?.levelScreenFade;
+    context.own({dispose:()=>{if(this.sourceMaterials===context)this.sourcePropView.levelScreenFade=undefined;}});
     this.sourceColorMap=mapManifest.source_renderer?.version===1||source.id==='nt_ghost_ctg';
     this.sourceColor.setColorCorrections(grading);this.configureCamera(this.camera);
     this.sourceSky=sky;this.sourceSprites=sprites;this.sourceDetails=details;
-    this.sourceMixer=mixer;this.sourceAnimationStart=performance.now();
+    this.sourceAnimations=animations;this.sourceAnimationStart=performance.now();
+    this.sourceProps=propDisplay;
     this.sourceVisibility=mainVisibility;this.sourceSky3D=sky3D;this.sourceSkyLights=skyLights;
     this.terrainMaterials = variants;
     this.sourceStyles = sourceStyles;

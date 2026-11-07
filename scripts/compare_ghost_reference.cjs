@@ -92,7 +92,7 @@ async function main() {
                         material.onBeforeCompile = (shader, renderer) => {
                             previous.call(material, shader, renderer);
                             let source = shader.fragmentShader;
-                            if (flatBump) source = source.replace('bump = texture2D(sourceEffectNormal, vSourceEffectUv);', 'bump = vec4(.31,.63,.87,1.);');
+                            if (flatBump) source = source.replace('bump = texture2D(sourceEffectNormal, vSourceEffectBaseUv);', 'bump = vec4(.31,.63,.87,1.);');
                             const next = source.replace('return result + specular * sourceExposure;', `return ${app};`);
                             if (next === source) window.__diagnosticShaderMisses++;
                             shader.fragmentShader = next;

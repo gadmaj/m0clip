@@ -4,6 +4,14 @@ import * as THREE from 'three';
 import { sourceDiffuseOnly } from '../render/source-textures';
 import { diffuseOnlyImage } from './lossless-images';
 
+const exportCopies = new WeakMap<THREE.Material, THREE.Material>();
+/** The live material a temporary export copy stands for (identity otherwise), so
+ * exporter plugins read live render state, such as Source base UV bindings, without
+ * the copy owning or mutating it. */
+export function losslessExportSource(material: THREE.Material): THREE.Material {
+  return exportCopies.get(material) ?? material;
+}
+
 export function prepareLosslessTextures(root: THREE.Object3D): () => void {
   const textures = new Map<THREE.Texture,Map<boolean,THREE.Texture>>();
   const materials = new Map<THREE.Material,THREE.Material>();
@@ -15,7 +23,7 @@ export function prepareLosslessTextures(root: THREE.Object3D): () => void {
       &&(value.userData.sourceNativeTexture||value.userData.mimeType==='image/webp'||gray&&name==='map'&&value.format===THREE.RGBAFormat));
     const wireframe = 'wireframe' in original && original.wireframe === true;
     if (!entries.length && !wireframe) return original;
-    const clone = original.clone(); materials.set(original,clone);
+    const clone = original.clone(); materials.set(original,clone); exportCopies.set(clone, original);
     if (wireframe && 'wireframe' in clone) clone.wireframe = false;
     for (const [name,value] of entries) {
       const texture = value as THREE.Texture;
