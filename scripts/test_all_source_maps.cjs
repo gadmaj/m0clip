@@ -1,12 +1,13 @@
 /** Chromium: select upgraded maps through the real worker and render their native assets. */
-const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os');
+const artifactPath=require('./test-artifacts.cjs');
+const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const {readyApp}=require('./attach-ready-app.cjs');
 (async()=>{
  const root=path.resolve('public/assets/maps'),index=JSON.parse(await fs.readFile(path.join(root,'index.json'),'utf8'));
  const maps=process.env.MAP_IDS?process.env.MAP_IDS.split(','):index.maps.map(m=>m.id);
  assert.ok(maps.length&&maps.every(id=>index.maps.some(m=>m.id===id)));
- const output=process.env.MAP_CHECK_OUTPUT||path.join(os.homedir(),'.local/state/unitree-renderer/map-expansion/browser');
+ const output=process.env.MAP_CHECK_OUTPUT||artifactPath();
  await fs.mkdir(output,{recursive:true});
  const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});
  const results=[],errors=[];

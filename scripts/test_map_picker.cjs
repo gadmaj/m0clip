@@ -1,4 +1,5 @@
 /** Chromium: complete visual map gallery, real previews, search, keyboard and narrow screens. */
+const artifactPath=require('./test-artifacts.cjs');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert = require('node:assert/strict');
 const { chooseVisual } = require('./choose-visual.cjs');
@@ -68,7 +69,7 @@ const { readyApp } = require('./attach-ready-app.cjs');
     await search.fill('nt_ghost_ctg.bsp');
     assert.equal(await visibleCards.count(), 1, 'Full filename search finds the matching card');
     assert.equal(await visibleCards.first().getAttribute('data-value'), 'map:nt_ghost_ctg');
-    if (!process.env.SKIP_SCREENSHOTS) await page.screenshot({ path: '/tmp/map-picker-desktop.png', timeout: 60000 });
+    if (!process.env.SKIP_SCREENSHOTS) await page.screenshot({ path: artifactPath('map-picker-desktop.png'), timeout: 60000 });
     await page.keyboard.press('Escape');
     assert.equal(await gallery.isVisible(), false);
     assert.equal(await trigger.textContent(), originalLabel, 'Cancel leaves the visible selection unchanged');
@@ -116,7 +117,7 @@ const { readyApp } = require('./attach-ready-app.cjs');
         assert.ok(picture && tile && picture.y >= tile.y && picture.y + picture.height <= tile.y + tile.height + 1,
           'The card must contain its visible picture rather than spilling into the next row');
       }
-      if (!process.env.SKIP_SCREENSHOTS) await page.screenshot({ path: `/tmp/map-picker-mobile-${width}.png`, timeout: 60000 });
+      if (!process.env.SKIP_SCREENSHOTS) await page.screenshot({ path: artifactPath(`map-picker-mobile-${width}.png`), timeout: 60000 });
       const bounds = await gallery.boundingBox();
       assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width);
       assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= 844);

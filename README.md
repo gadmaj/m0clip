@@ -156,6 +156,15 @@ conversion records are left out of builds; keep them with your source assets.
 
 </details>
 
+<details>
+<summary>Browser-check artifacts</summary>
+
+Checks using `scripts/test-artifacts.cjs` create a private output directory for
+each invocation. Set `QA_ARTIFACT_DIR` to choose its parent. Explicit `QA_OUTPUT`
+and `MAP_CHECK_OUTPUT` destinations still apply to their respective checks.
+
+</details>
+
 ## Host it
 
 Serve `dist/` at the root of an HTTPS origin (subdirectories need code changes)

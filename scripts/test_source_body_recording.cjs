@@ -1,4 +1,5 @@
 /** Native Dog: load gating, skin, paint/light/fade, recording, GLB/PNG and stock restoration. */
+const artifactPath=require('./test-artifacts.cjs');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict');
 const {chooseVisual}=require('./choose-visual.cjs'),{readyApp}=require('./attach-ready-app.cjs');
 const path=require('node:path'),buildFixture=require('./build-fixture.cjs');
@@ -68,13 +69,13 @@ v.setDisplay(displayBefore);v.setFlashlight(flashlightBefore);
 const stage=a.stage();const frames=await renderVideo({width:240,height:180,fps:5,speed:1,t0:0,t1:.4,container:'png',codec:'avc',quality:'medium',transparent:false,floor:true},stage,()=>{},new AbortController().signal);return{initial,glb,pngBytes:frames.size}});
 const downloadReady=page.waitForEvent('download');
 await page.evaluate(()=>window.__app.dialog.host.save(window.__bodyExport,'glb'));
-const download=await downloadReady;await download.saveAs('/tmp/source-dog-export.glb');
+const download=await downloadReady;await download.saveAs(artifactPath('source-dog-export.glb'));
 assert.ok(proof.initial.frames>=10);assert.equal(proof.initial.body,'dog');assert.equal(proof.initial.savedBody,'dog');assert.equal(proof.initial.triangles,5855);assert.equal(proof.initial.bones,58);assert.equal(proof.initial.stockVisible,0);assert.equal(proof.glb.triangles,5855);assert.equal(proof.glb.bones,58);assert.equal(proof.glb.animations,1);assert.ok(proof.glb.poseError<1e-4,JSON.stringify(proof.glb));assert.ok(proof.glb.tracks>=60&&proof.glb.base&&proof.glb.normal);
 await page.evaluate(()=>window.__app.closeReview());await page.waitForFunction(()=>!window.__app.timeline.isOpen);await chooseVisual(page,'character','stock');await page.waitForFunction(()=>window.__app.view.getBodyVisualState().applied==='stock');await page.evaluate(()=>window.__app.openReview());await page.waitForFunction(()=>window.__app.view.getBodyVisualState().applied==='dog');await page.evaluate(()=>window.__app.closeReview());await page.waitForFunction(()=>window.__app.view.getBodyVisualState().applied==='stock');await chooseVisual(page,'character','dog');await page.waitForFunction(()=>window.__app.view.getBodyVisualState().applied==='dog');
 const materialProof=await page.evaluate(()=>{const a=window.__app,v=a.view,original=v.getAppearance();v.setAppearance({...original,parts:{...original.parts,left_elbow_link:{color:0xff0000,finish:'matte'}}});const rig=v.sourceBody;const red=rig.materials.filter(e=>e.part==='left_elbow_link').every(e=>e.material.color.getHex()===0xff0000);v.setAppearance({...original,robotLight:{brightness:80,color:0xffffff,range:20,dull:false}});const bright=rig.materials.every(e=>e.material.emissiveIntensity===16&&e.material.emissiveMap===null);v.setAppearance({...original,robotLight:{brightness:80,color:0xffffff,range:20,dull:true}});const dull=rig.materials.every(e=>e.material.roughness===1&&e.material.metalness===0&&e.material.specularIntensity===0&&e.material.emissiveIntensity===0);v.setAppearance(original);v.setRobotOpacityOverride(.5);v.render();const fade=rig.materials.every(e=>e.material.opacity===.5);v.setRobotOpacityOverride(0);v.render();const hidden=!rig.root.visible&&v.robotLight.brightness.value===0;v.setRobotOpacityOverride(null);v.setRobotHidden(false);v.render();return{red,bright,dull,fade,hidden}});assert.ok(Object.values(materialProof).every(Boolean));
-await body.scrollIntoViewIfNeeded();if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:'/tmp/source-dog-r1-desktop.png'});
+await body.scrollIntoViewIfNeeded();if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:artifactPath('source-dog-r1-desktop.png')});
 await page.setViewportSize({width:390,height:844});
 if(!await body.isVisible())await page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}).click();
-await body.scrollIntoViewIfNeeded();if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:'/tmp/source-dog-r1-mobile.png'});
+await body.scrollIntoViewIfNeeded();if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:artifactPath('source-dog-r1-mobile.png')});
 const bounds=await body.boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=390);
 assert.deepEqual(errors,[]);console.log(JSON.stringify({...proof,materialProof,stockRestored:true,mobileBounds:bounds,errors}));}finally{await browser.close()}})().catch(e=>{console.error(e);process.exitCode=1});

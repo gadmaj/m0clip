@@ -1,12 +1,13 @@
 /** Chromium: character presets, mixed modules, persistence, takes and animated GLB export. */
-const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os');
+const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const {chooseVisual}=require('./choose-visual.cjs');
 const {readyApp}=require('./attach-ready-app.cjs');
+const artifactPath=require('./test-artifacts.cjs');
 (async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{
  const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:1}),errors=[],requests=[];
  page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});page.on('request',r=>{if(r.url().includes('/source-robots/'))requests.push(r.url())});
- const base=process.env.BASE_URL||'http://127.0.0.1:5176',output=path.join(os.homedir(),'.local/state/unitree-renderer/robot-modules');await fs.mkdir(output,{recursive:true});
+ const base=process.env.BASE_URL||'http://127.0.0.1:5176',output=artifactPath();await fs.mkdir(output,{recursive:true});
  // Attach the real Ready App; explicit probes and the live loop both keep drawing.
  const ready=()=>readyApp(page);
  await page.goto(base+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page, { terrain:'flat',controls:true }));await ready();await page.getByText('Robot appearance',{exact:true}).click();

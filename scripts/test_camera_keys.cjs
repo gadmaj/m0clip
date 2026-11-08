@@ -2,6 +2,7 @@
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert=require('node:assert/strict');
 const {readyApp}=require('./attach-ready-app.cjs');
+const artifactPath=require('./test-artifacts.cjs');
 (async()=>{
   const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});
   try {
@@ -36,7 +37,7 @@ const {readyApp}=require('./attach-ready-app.cjs');
     const stopped=await page.evaluate(()=>window.__app.view.camera.position.toArray());await page.keyboard.down('Numpad8');await page.waitForTimeout(150);assert.deepEqual(await page.evaluate(()=>window.__app.view.camera.position.toArray()),stopped);await page.keyboard.up('Numpad8');
     await page.keyboard.down('Numpad8');await page.waitForFunction(()=>window.__app.flight.velocity.lengthSq()>0);await page.keyboard.up('Numpad8');await page.keyboard.press('Numpad5');
     await page.locator('#flight-place').click();await canvas.dispatchEvent('keydown',{code:'Numpad2',key:'2',bubbles:true});assert.equal(await page.evaluate(()=>window.__app.placingRobot&&!window.__app.flight.active),true);assert.equal(await page.evaluate(()=>window.__sent.filter(m=>m.t==='state').length),0);await page.keyboard.press('Escape');
-    if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:'/tmp/camera-keys-desktop.png'});
+    if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:artifactPath('camera-keys-desktop.png')});
     // Main-row digits keep the robot state shortcuts; editors keep arrow navigation.
     await page.keyboard.press('n');await page.keyboard.press('2');await page.waitForFunction(()=>window.__app.status.state==='lock');
     await page.locator('#terrain-trigger').click();const gallery=page.locator('dialog[data-visual-picker="terrain"]'),search=gallery.getByRole('searchbox');await search.focus();await page.keyboard.press('ArrowDown');await page.keyboard.press('Numpad2');assert.equal(await page.evaluate(()=>window.__app.noclip),false);assert.equal(await page.evaluate(()=>window.__app.status.state), 'lock');assert.equal(await gallery.isVisible(),true);await page.keyboard.press('Escape');await canvas.focus();
@@ -44,7 +45,7 @@ const {readyApp}=require('./attach-ready-app.cjs');
     await page.keyboard.down('Numpad2');await page.waitForFunction(()=>window.__app.noclip);await page.keyboard.up('Numpad2');await page.keyboard.press('Numpad0');await page.keyboard.press('n');
     await page.keyboard.press('v');await page.waitForFunction(()=>window.__app.rec?.frames>=20);await page.keyboard.press('v');await page.waitForFunction(()=>window.__app.timeline.isOpen);
     await page.evaluate(()=>window.__app.timeline.seek(0));await page.keyboard.press('ArrowRight');assert.equal(await page.evaluate(()=>window.__app.noclip),false);assert.ok(await page.evaluate(()=>window.__app.timeline.time)>0);await page.evaluate(()=>window.__app.closeReview());
-    await canvas.focus();await page.keyboard.press('ArrowUp');await page.keyboard.press('Numpad5');await page.setViewportSize({width:390,height:844});if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:'/tmp/camera-keys-mobile.png'});
+    await canvas.focus();await page.keyboard.press('ArrowUp');await page.keyboard.press('Numpad5');await page.setViewportSize({width:390,height:844});if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:artifactPath('camera-keys-mobile.png')});
     const hud=await page.locator('#flight-hud').boundingBox();assert.ok(hud.x>=0&&hud.x+hud.width<=390&&hud.y>=0&&hud.y+hud.height<=844);assert.deepEqual(errors,[]);
     console.log(JSON.stringify({arrowsStartFlight:true,directions,numLockOff:true,noNumpadRobotStateChanges:true,stopRepeat:true,speedKeys:true,placementProtected:true,editorProtected:true,timelinePreserved:true,mainRowStates:true,browserShortcuts:true,heldShiftOnEntry:true,ctrlSpace:true,mobileHud:hud,errors}));
   } finally {await browser.close();}

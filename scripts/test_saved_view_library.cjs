@@ -1,5 +1,6 @@
 /** Chromium: searchable view library, editing, reversible deletion and storage failures. */
 const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),{readyApp}=require('./attach-ready-app.cjs');
+const artifactPath=require('./test-artifacts.cjs');
 (async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{
  const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:1}),errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.addInitScript(()=>localStorage.setItem('ume-prefs',JSON.stringify({robot:'r1',terrain:'flat'})));
@@ -56,8 +57,8 @@ const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=requ
  await page.evaluate(()=>{window.__app.pendingViewRestore={id:10000}});await name.fill('Partial restore');await name.press('Enter');assert.equal(await name.inputValue(),'Partial restore');assert.ok(await page.getByText(/Wait for the view to finish restoring/).count());await page.evaluate(()=>{window.__app.pendingViewRestore=null});
  if(!process.env.SKIP_SCREENSHOTS){
   await name.fill('');await page.evaluate(()=>{const e=window.__app.explore;e.link.hidden=true;e.showMessage('');});
-  await search.scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-library-desktop.png'});
-  await page.setViewportSize({width:390,height:844});await showScene();await search.scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-library-mobile.png'});
+  await search.scrollIntoViewIfNeeded();await page.screenshot({path:artifactPath('saved-library-desktop.png')});
+  await page.setViewportSize({width:390,height:844});await showScene();await search.scrollIntoViewIfNeeded();await page.screenshot({path:artifactPath('saved-library-mobile.png')});
  }
  const layout=await list.evaluate(element=>({scrollWidth:element.scrollWidth,width:element.clientWidth,maxHeight:getComputedStyle(element).maxHeight,buttons:[...element.querySelectorAll('.saved-view-actions .btn')].map(b=>b.getBoundingClientRect().height)}));assert.ok(layout.scrollWidth<=layout.width);if(!process.env.SKIP_SCREENSHOTS)assert.ok(layout.buttons.every(h=>h>=44));
  const persisted=await page.evaluate(()=>localStorage.getItem('ume-saved-views-v1'));

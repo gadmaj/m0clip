@@ -1,4 +1,5 @@
 /** Chromium: saved views restore native visuals, camera roll and navigation after model loading. */
+const artifactPath=require('./test-artifacts.cjs');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const assert=require('node:assert/strict');
 const {chooseVisual}=require('./choose-visual.cjs');
@@ -106,7 +107,7 @@ const {readyApp}=require('./attach-ready-app.cjs');
     await chooseVisual(race,'robot','go2');assert.equal(await race.evaluate(()=>!!window.__app.pendingViewRestore),false);release();
     await race.waitForFunction(()=>window.__app.viewModel?.robot==='go2');await race.waitForTimeout(150);assert.equal(await race.evaluate(()=>window.__app.noclip),false);assert.equal(await race.evaluate(()=>window.__app.view.getBodyVisualState().applied),'stock');
     // Compact layouts show one advanced panel at a time; Saved views lives in Scene.
-    if(!process.env.SKIP_SCREENSHOTS){await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-views-desktop.png'});await page.setViewportSize({width:390,height:844});await page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}).click();await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-views-mobile.png'});}
+    if(!process.env.SKIP_SCREENSHOTS){await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:artifactPath('saved-views-desktop.png')});await page.setViewportSize({width:390,height:844});await page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}).click();await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:artifactPath('saved-views-mobile.png')});}
     const bounds=await page.getByRole('button',{name:'Dog inspection',exact:true}).boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<= (process.env.SKIP_SCREENSHOTS?1440:390));
     assert.deepEqual(errors,[]);console.log(JSON.stringify({savedAppearance:true,sourceHead:true,robotLight:true,roll:true,flight:true,freshLink:true,crossModelTerrain:true,recordingGuard:true,reviewGuard:true,exportGuard:true,legacy:true,latestSelection:true,manualNavigationCancels:true,bounds,errors}));
   }finally{await browser.close();}

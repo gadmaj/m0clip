@@ -2,6 +2,7 @@
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert = require('node:assert/strict');
 const { readyApp } = require('./attach-ready-app.cjs');
+const artifactPath=require('./test-artifacts.cjs');
 
 (async () => {
   const browser = await chromium.launch({
@@ -128,7 +129,7 @@ const { readyApp } = require('./attach-ready-app.cjs');
 
     await policy.click();
     await search.fill('walk');
-    if (!process.env.SKIP_SCREENSHOTS) await page.screenshot({ path: '/tmp/policy-picker-desktop.png' });
+    if (!process.env.SKIP_SCREENSHOTS) await page.screenshot({ path: artifactPath('policy-picker-desktop.png') });
     const mobile = [];
     for (const width of [390, 320]) {
       await page.setViewportSize({ width, height: 844 });
@@ -152,7 +153,7 @@ const { readyApp } = require('./attach-ready-app.cjs');
         const box = image.getBoundingClientRect();
         return box.bottom > 0 && box.top < innerHeight && box.width > 0 && box.height > 0;
       }).map(image => image.decode())));
-      if (!process.env.SKIP_SCREENSHOTS) await page.screenshot({ path: `/tmp/policy-picker-${width}.png` });
+      if (!process.env.SKIP_SCREENSHOTS) await page.screenshot({ path: artifactPath(`policy-picker-${width}.png`) });
       mobile.push({ width, bounds });
     }
     await page.keyboard.press('Tab');
