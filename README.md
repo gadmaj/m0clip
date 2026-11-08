@@ -170,6 +170,13 @@ Pass that exact path to the texture check, which requires Pillow:
 SOURCE_DOG_EXPORT="/path/from/exportedGlb" .venv/bin/python scripts/test_source_dog_export_pixels.py
 ```
 
+Check complete local Source conversion with generated BSP, GMA and ZIP fixtures
+(no game files required):
+
+```sh
+node scripts/test_source_raw_assembly.mjs
+```
+
 </details>
 
 ## Host it

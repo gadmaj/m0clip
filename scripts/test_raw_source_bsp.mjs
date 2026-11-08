@@ -3,62 +3,11 @@ import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { build } from 'esbuild';
 import sourceLzmaCodec from '../src/maps/raw-source-lzma-codec.js';
+import { fixture, record } from './source_raw_map_fixture.cjs';
 const built = await build({ stdin: { contents: "export * from './src/maps/raw-source-bsp';export * from './src/maps/raw-source-lzma';export * from './src/maps/raw-source-physics';export * from './src/maps/raw-source-collision';", resolveDir: process.cwd() }, bundle: true, platform: 'node', format: 'cjs', write: false });
 const module = { exports: {} };
 new Function('module', 'exports', 'require', built.outputFiles[0].text)(module, module.exports, createRequire(import.meta.url));
 const { readSourceBsp, decodeSourceWorld, parseSourceEntities, decodeValveLzma, sourceWorldPhysicsXml, assembleSourceEntityCollision } = module.exports;
-const record = (size, fill) => { const b = Buffer.alloc(size); fill(b); return b; };
-function fixture({ version = 20, variant = 'standard', displacement = false, primitive = false } = {}) {
-  const entries = new Map();
-  const put = (id, bytes, version = 0, decoded = 0) => entries.set(id, { bytes, version, decoded });
-  put(0, Buffer.from('{"classname" "worldspawn"}\n{"classname" "info_player_start" "origin" "16 16 32" "angles" "0 90 0"}\0'));
-  put(1, record(120, b => {
-    for (let i = 0; i < 6; i++) { b.writeFloatLE(i % 2 ? -1 : 1, i * 20 + Math.floor(i / 2) * 4); b.writeFloatLE(i === 4 ? 0 : 64, i * 20 + 12); }
-  }));
-  put(2, record(32, b => { b.writeInt32LE(64, 16); b.writeInt32LE(64, 20); }));
-  put(3, record(48, b => { [0, 0, 0, 0, 64, 0, 64, 64, 0, 64, 0, 0].forEach((v, i) => b.writeFloatLE(v, i * 4)); }));
-  put(5, record(32, b => { b.writeInt32LE(-1, 4); b.writeInt32LE(-1, 8); }));
-  put(6, record(72, b => { b.writeFloatLE(1, 0); b.writeFloatLE(1, 20); b.writeFloatLE(1 / 16, 32); b.writeFloatLE(1 / 16, 52); }));
-  put(7, record(56, b => {
-    b.writeUInt16LE(4, 0); b.writeInt16LE(4, 8); b.writeInt16LE(displacement ? 0 : -1, 12);
-    b[17] = b[18] = b[19] = 255; b.writeInt32LE(4, 36); b.writeInt32LE(4, 40);
-    if (primitive) b.writeUInt16LE(0x8001, 48);
-  }), 1);
-  put(8, Buffer.alloc(100, 77), 1);
-  put(10, record(64, b => { b.writeUInt16LE(1, 26); b.writeUInt16LE(1, 32 + 24); b.writeUInt16LE(1, 32 + 26); }), 1);
-  put(12, record(16, b => { for (let i = 0; i < 4; i++) { b.writeUInt16LE(i, i * 4); b.writeUInt16LE((i + 1) % 4, i * 4 + 2); } }));
-  put(13, record(16, b => { for (let i = 0; i < 4; i++) b.writeInt32LE(i, i * 4); }));
-  put(14, record(48, b => { for (let i = 0; i < 3; i++) { b.writeFloatLE(-64, i * 4); b.writeFloatLE(i === 2 ? 0 : 64, 12 + i * 4); } b.writeInt32LE(1, 44); }));
-  put(17, Buffer.from([0, 0, 1, 0]));
-  put(18, record(24, b => { for (let i = 0; i < 2; i++) { b.writeInt32LE(i * 6, i * 12); b.writeInt32LE(6, i * 12 + 4); b.writeInt32LE(1, i * 12 + 8); } }));
-  put(19, record(96, b => { for (let i = 0; i < 12; i++) b.writeUInt16LE(i % 6, i * 8); }));
-  put(30, record(12, b => b.writeFloatLE(1, 8)));
-  put(31, Buffer.alloc(8));
-  put(43, Buffer.from('concrete/test\0')); put(44, Buffer.alloc(4));
-  if (displacement) {
-    // CONTENTS_SOLID; minTess carries no SURF_* collision flags.
-    put(26, record(176, b => { b.writeInt32LE(2, 20); b.writeInt32LE(1, 32); }));
-    put(33, record(500, b => { for (let i = 0; i < 25; i++) { b.writeFloatLE(1, i * 20 + 8); b.writeFloatLE(i % 5 + Math.floor(i / 5), i * 20 + 12); b.writeFloatLE(i * 10, i * 20 + 16); } }));
-    put(48, Buffer.alloc(64, 1));
-  }
-  if (primitive) {
-    put(37, record(version === 22 ? 16 : 10, b => { if (version === 22) b.writeUInt32LE(6, 8); else b.writeUInt16LE(6, 4); }));
-    put(39, record(12, b => [0, 1, 3, 1, 2, 3].forEach((v, i) => b.writeUInt16LE(v, i * 2))));
-  }
-  function blob() {
-    const header = Buffer.alloc(1036), bodies = []; header.write('VBSP'); header.writeInt32LE(version, 4); header.writeInt32LE(17, 1032);
-    let offset = 1036;
-    for (const [index, item] of entries) {
-      const p = 8 + index * 16;
-      header.writeUInt32LE(offset, p + (variant === 'standard' ? 0 : 4));
-      header.writeUInt32LE(item.bytes.length, p + (variant === 'standard' ? 4 : 8));
-      header.writeUInt32LE(item.version, p + (variant === 'standard' ? 8 : 0)); header.writeUInt32LE(item.decoded, p + 12);
-      bodies.push(item.bytes); offset += item.bytes.length;
-    }
-    return new Blob([header, ...bodies]);
-  }
-  return { entries, put, blob };
-}
 const entities = parseSourceEntities('// comment\n{ "k" "first" "k" "second" path "a\\b" "quote" "a\\\"b" }\0');
 assert.deepEqual(entities[0].pairs.slice(0, 2), [['k', 'first'], ['k', 'second']]);
 assert.equal(entities[0].values.path, 'a\\b'); assert.equal(entities[0].values.quote, 'a"b');
