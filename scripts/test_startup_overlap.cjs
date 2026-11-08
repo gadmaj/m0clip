@@ -277,6 +277,12 @@ async function waitDOM(cdp, expression, message, timeout = 30000) {
   while (Date.now() < deadline) { if (await readDOM(cdp, expression)) return; await delay(50); }
   throw new Error(message);
 }
+// The nearest scrolling ancestor, found the same way for measuring and for settling a wheel scroll.
+const scrollerOf = `element => {
+  let scroller = element.parentElement;
+  while (scroller && !(scroller.scrollHeight > scroller.clientHeight && /auto|scroll/.test(getComputedStyle(scroller).overflowY))) scroller = scroller.parentElement;
+  return scroller;
+}`;
 async function mouseDOM(page, cdp, selector) {
   let geometry;
   for (let attempt = 0; attempt < 12; attempt++) {
@@ -284,19 +290,28 @@ async function mouseDOM(page, cdp, selector) {
       const element = document.querySelector(${JSON.stringify(selector)});
       if (!element) return null;
       const rect = element.getBoundingClientRect(), x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
-      let scroller = element.parentElement;
-      while (scroller && !(scroller.scrollHeight > scroller.clientHeight && /auto|scroll/.test(getComputedStyle(scroller).overflowY))) scroller = scroller.parentElement;
+      const scroller = (${scrollerOf})(element);
       const clip = scroller?.getBoundingClientRect(), hit = element.contains(document.elementFromPoint(x, y));
+      const delta = clip ? y - (clip.y + clip.height / 2) : 0, top = scroller?.scrollTop;
+      const movable = !!scroller && (delta > 0 ? top < scroller.scrollHeight - scroller.clientHeight - 1 : top > 0);
       return { x, y, width: rect.width, height: rect.height, disabled: element.disabled,
         hit,
-        scroll: clip && (!hit || y < clip.top + 25 || y > clip.bottom - 25) ? {
+        scroll: clip && movable && (!hit || y < clip.top + 25 || y > clip.bottom - 25) ? {
           x: Math.max(1, Math.min(innerWidth - 1, clip.x + clip.width / 2)),
           y: Math.max(1, Math.min(innerHeight - 1, clip.y + clip.height / 2)),
-          delta: y - (clip.y + clip.height / 2) } : null };
+          delta, top } : null };
     })()`);
     if (geometry?.hit || !geometry?.scroll) break;
     await page.mouse.move(geometry.scroll.x, geometry.scroll.y);
-    await page.mouse.wheel(0, geometry.scroll.delta); await delay(100);
+    await page.mouse.wheel(0, geometry.scroll.delta);
+    // mouse.wheel returns before the scroll reaches page layout; measuring earlier repeats the wheel
+    // and clicks stale coordinates. Re-measure only once the scroller has moved and held across frames.
+    await waitDOM(cdp, `new Promise(resolve => {
+      const element = document.querySelector(${JSON.stringify(selector)}), scroller = element && (${scrollerOf})(element);
+      if (!scroller) return resolve(false);
+      const top = scroller.scrollTop;
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve(top !== ${JSON.stringify(geometry.scroll.top)} && scroller.scrollTop === top)));
+    })`, `Actual wheel scroll must settle before re-measuring ${selector}`);
   }
   assert.ok(geometry?.width && geometry.height && geometry.hit && !geometry.disabled, `Actual visible pointer target required: ${selector}: ${JSON.stringify(geometry)}`);
   await page.mouse.click(geometry.x, geometry.y);
@@ -415,7 +430,12 @@ async function restores(page, run, out) {
   await waitDOM(cdp, `!document.querySelector('#overlay').classList.contains('hidden')`, 'Actual flat rebuild must start before waiting for its completion', 10000);
   await waitDOM(cdp, `document.querySelector('#overlay').classList.contains('hidden')`, 'Flat physics must finish before saved restore', 120000);
   const start = run.resources.length;
+  // The live message changes the moment a restore begins ('Restoring view…', then its result); an unchanged
+  // message separates a pointer that missed the restore control from a restore that never finished.
+  const restoreMessage = `document.querySelector('.saved-view-state[aria-live]').textContent`;
+  const beforeRestore = await readDOM(cdp, restoreMessage);
   await mouseDOM(page, cdp, '.saved-view-restore[aria-label="Overlap Bullet"]');
+  await waitDOM(cdp, `${restoreMessage} !== ${JSON.stringify(beforeRestore)}`, 'Actual saved restore click must start the restore');
   if (process.env.OVERLAP_OBSERVATION === 'playwright') await page.getByText('View restored.', { exact: true }).waitFor({ timeout: 120000 });
   else await waitDOM(cdp, `[...document.querySelectorAll('.saved-view-state')].some(element => element.textContent === 'View restored.')`, 'Actual saved restore must finish', 120000);
   await waitDOM(cdp, `document.querySelector('#map-loading').hidden`, 'Restored map visuals must complete', 120000); await raf(page);
