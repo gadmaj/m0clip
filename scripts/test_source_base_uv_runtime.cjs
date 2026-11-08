@@ -138,10 +138,10 @@ const buildFixture=require('./build-fixture.cjs');
       if(result.raw)assert.deepEqual(result.actual,result.untransformed,`${label}: authored-UV sampler moved`);
       else assert.notDeepEqual(result.actual,result.untransformed,`${label}: fixture cannot distinguish coordinates`);
     }
-    // Native UV88 stores signed XY, not unsigned RGB. Both lighting variants
-    // must match an independently reconstructed, ordinary RGB normal texture.
+    // Native UV88 stores signed XY. Live lighting and portable GLB normals must
+    // match independent RGB references without changing shared native texels.
     const signedNormals=await page.evaluate(async()=>{
-      const {THREE,SourceMaterials,patchSourceMaterial,sourceVertexMaterial,SourceNativeTextures,GLTFLoader}=window.SourceBaseUvFixture;
+      const {THREE,SourceMaterials,patchSourceMaterial,sourceVertexMaterial,SourceNativeTextures,GLTFLoader,encodeSceneGlb}=window.SourceBaseUvFixture;
       const renderer=new THREE.WebGLRenderer({antialias:false});
       renderer.outputColorSpace=THREE.LinearSRGBColorSpace;
       const target=new THREE.WebGLRenderTarget(4,4),owner=new SourceMaterials();
@@ -182,31 +182,62 @@ const buildFixture=require('./build-fixture.cjs');
         patchSourceMaterial(source,original,{normal:normalMap},cache,undefined,undefined,0,true,owner);
         return{studio:original,source};
       };
-      const rows=[];
+      const rows=[],exports=[];
       try{
-        for(const [x,y] of [[0,0],[64,0],[-64,0],[0,64],[0,-64]]){
+        for(const [x,y] of [[0,0],[64,0],[-64,0],[0,64],[0,-64],[-128,127],[90,90]]){
           const actual=await native(x,y),before=Array.from(actual.image.data);
-          const sx=x/127,sy=y/127,z=Math.sqrt(Math.max(0,1-sx*sx-sy*sy));
+          const sx=Math.max(-1,x/127),sy=Math.max(-1,y/127),z=Math.sqrt(Math.max(0,1-sx*sx-sy*sy));
           const reference=owner.own(new THREE.DataTexture(new Float32Array([(sx+1)/2,(sy+1)/2,(z+1)/2,1]),1,1,THREE.RGBAFormat,THREE.FloatType));
           reference.colorSpace=THREE.NoColorSpace;reference.needsUpdate=true;
           const nativeVariants=variants(actual),referenceVariants=variants(reference);
           for(const variant of ['studio','source'])rows.push({
             variant,xy:[x,y],actual:render(nativeVariants[variant]),reference:render(referenceVariants[variant]),
           });
+          mesh.material=nativeVariants.studio;mesh.material.map=actual;
+          const blob=await encodeSceneGlb(mesh,renderer,[]);
+          const portable=await new GLTFLoader().parseAsync(await blob.arrayBuffer(),'');
+          let imported;portable.scene.traverse(object=>{if(object.isMesh)imported=object;});
+          const pixels=texture=>{
+            if(!texture?.image)throw Error('Portable GLB lost a texture binding');
+            const canvas=new OffscreenCanvas(1,1),context=canvas.getContext('2d');
+            context.drawImage(texture.image,0,0);
+            return Array.from(context.getImageData(0,0,1,1).data);
+          };
+          try{
+            exports.push({xy:[x,y],actual:pixels(imported?.material.normalMap),
+              reference:[sx,sy,z].map(value=>Math.round((value+1)*127.5)).concat(255),
+              base:pixels(imported?.material.map),baseReference:before.map(value=>Math.round(Math.max(0,Math.min(1,value))*255)),
+              liveRestored:mesh.material===nativeVariants.studio&&mesh.material.map===actual&&mesh.material.normalMap===actual});
+          }finally{
+            portable.scene.traverse(object=>{
+              if(!object.isMesh)return;object.geometry.dispose();
+              for(const texture of new Set([object.material.map,object.material.normalMap])){
+                texture?.image?.close?.();texture?.dispose();
+              }
+              object.material.dispose();
+            });
+          }
           if(JSON.stringify(Array.from(actual.image.data))!==JSON.stringify(before))
-            throw Error('Lighting changed the shared native signed-normal texels');
+            throw Error('Rendering or export changed the shared native signed-normal texels');
         }
-        return rows;
+        return {rendered:rows,exports};
       }finally{
         owner.clear();geometry.dispose();target.dispose();renderer.dispose();renderer.forceContextLoss();
       }
     });
-    for(const row of signedNormals)for(let i=0;i<row.actual.length;i++)
+    for(const row of signedNormals.rendered)for(let i=0;i<row.actual.length;i++)
       assert(Math.abs(row.actual[i]-row.reference[i])<=1,
         `${row.variant} UV88 ${row.xy}: pixel byte ${i} ${row.actual[i]} != decoded normal ${row.reference[i]}`);
     for(const variant of ['studio','source'])
-      assert(new Set(signedNormals.filter(row=>row.variant===variant).map(row=>row.reference.slice(0,3).join(','))).size>=4,
+      assert(new Set(signedNormals.rendered.filter(row=>row.variant===variant).map(row=>row.reference.slice(0,3).join(','))).size>=4,
         `${variant}: signed-normal references do not distinguish authored directions`);
+    for(const row of signedNormals.exports){
+      assert(row.liveRestored,`UV88 ${row.xy}: export replaced the live material or texture`);
+      for(let i=0;i<4;i++){
+        assert(Math.abs(row.actual[i]-row.reference[i])<=1,`UV88 ${row.xy}: portable normal byte ${i} ${row.actual[i]} != ${row.reference[i]}`);
+        assert(Math.abs(row.base[i]-row.baseReference[i])<=1,`UV88 ${row.xy}: normal conversion changed the shared base binding byte ${i}`);
+      }
+    }
     // Production DCC encoder with native (lossless-copied) textures and a static matrix.
     const exported=await page.evaluate(async()=>{
       const {THREE,SourceMaterials,patchSourceMaterial,sourceVertexMaterial,SourceNativeTextures,GLTFLoader,encodeSceneGlb}=window.SourceBaseUvFixture;

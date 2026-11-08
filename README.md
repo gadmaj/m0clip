@@ -228,8 +228,9 @@ uses normalized channels.
 Unsupported tint ranges and alpha/mask combinations stop conversion instead of
 changing authored values.
 
-UV88 bump maps keep their signed X/Y channels. Source and Studio lighting both
-reconstruct the surface normal without changing the stored texture pixels.
+UV88 bump maps store signed X/Y channels. Source and Studio lighting reconstruct
+their surface normals; GLB export converts them to standard RGB normal maps.
+Neither path changes the stored native texture pixels.
 
 </details>
 
