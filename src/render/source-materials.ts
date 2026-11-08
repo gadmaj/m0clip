@@ -58,6 +58,27 @@ function installTemporalTransform(material: THREE.Material, patch: TemporalTrans
   material.needsUpdate = true;
 }
 
+const signedNormalMaps = new WeakSet<THREE.MeshStandardMaterial>();
+
+/** UV88 is already signed XY; the Studio variant must reconstruct Z, not decode RGB. */
+function installSignedNormalMap(material: THREE.MeshStandardMaterial) {
+  if (material.normalMap?.userData.sourceNativeTexture?.format !== 22 || signedNormalMaps.has(material)) return;
+  signedNormalMaps.add(material);
+  const previous = material.onBeforeCompile, key = material.customProgramCacheKey();
+  material.onBeforeCompile = (shader, renderer) => {
+    previous.call(material, shader, renderer);
+    shader.fragmentShader = `
+      vec3 sourceUV88Normal(vec2 xy) {
+        return vec3(xy, sqrt(max(0.0, 1.0 - dot(xy, xy))));
+      }
+    ` + shader.fragmentShader.replace('#include <normal_fragment_maps>',
+      THREE.ShaderChunk.normal_fragment_maps.replaceAll('texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0',
+        'sourceUV88Normal( texture2D( normalMap, vNormalMapUv ).xy )'));
+  };
+  material.customProgramCacheKey = () => key + '|source-uv88-normal';
+  material.needsUpdate = true;
+}
+
 /** Depth cutouts share the owning material's live transform, including clear/rebind. */
 export function copySourceTemporalTransform(from: THREE.Material, to: THREE.Material) {
   const patch = temporalTransformPatches.get(from);
@@ -266,6 +287,7 @@ export function patchSourceMaterial(material: THREE.MeshBasicMaterial, original:
   resources: MaterialResources, cache?: PropLightCache, cube?: THREE.CubeTexture, origin?: number[], yaw = 0, hasTangent = false,context=defaultMaterials) {
   const meta = original.userData.sourceMaterial as Metadata | undefined;
   if (!meta) return;
+  installSignedNormalMap(original);
   // Legacy cutout imports marked all masked surfaces double-sided. Source's
   // $nocull flag controls this independently of alpha testing, in both looks.
   if (typeof meta.nocull === 'boolean') {

@@ -138,6 +138,75 @@ const buildFixture=require('./build-fixture.cjs');
       if(result.raw)assert.deepEqual(result.actual,result.untransformed,`${label}: authored-UV sampler moved`);
       else assert.notDeepEqual(result.actual,result.untransformed,`${label}: fixture cannot distinguish coordinates`);
     }
+    // Native UV88 stores signed XY, not unsigned RGB. Both lighting variants
+    // must match an independently reconstructed, ordinary RGB normal texture.
+    const signedNormals=await page.evaluate(async()=>{
+      const {THREE,SourceMaterials,patchSourceMaterial,sourceVertexMaterial,SourceNativeTextures,GLTFLoader}=window.SourceBaseUvFixture;
+      const renderer=new THREE.WebGLRenderer({antialias:false});
+      renderer.outputColorSpace=THREE.LinearSRGBColorSpace;
+      const target=new THREE.WebGLRenderTarget(4,4),owner=new SourceMaterials();
+      const geometry=new THREE.PlaneGeometry(2,2);geometry.computeTangents();
+      const scene=new THREE.Scene(),camera=new THREE.OrthographicCamera(-1,1,1,-1,.1,10);
+      camera.position.z=1;camera.updateMatrixWorld();
+      const light=new THREE.DirectionalLight(0xffffff,2);light.position.set(1.5,.8,2);
+      scene.add(light,new THREE.AmbientLight(0xffffff,.05));
+      const mesh=new THREE.Mesh(geometry);scene.add(mesh);
+      const cache={cube:[[.4,.1,.1],[.1,.4,.1],[.1,.1,.4],[.4,.4,.1],[.1,.4,.4],[.4,.1,.4]],lights:[]};
+      const render=material=>{
+        mesh.material=material;renderer.setRenderTarget(target);renderer.clear();renderer.render(scene,camera);
+        const pixels=new Uint8Array(64);renderer.readRenderTargetPixels(target,0,0,4,4,pixels);
+        return Array.from(pixels);
+      };
+      const native=async(x,y)=>{
+        const data=new Uint8Array(82),header=new DataView(data.buffer);
+        data.set([86,84,70,0]);header.setUint32(4,7,true);header.setUint32(8,2,true);header.setUint32(12,80,true);
+        header.setUint16(16,1,true);header.setUint16(18,1,true);header.setUint32(20,1|256,true);
+        header.setUint16(24,1,true);header.setUint32(52,22,true);data[56]=1;
+        header.setUint32(57,0xffffffff,true);header.setUint16(63,1,true);data[80]=x&255;data[81]=y&255;
+        const loader=new GLTFLoader();let textures;
+        loader.register(parser=>textures=new SourceNativeTextures(parser,owner,renderer));
+        await loader.parseAsync(JSON.stringify({
+          asset:{version:'2.0'},extensionsUsed:['M0CLIP_texture_vtf'],extensionsRequired:['M0CLIP_texture_vtf'],
+          buffers:[{byteLength:data.length,uri:'data:application/octet-stream;base64,'+btoa(String.fromCharCode(...data))}],
+          bufferViews:[{buffer:0,byteOffset:0,byteLength:data.length}],
+          textures:[{extensions:{M0CLIP_texture_vtf:{bufferView:0,frame:0,face:0,path:'fixture/signed-normal'}}}],
+          scenes:[{nodes:[]}],scene:0,
+        }),'');
+        return textures.get(0,THREE.NoColorSpace);
+      };
+      const variants=normalMap=>{
+        const original=owner.own(new THREE.MeshStandardMaterial({normalMap,roughness:1,metalness:0}));
+        // Non-Phong props deliberately use vertex lighting; Phong props consume the bump normal.
+        original.userData.sourceMaterial={shader:'vertexlitgeneric',nocull:false,phong:true};
+        const source=owner.own(sourceVertexMaterial(original,1,{value:1},{value:1}));
+        patchSourceMaterial(source,original,{normal:normalMap},cache,undefined,undefined,0,true,owner);
+        return{studio:original,source};
+      };
+      const rows=[];
+      try{
+        for(const [x,y] of [[0,0],[64,0],[-64,0],[0,64],[0,-64]]){
+          const actual=await native(x,y),before=Array.from(actual.image.data);
+          const sx=x/127,sy=y/127,z=Math.sqrt(Math.max(0,1-sx*sx-sy*sy));
+          const reference=owner.own(new THREE.DataTexture(new Float32Array([(sx+1)/2,(sy+1)/2,(z+1)/2,1]),1,1,THREE.RGBAFormat,THREE.FloatType));
+          reference.colorSpace=THREE.NoColorSpace;reference.needsUpdate=true;
+          const nativeVariants=variants(actual),referenceVariants=variants(reference);
+          for(const variant of ['studio','source'])rows.push({
+            variant,xy:[x,y],actual:render(nativeVariants[variant]),reference:render(referenceVariants[variant]),
+          });
+          if(JSON.stringify(Array.from(actual.image.data))!==JSON.stringify(before))
+            throw Error('Lighting changed the shared native signed-normal texels');
+        }
+        return rows;
+      }finally{
+        owner.clear();geometry.dispose();target.dispose();renderer.dispose();renderer.forceContextLoss();
+      }
+    });
+    for(const row of signedNormals)for(let i=0;i<row.actual.length;i++)
+      assert(Math.abs(row.actual[i]-row.reference[i])<=1,
+        `${row.variant} UV88 ${row.xy}: pixel byte ${i} ${row.actual[i]} != decoded normal ${row.reference[i]}`);
+    for(const variant of ['studio','source'])
+      assert(new Set(signedNormals.filter(row=>row.variant===variant).map(row=>row.reference.slice(0,3).join(','))).size>=4,
+        `${variant}: signed-normal references do not distinguish authored directions`);
     // Production DCC encoder with native (lossless-copied) textures and a static matrix.
     const exported=await page.evaluate(async()=>{
       const {THREE,SourceMaterials,patchSourceMaterial,sourceVertexMaterial,SourceNativeTextures,GLTFLoader,encodeSceneGlb}=window.SourceBaseUvFixture;
