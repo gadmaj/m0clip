@@ -1,5 +1,5 @@
 /** Chromium: geometry beyond 100m survives live, shot, PNG and animated glTF cameras. */
-const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),{readyApp}=require('./attach-ready-app.cjs'),{bundle}=require('./source_map_fixture.cjs');
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),{readyApp}=require('./attach-ready-app.cjs'),{bundle}=require('./source_map_fixture.cjs'),captureGlb=require('./capture-glb.cjs');
 const positions=new Float32Array([-30,150,-30,30,150,-30,30,150,30,-30,150,-30,30,150,30,-30,150,30]);
 const fixture={asset:{version:'2.0'},scene:0,scenes:[{nodes:[0]}],nodes:[{mesh:0}],
  buffers:[{uri:'data:application/octet-stream;base64,'+Buffer.from(positions.buffer).toString('base64'),byteLength:positions.byteLength}],bufferViews:[{buffer:0,byteLength:positions.byteLength}],
@@ -31,7 +31,8 @@ const fixture={asset:{version:'2.0'},scene:0,scenes:[{nodes:[0]}],nodes:[{mesh:0
  assert.match(proof.terrain,/^map:local-[a-f0-9]{64}$/);assert.deepEqual(proof.clipped,[0,0,0,0]);assert.deepEqual(proof.live,[255,0,0,255]);assert.deepEqual(proof.exported,[255,0,0,255]);assert.ok(proof.planes.every(p=>Number.isFinite(p.near)&&p.near>0&&p.infinite&&p.finiteMatrix));
  await page.evaluate(()=>window.__app.startRecording());await page.waitForFunction(()=>window.__app.rec?.frames>=10);await page.evaluate(()=>window.__app.stopRecording());await page.waitForFunction(()=>window.__app.timeline.isOpen);
  await page.evaluate(()=>{const a=window.__app;a.shot.mode='viewport';a.shot.smooth=0;a.rebuildShot()});
- const gltf=await page.evaluate(async()=>{const a=window.__app,blob=await a.dialog.host.glb(5,true,false),buffer=await blob.arrayBuffer(),view=new DataView(buffer),length=view.getUint32(12,true),json=JSON.parse(new TextDecoder().decode(new Uint8Array(buffer,20,length)));return{bytes:blob.size,camera:json.cameras[0].perspective,keys:json.animations[0].channels.filter(c=>json.nodes[c.target.node].name==='shot_camera').length}});
+ const exportedGlb=await captureGlb(page,{fps:5,camera:true,floor:false,file:'source-camera-runtime.glb'});
+ const gltf=await page.evaluate(async()=>{const blob=window.__exportedGlb;if(!(blob instanceof Blob))throw new Error('The actual export dialog did not save a GLB.');const buffer=await blob.arrayBuffer(),view=new DataView(buffer),length=view.getUint32(12,true),json=JSON.parse(new TextDecoder().decode(new Uint8Array(buffer,20,length)));return{bytes:blob.size,camera:json.cameras[0].perspective,keys:json.animations[0].channels.filter(c=>json.nodes[c.target.node].name==='shot_camera').length}});
  assert.ok(Number.isFinite(gltf.camera.znear)&&gltf.camera.znear>0);assert.ok(!Object.hasOwn(gltf.camera,'zfar'));assert.ok(gltf.keys>=2);
  const video=await page.evaluate(async()=>{
   const a=window.__app,d=a.dialog;Object.assign(d.out,{res:'custom',width:96,height:64,fps:5,speed:1,container:'png',transparent:true,floor:false});a.openExport('video');const range=d.host.range,save=d.host.save;let blob;d.host.range=()=>[0,.2];d.host.save=b=>{blob=b};
@@ -40,5 +41,5 @@ const fixture={asset:{version:'2.0'},scene:0,scenes:[{nodes:[0]}],nodes:[{mesh:0
  const files=require('fflate').unzipSync(new Uint8Array(video)),png=Object.values(files)[0];
  const pngPixel=await page.evaluate(async bytes=>{const bitmap=await createImageBitmap(new Blob([new Uint8Array(bytes)],{type:'image/png'})),canvas=document.createElement('canvas');canvas.width=96;canvas.height=64;const ctx=canvas.getContext('2d');ctx.drawImage(bitmap,0,0);bitmap.close();return Array.from(ctx.getImageData(48,32,1,1).data)},Array.from(png));assert.deepEqual(pngPixel,[255,0,0,255]);
  const reset=await page.evaluate(async()=>{const a=window.__app,v=a.view;await v.setTerrainVisual(null);v.renderWith(a.exportCam);v.renderFramed(a.shotCam,1.5);return[v.camera,a.shotCam,a.exportCam].map(c=>[c.near,c.far])});assert.deepEqual(reset,originalPlanes);
- assert.deepEqual(errors,[]);console.log(JSON.stringify({...proof,gltf,pngPixel,reset,errors}));
+ assert.deepEqual(errors,[]);console.log(JSON.stringify({...proof,gltf,exportedGlb,pngPixel,reset,errors}));
 }finally{await browser.close()}})().catch(e=>{console.error(e);process.exitCode=1});

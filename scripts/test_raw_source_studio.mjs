@@ -1,9 +1,5 @@
-/** Browser studio/prop CPU boundaries; no temporal, physics or visual qualification.
+/** CPU Studio/prop boundaries; no temporal, physics or visual qualification.
  * node scripts/test_raw_source_studio.mjs
- * Real explicit loose mounts: append --model models/props_rooftop/roof_vent002.mdl
- * --root /.../vpk-files/https___z.noclip.website_HalfLife2_hl2_misc
- * --root /.../vpk-files/https___z.noclip.website_HalfLife2_hl2_textures
- * Optional --bsp /.../nt_ghost_ctg.bsp exercises real absolute sprp offsets.
  */
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';

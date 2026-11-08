@@ -1,8 +1,5 @@
 /** CPU material boundaries. Synthetic authored fixtures only; no renderer fidelity claim.
  * Run: node scripts/test_raw_source_vmt.mjs
- * Optional real input: append --material NAME with ordered --bsp-pak BSP,
- * --vpk DIRECTORY_VPK [--chunk INDEX=FILE], or --file MATERIALS_PATH=FILE.
- * Each mount flag appends a lower-precedence mount. --chunk belongs to preceding VPK.
  */
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';

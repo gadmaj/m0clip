@@ -1,10 +1,6 @@
-/** CPU GLTFLoader/SourceVisibility/SourceSky3D/native-material consumers only.
+/** CPU fixtures for GLTFLoader/SourceVisibility/SourceSky3D/native materials.
  * Run: node scripts/test_raw_source_world_glb.mjs
- * Optional real ownership seam: --bsp /absolute/map.bsp --loose-root /explicit/root
- * (repeat highest-precedence roots first), --file vfs/path=/absolute/file,
- * --out /private/new-output.glb. BSP pak precedes explicit loose selections.
- * Outputs are partial assets WITH blocking requirements, never raw-map qualification.
- * No network, graphics, installations or implicit game-directory discovery. */
+ * No network, graphics, installations or raw-map qualification. */
 import assert from 'node:assert/strict';
 
 

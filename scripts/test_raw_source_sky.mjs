@@ -1,5 +1,5 @@
 /** CPU-only actual GLTFLoader/native VTF/Source sky material consumers.
- * node scripts/test_raw_source_sky.mjs [--bsp FILE --root EXPLICIT_LOOSE_ROOT]
+ * Run: node scripts/test_raw_source_sky.mjs
  * No renderer/GPU, downloads, implicit game discovery or full-map qualification. */
 import assert from 'node:assert/strict';
 

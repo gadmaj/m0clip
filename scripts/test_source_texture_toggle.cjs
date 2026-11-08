@@ -1,5 +1,6 @@
 /** Chromium: diffuse-only mode preserves alpha, masks, animation and lossless exports. */
 const{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict');
+const captureGlb=require('./capture-glb.cjs');
 const{fixture,materialView,install}=require('./source_material_fixture.cjs'),{bundle}=require('./source_map_fixture.cjs'),{readyApp}=require('./attach-ready-app.cjs');
 (async()=>{const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{
  // Component-only material matrix: each owned mode is a verified local bundle installed in the real renderer.
@@ -39,14 +40,17 @@ const{fixture,materialView,install}=require('./source_material_fixture.cjs'),{bu
  await readyApp(page,{until:()=>window.__app.view.terrainObject&&window.__app.model.terrain.startsWith('map:local-'),timeout:180000});
  await page.getByText('Render controls',{exact:true}).click();await page.getByLabel('Textures',{exact:true}).uncheck();
  await page.evaluate(()=>window.__app.startRecording());await page.waitForFunction(()=>window.__app.rec?.frames>=10);await page.evaluate(()=>window.__app.stopRecording());await page.waitForFunction(()=>window.__app.timeline.isOpen);
+ // Snapshot the live material and map before the actual dialog export, then compare after it completes.
+ await page.evaluate(async()=>{const v=window.__app.view;await v.waitForTerrainVisuals();const material=[v.terrainMaterials[0].source].flat()[0];window.__textureLive={material,map:material.map}});
+ const exportedGlb=await captureGlb(page,{fps:5,camera:true,floor:false,file:'source-texture-toggle.glb'});
  const exported=await page.evaluate(async()=>{
-  const a=window.__app,v=a.view;await v.waitForTerrainVisuals();const live=[v.terrainMaterials[0].source].flat()[0],map=live.map;
-  const blob=await a.dialog.host.glb(5,true,false),buffer=await blob.arrayBuffer(),view=new DataView(buffer),length=view.getUint32(12,true),json=JSON.parse(new TextDecoder().decode(new Uint8Array(buffer,20,length))),material=json.materials.find(m=>m.name==='Source texture probe');
+  const a=window.__app,v=a.view,{material:live,map}=window.__textureLive,blob=window.__exportedGlb;delete window.__textureLive;if(!(blob instanceof Blob))throw new Error('The actual GLB export did not retain its saved Blob.');
+  const buffer=await blob.arrayBuffer(),view=new DataView(buffer),length=view.getUint32(12,true),json=JSON.parse(new TextDecoder().decode(new Uint8Array(buffer,20,length))),material=json.materials.find(m=>m.name==='Source texture probe');
   const texture=json.textures[material.pbrMetallicRoughness.baseColorTexture.index],image=json.images[texture.source],slice=json.bufferViews[image.bufferView],bytes=new Uint8Array(buffer,28+length+(slice.byteOffset||0),slice.byteLength);
-  return{png:Array.from(bytes),bytes:blob.size,alphaMode:material.alphaMode,cutoff:material.alphaCutoff,liveMapRetained:live.map===map,textureEnabled:a.explore.getDisplay().textures};
+  return{png:Array.from(bytes),bytes:blob.size,alphaMode:material.alphaMode,cutoff:material.alphaCutoff,liveMaterialRetained:[v.terrainMaterials[0].source].flat()[0]===live,liveMapRetained:live.map===map,textureEnabled:a.explore.getDisplay().textures};
  });
  const image=Buffer.from(exported.png),chunks=[];for(let at=8;at+12<=image.length;){const size=image.readUInt32BE(at),type=image.toString('ascii',at+4,at+8);if(type==='IDAT')chunks.push(image.subarray(at+8,at+8+size));if(type==='IEND')break;at+=size+12}
  const rgba=require('fflate').unzlibSync(Buffer.concat(chunks));assert.deepEqual([...rgba],[0,188,188,188,0,188,188,188,128,188,188,188,255]);
- delete exported.png;assert.equal(exported.alphaMode,'MASK');assert.equal(exported.cutoff,.5);assert.ok(exported.liveMapRetained&&!exported.textureEnabled);assert.deepEqual(errors,[]);
- console.log(JSON.stringify({results,exported,rgba:[...rgba],errors}));
+ delete exported.png;assert.equal(exported.alphaMode,'MASK');assert.equal(exported.cutoff,.5);assert.ok(exported.liveMaterialRetained&&exported.liveMapRetained&&!exported.textureEnabled);assert.deepEqual(errors,[]);
+ console.log(JSON.stringify({results,exported,exportedGlb,rgba:[...rgba],errors}));
 }finally{await browser.close()}})().catch(e=>{console.error(e);process.exitCode=1});

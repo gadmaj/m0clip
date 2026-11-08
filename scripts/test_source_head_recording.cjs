@@ -7,12 +7,12 @@ const assert=require('node:assert/strict');
 const {chooseVisual}=require('./choose-visual.cjs');
 const {readyApp}=require('./attach-ready-app.cjs');
 const path=require('node:path'),buildFixture=require('./build-fixture.cjs');
+const captureGlb=require('./capture-glb.cjs');
 (async()=>{
 const fixture=await buildFixture({
   root:path.resolve(__dirname,'..'),
   source:`
     export { saveTake, loadTake } from './src/record/take';
-    export { renderVideo } from './src/record/export-video';
     export { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     export { unzipSync } from 'fflate';
   `,
@@ -46,16 +46,11 @@ await page.addScriptTag({content:fixture.code});
 if(fixture.css)await page.addStyleTag({content:fixture.css});
 const takeProof=await page.evaluate(async()=>{const a=window.__app;const {saveTake,loadTake}=window.HeadRecordingFixture;const blob=await saveTake(a.take);const loaded=await loadTake(await blob.arrayBuffer());return{frames:a.take.n,duration:a.take.duration,head:a.take.meta.sourceHead,savedHead:loaded.meta.sourceHead,reviewHead:a.view.getSourceHead()};});assert.equal(takeProof.head,'ghost');assert.equal(takeProof.savedHead,'ghost');
 console.log('Head fixture: native recording and ZIP passed');
+// The actual Export .glb action exports live objects through the release-owned Three instance.
+const exportedGlb=await captureGlb(page,{fps:10,camera:false,floor:false,file:'source-head-recording.glb',range:[0,Math.min(.4,takeProof.duration)]});
 const glbProof=await page.evaluate(async()=>{
-  const a=window.__app;
-  // Export live objects through their release-owned Three instance, not the parsing fixture.
-  const previousRange=[a.timeline.rangeIn,a.timeline.rangeOut];let blob;
-  try{
-    a.timeline.rangeIn=0;a.timeline.rangeOut=Math.min(.4,a.take.duration);
-    blob=await a.dialog.host.glb(10,false,false);
-  }finally{
-    [a.timeline.rangeIn,a.timeline.rangeOut]=previousRange;
-  }
+  const blob=window.__exportedGlb;
+  if(!(blob instanceof Blob))throw new Error('The actual export dialog did not save a GLB.');
   const binary=await blob.arrayBuffer();
   const {GLTFLoader}=window.HeadRecordingFixture;
   const loaded=await new GLTFLoader().parseAsync(binary,'');
@@ -70,9 +65,19 @@ assert.ok(glbProof.base&&glbProof.normal&&glbProof.exportedNode);
 assert.equal(glbProof.source,'models/nt/props_tech/girlbot_head.mdl');
 console.log('Head fixture: animated GLB passed');
 const pngProof=await page.evaluate(async()=>{
-  const a=window.__app;
-  const {renderVideo}=window.HeadRecordingFixture;
-  const blob=await renderVideo({width:240,height:180,fps:5,speed:1,t0:0,t1:.4,container:'png',codec:'avc',quality:'medium',transparent:false,floor:true},a.stage(),()=>{},new AbortController().signal);
+  // The actual Render video job owns the stage; restore the dialog state it reads afterward.
+  const a=window.__app,d=a.dialog,out={...d.out},range=[a.timeline.rangeIn,a.timeline.rangeOut],save=d.host.save;let blob;
+  try{
+    Object.assign(d.out,{res:'custom',width:240,height:180,fps:5,speed:1,container:'png',codec:'avc',quality:'medium',transparent:false,floor:true});
+    [a.timeline.rangeIn,a.timeline.rangeOut]=[0,.4];
+    d.host.save=(b,extension)=>{if(extension==='png.zip')blob=b;};
+    a.openExport('video');
+    await d.renderVideoJob();
+    if(!blob)throw new Error(d.status.textContent);
+  }finally{
+    d.host.save=save;d.close();Object.assign(d.out,out);
+    [a.timeline.rangeIn,a.timeline.rangeOut]=range;
+  }
   const {unzipSync}=window.HeadRecordingFixture;
   const files=unzipSync(new Uint8Array(await blob.arrayBuffer()));
   return{frames:Object.values(files).map(data=>{
@@ -116,5 +121,5 @@ await require('./launch-scene.cjs').launchScene(page, { controls: true });
 await readyApp(page);
 assert.equal(await page.evaluate(()=>window.__app.view.getSourceHead()),'stock');
 assert.deepEqual(errors,[]);
-console.log(JSON.stringify({takeProof,glbProof,pngProof,oldProof,stockRestored:true,reloadPreference:'stock',errors}));
+console.log(JSON.stringify({takeProof,glbProof,exportedGlb,pngProof,oldProof,stockRestored:true,reloadPreference:'stock',errors}));
 }finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1});

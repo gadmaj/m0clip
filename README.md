@@ -163,6 +163,13 @@ Checks using `scripts/test-artifacts.cjs` create a private output directory for
 each invocation. Set `QA_ARTIFACT_DIR` to choose its parent. Explicit `QA_OUTPUT`
 and `MAP_CHECK_OUTPUT` destinations still apply to their respective checks.
 
+`test_source_body_recording.cjs` reports its downloaded GLB as `exportedGlb`.
+Pass that exact path to the texture check, which requires Pillow:
+
+```sh
+SOURCE_DOG_EXPORT="/path/from/exportedGlb" .venv/bin/python scripts/test_source_dog_export_pixels.py
+```
+
 </details>
 
 ## Host it

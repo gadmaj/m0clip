@@ -1,10 +1,5 @@
 /** CPU fixtures exercise real native sidecar consumers, not renderer/GPU fidelity.
  * Run: node scripts/test_raw_source_lighting.mjs
- * Actual owned BSP seam: append --bsp /absolute/BSP --map-name actual_map_stem
- * --file VFS_PATH=/absolute/FILE explicitly selects local companion files.
- * Optional --oracle PRIVATE_JSON compares native Python atlas bytes, placements,
- * all ambient probe values and original direct-light vectors, not just counts.
- * No flags scan installations, fetch files, write proprietary data, or run a GPU.
  */
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
