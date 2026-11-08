@@ -189,6 +189,18 @@ This uses the same generated fixtures and reports its output as `resultsPath`.
 It checks import, companion precedence, cancellation and saved-shot reattachment;
 it does not establish compatibility with arbitrary game maps.
 
+Check saved-view editing and restoration against the same built preview:
+
+```sh
+export BASE_URL=http://localhost:4173
+export HEADLESS=1 CHROMIUM_PATH=/path/to/chrome
+node scripts/test_saved_view_library.cjs
+node scripts/test_saved_views_runtime.cjs
+```
+
+These cover library edits, storage failures, appearance restoration and saved-view
+locks during recording, review and export. Software rendering can make them slow.
+
 </details>
 
 ## Host it

@@ -85,22 +85,58 @@ const {readyApp}=require('./attach-ready-app.cjs');
       return{before,after:a.captureView(),modelKept:a.viewModel===model,takeKept:a.timeline.isOpen&&a.take===take};
     },go2);
     assert.deepEqual(reviewGuard.after,reviewGuard.before);assert.ok(reviewGuard.modelKept&&reviewGuard.takeKept);
-    await page.evaluate(()=>window.__app.closeReview());
-    const exportGuard=await page.evaluate(async view=>{
-      const a=window.__app,before=a.captureView(),model=a.viewModel;a.exporting=true;
-      try{await a.explore.restoreView(view)}finally{a.exporting=false}
-      return{before,after:a.captureView(),modelKept:a.viewModel===model};
-    },go2);
-    assert.deepEqual(exportGuard.after,exportGuard.before);assert.ok(exportGuard.modelKept);
+    // Hold genuine export preparation, not the App's exporting flag (same boundary as export-setup).
+    await page.evaluate(()=>{
+      const a=window.__app,d=a.dialog,stage=d.host.stage,out={...d.out};let release;
+      const gate=new Promise(resolve=>{release=resolve});
+      const task=window.__savedViewExport={waiting:false,release,restore:()=>{d.host.stage=stage;Object.assign(d.out,out)}};
+      Object.assign(d.out,{res:'custom',width:240,height:160,fps:5,speed:1,container:'png',transparent:true});
+      a.openExport('video');
+      d.host.stage=()=>{const value=stage();return{...value,prepare:async()=>{task.waiting=true;await gate;await value.prepare?.()}}};
+      task.job=d.renderVideoJob();
+    });
+    let exportGuard,guardFailure;
+    try{
+      await page.waitForFunction(()=>window.__savedViewExport.waiting);
+      exportGuard=await page.evaluate(async view=>{
+        const a=window.__app,before=a.captureView(),model=a.viewModel,take=a.take;
+        const active=a.exporting&&a.dialog.busy,readOnly=a.explore.readOnly;
+        await a.explore.restoreView(view);
+        return{before,after:a.captureView(),modelKept:a.viewModel===model,takeKept:a.take===take,active,readOnly};
+      },go2);
+      assert.ok(exportGuard.active&&exportGuard.readOnly&&exportGuard.takeKept);
+      assert.deepEqual(exportGuard.after,exportGuard.before);assert.ok(exportGuard.modelKept);
+    }catch(error){guardFailure=error;throw error}
+    finally{
+      try{
+        await page.locator('#export').getByRole('button',{name:'Cancel',exact:true}).click();
+        await page.evaluate(async()=>{
+          const task=window.__savedViewExport;task.release();
+          try{await task.job}finally{task.restore();delete window.__savedViewExport}
+        });
+      }catch(error){if(!guardFailure)throw error;console.error('Export guard cleanup failed:',error)}
+    }
+    assert.equal(await page.evaluate(()=>window.__app.exporting||window.__app.dialog.busy||window.__app.explore.readOnly),false);
+    await page.evaluate(()=>{window.__app.dialog.close();window.__app.closeReview()});
     // Old camera-only bookmarks remain readable without overwriting the robot appearance.
     const legacy={...saved,look:{...saved.look}};delete legacy.look.antialiasing;for(const key of ['appearance','sourceHead','orientation','noclip','flight'])delete legacy[key];
     await page.evaluate(view=>window.__app.explore.restoreView(view),legacy);await restored(page);assert.deepEqual(await page.evaluate(()=>window.__app.view.getAppearance()),saved.appearance);
     assert.equal(await page.evaluate(()=>window.__app.view.sourceColor.antialiasing),'fxaa');
     // Latest selection wins even while the first view is waiting for a native model download.
     const raceContext=await browser.newContext({deviceScaleFactor:1}),race=await pageIn(raceContext);await race.goto(base+'/?plain').then(() => require('./launch-scene.cjs').launchScene(race, { terrain: 'flat', controls: true }));await ready(race);
+    const raceScene=race.locator('#workspace-panels button[aria-controls="scene-window"]');
+    if(await raceScene.getAttribute('aria-expanded')!=='true')await raceScene.click();
+    await race.getByText('Saved views',{exact:true}).click();
+    const pendingName=race.getByLabel('View name',{exact:true});await pendingName.fill('Partial restore');
     let release,started;const gate=new Promise(resolve=>release=resolve),requested=new Promise(resolve=>started=resolve);
     await race.route('**/assets/source-robots/halflife2-dog/dog.glb',async route=>{started();await gate;await route.continue();});
     await race.evaluate(view=>{void window.__app.explore.restoreView(view)},saved);await requested;
+    // A genuine held model restore cannot save a mixture of old scene and new camera settings.
+    assert.equal(await race.evaluate(()=>!!window.__app.pendingViewRestore||!!window.__app.viewRestoreAbort),true);
+    await pendingName.press('Enter');
+    assert.equal(await pendingName.inputValue(),'Partial restore');
+    assert.equal(await race.getByRole('button',{name:'Partial restore',exact:true}).count(),0);
+    assert.equal(await race.evaluate(()=>JSON.parse(localStorage.getItem('ume-saved-views-v1')||'[]').some(bookmark=>bookmark.name==='Partial restore')),false);
     const stock={...saved,appearance:{colorway:'grey',sourceBody:'stock',parts:{},robotLight:{brightness:0,color:0xffffff,range:8,dull:false}},position:[5,6,7],target:[2,3,4]};
     await race.evaluate(view=>window.__app.explore.restoreView(view),stock);await restored(race);await matches(race,stock);assert.equal(await race.evaluate(()=>window.__app.view.getBodyVisualState().applied),'stock');
     await race.evaluate(view=>{void window.__app.explore.restoreView(view)},saved);await race.waitForFunction(()=>window.__app.view.getBodyVisualState().loading);
@@ -109,6 +145,6 @@ const {readyApp}=require('./attach-ready-app.cjs');
     // Compact layouts show one advanced panel at a time; Saved views lives in Scene.
     if(!process.env.SKIP_SCREENSHOTS){await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:artifactPath('saved-views-desktop.png')});await page.setViewportSize({width:390,height:844});await page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}).click();await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:artifactPath('saved-views-mobile.png')});}
     const bounds=await page.getByRole('button',{name:'Dog inspection',exact:true}).boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<= (process.env.SKIP_SCREENSHOTS?1440:390));
-    assert.deepEqual(errors,[]);console.log(JSON.stringify({savedAppearance:true,sourceHead:true,robotLight:true,roll:true,flight:true,freshLink:true,crossModelTerrain:true,recordingGuard:true,reviewGuard:true,exportGuard:true,legacy:true,latestSelection:true,manualNavigationCancels:true,bounds,errors}));
+    assert.deepEqual(errors,[]);console.log(JSON.stringify({savedAppearance:true,sourceHead:true,robotLight:true,roll:true,flight:true,freshLink:true,crossModelTerrain:true,recordingGuard:true,reviewGuard:true,exportGuard:true,partialRestoreGuard:true,legacy:true,latestSelection:true,manualNavigationCancels:true,bounds,errors}));
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1});
