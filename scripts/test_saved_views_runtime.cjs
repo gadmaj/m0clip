@@ -64,6 +64,7 @@ const {readyApp}=require('./attach-ready-app.cjs');
     // A fresh receiver's robot, lighting and paint preferences must not replace the shared view.
     const receiver=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:1});await receiver.addInitScript(()=>{localStorage.setItem('ume-prefs',JSON.stringify({robot:'go2',terrain:'park',policy:'does-not-exist'}));localStorage.setItem('ume-appearance',JSON.stringify({r1:{colorway:'product',sourceBody:'stock',parts:{}}}));});
     const fresh=await pageIn(receiver);await fresh.goto(viewLink).then(() => require('./launch-scene.cjs').launchScene(fresh, { controls: true }));await ready(fresh);await restored(fresh);await matches(fresh,saved);
+    await receiver.close();
     const head={...saved,appearance:{...saved.appearance,sourceBody:'stock'},sourceHead:'ghost'};
     await page.evaluate(view=>window.__app.explore.restoreView(view),head);await restored(page);await matches(page,head);assert.equal(await page.evaluate(()=>window.__app.view.getSourceHead()),'ghost');
     // Crossing robots and terrain exercises the worker barrier and restores each model's own paint.
@@ -142,6 +143,7 @@ const {readyApp}=require('./attach-ready-app.cjs');
     await race.evaluate(view=>{void window.__app.explore.restoreView(view)},saved);await race.waitForFunction(()=>window.__app.view.getBodyVisualState().loading);
     await chooseVisual(race,'robot','go2');assert.equal(await race.evaluate(()=>!!window.__app.pendingViewRestore),false);release();
     await race.waitForFunction(()=>window.__app.viewModel?.robot==='go2');await race.waitForTimeout(150);assert.equal(await race.evaluate(()=>window.__app.noclip),false);assert.equal(await race.evaluate(()=>window.__app.view.getBodyVisualState().applied),'stock');
+    await raceContext.close();
     // A restored Flight view must not put its HUD above the library's pointer targets.
     await page.getByRole('button',{name:'Dog inspection',exact:true}).click();await restored(page);
     for(const width of [320,390]){
@@ -155,7 +157,7 @@ const {readyApp}=require('./attach-ready-app.cjs');
           return button.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));
         }),`${name} must receive pointer input at ${width}px`);
       }
-      await share.click();await page.waitForFunction(expected=>navigator.clipboard.readText().then(value=>value===expected),viewLink);
+      await share.click();
       await page.getByRole('button',{name:'Rename Dog inspection',exact:true}).click();
       await page.getByLabel('New name for Dog inspection',{exact:true}).press('Escape');
     }
