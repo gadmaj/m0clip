@@ -1,15 +1,15 @@
 /** Chromium keyboard routing: dedicated camera controls, Num Lock, stop, editor focus and timeline. */
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert=require('node:assert/strict');
+const {readyApp}=require('./attach-ready-app.cjs');
 (async()=>{
-  const browser=await chromium.launch({headless:process.env.HEADLESS==='1',args:['--no-sandbox','--ozone-platform=x11']});
+  const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});
   try {
     const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:process.env.LOW_DPR ? .25 : 1}),errors=[];
     page.on('pageerror',e=>errors.push(e.message));
-    await page.route('**/{src/main.ts*,assets/main-*.js}',async route=>{const response=await route.fetch();await route.fulfill({response,body:require('./expose-app.cjs')(await response.text())});});
-    await page.route('**/assets/main-*.js',async route=>{const response=await route.fetch(),original=await response.text();const body=require('./expose-app.cjs')(original);await route.fulfill({response,body});});
     await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain'+(process.env.TEST_MAP?'&map='+encodeURIComponent(process.env.TEST_MAP):'')).then(() => require('./launch-scene.cjs').launchScene(page,{terrain:process.env.TEST_MAP?undefined:'flat'}));
-    await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});
+    // The release chunk stays byte-identical; the real Ready App is attached through CDP.
+    await readyApp(page);
     if(await page.locator('#policy-notice').count())await page.locator('#policy-notice button').first().click();
     const canvas=page.locator('#viewport canvas');await canvas.focus();
     await page.evaluate(()=>{const a=window.__app,old=a.send.bind(a);window.__sent=[];a.send=m=>{window.__sent.push(m);old(m);};window.__origin=a.view.camera.position.toArray();});

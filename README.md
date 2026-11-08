@@ -63,6 +63,8 @@ from Source game files on your computer; the files are not uploaded.
 <details>
 <summary>More about scenes and takes</summary>
 
+- **Backquote** hides or shows panels when the viewport is focused.
+  **Tab** moves between controls.
 - On narrow screens, **Play**, **Scene** and **Reference clip** share one
   Controls area; use the buttons above it to switch.
 - **Reference clip** plays a motion CSV at the FPS you set. **Stop** hands control
@@ -71,6 +73,8 @@ from Source game files on your computer; the files are not uploaded.
   that motion from where the robot stands.
 - The policy gallery is grouped by activity. Each card names the motion and
   lists its robot variant, checkpoint and state number; search matches all three.
+  In each group, policies that run on the robot's current body come first;
+  choosing one of the others switches the body.
 - While a gallery is open, the scene behind it holds its last frame; simulation
   and playback keep running. Recording and screenshots still draw every frame.
 - In review, appearance, display, flashlight, lights and camera edits belong to
@@ -356,8 +360,8 @@ attribution, and list them in
 - Saved data belongs to one browser and hostname. It is not a cloud backup.
 - Policies must match the robot model, observation/action scheme and driver.
   This is a simulator, not a safety controller for a real robot.
-- Player mode moves like Garry’s Mod but does not run its game code. The knife
-  and weapon view models are not available yet.
+- Player mode moves like Garry’s Mod but does not run its game code. Authentic
+  game-weapon models, knives and their animations are not available yet.
 
 ## Credits and licenses
 

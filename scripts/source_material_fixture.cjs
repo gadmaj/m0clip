@@ -1,5 +1,6 @@
 /** Chromium pixels: Source projected lighting, albedo blending and independent native masks. */
-const {buildSync}=require('esbuild');
+const path=require('node:path'),{buildSync}=require('esbuild');
+const buildFixture=require('./build-fixture.cjs'),{bundle}=require('./source_map_fixture.cjs');
 const pngModule={exports:{}};new Function('module','exports','require',buildSync({entryPoints:['src/record/png.ts'],bundle:true,platform:'node',format:'cjs',write:false}).outputFiles[0].text)(pngModule,pngModule.exports,require);
 const png=(rgba,width=1)=>Buffer.from(pngModule.exports.encodeRgbaPNG(width,1,new Uint8Array(rgba)));
 const data=(rgba,width=1)=>'data:image/png;base64,'+png(rgba,width).toString('base64');
@@ -45,4 +46,39 @@ function fixture(mode){
  return result;
 }
 
-module.exports={fixture,png};
+/** Uniform linear projected-light cookie shared with the Source/noclip reference shaders. */
+const COOKIE_GRAY=64;
+const HARNESS='/__source-material-fixture';
+
+/** Component-only renderer harness. SceneView, bundle verification and the local-map registry come
+ * from one Vite IIFE sharing one Three instance; no App, App clock or App readiness is involved.
+ * Only the owned harness document is synthetic: the renderer fetches the real tracked flashlight.png
+ * unmodified, then this controlled cookie is bound to its projected-light uniform. */
+async function materialView(browser,errors){
+ const {code,css}=await buildFixture({root:path.resolve(__dirname,'..'),platform:'browser',format:'iife',globalName:'SourceMaterialFixture',
+  source:"export * as THREE from 'three';export {SceneView} from './src/render/scene';export {decodeMapBundle} from './src/maps/bundle';export {registerLocalMap} from './src/maps/source';"});
+ const page=await browser.newPage({deviceScaleFactor:1});
+ page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
+ await page.route('**'+HARNESS,route=>route.fulfill({contentType:'text/html',body:'<!doctype html><meta charset="utf-8"><style>html,body{margin:0}#view{width:64px;height:64px}</style><div id="view"></div>'}));
+ await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+HARNESS);
+ await page.addScriptTag({content:code});if(css)await page.addStyleTag({content:css});
+ await page.evaluate(async gray=>{
+  const {THREE,SceneView}=window.SourceMaterialFixture,view=new SceneView(document.querySelector('#view'));
+  await view.waitForFlashlight();
+  const cookie=new THREE.DataTexture(new Uint8Array([gray,gray,gray,255]),1,1);cookie.wrapS=cookie.wrapT=THREE.ClampToEdgeWrapping;cookie.needsUpdate=true;
+  view.flashlight.cookie.value=cookie;window.__view=view;
+ },COOKIE_GRAY);
+ return page;
+}
+
+/** Verify and register an owned glTF through the real m0clip-map bundle path, then install it. */
+async function install(page,name,document){
+ await page.evaluate(async({name,body})=>{
+  const {decodeMapBundle,registerLocalMap}=window.SourceMaterialFixture,bytes=Uint8Array.from(atob(body),c=>c.charCodeAt(0));
+  const source=registerLocalMap(await decodeMapBundle(new File([bytes],`${name}.map.zip`,{type:'application/zip'})));
+  await window.__view.setTerrainVisual(source);
+  if(window.__view.mapSource!==source)throw new Error(`${name} was not installed`);
+ },{name,body:bundle(document,{name}).toString('base64')});
+}
+
+module.exports={fixture,png,COOKIE_GRAY,materialView,install};

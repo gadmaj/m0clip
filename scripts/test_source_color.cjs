@@ -1,15 +1,21 @@
 /** Chromium pixel evidence for Source's final gamma/LUT and linear-light transparency. */
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict');
+const path=require('node:path'),buildFixture=require('./build-fixture.cjs');
 const encode=v=>v<=.0031308?v*12.92:1.055*v**(1/2.4)-.055;
 const decode=v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4;
 const quantize=v=>decode(Math.round(Math.max(0,Math.min(1,encode(v)))*255)/255);
 const lut=v=>{const p=Math.max(0,Math.min(1,v))*31,i=Math.floor(p),a=Math.floor(i*255/31),b=Math.floor(Math.min(i+1,31)*255/31);return(a+(b-a)*(p-i))/255};
 const output=v=>Math.round(lut(Math.max(0,v)**(1/2.2))*255);
-(async()=>{const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});try{
+(async()=>{const {code,css}=await buildFixture({root:path.resolve(__dirname,'..'),platform:'browser',format:'iife',globalName:'SourceColorFixture',source:`
+  export * as THREE from 'three';
+  export {SourceColor,sourceIdentityLut} from './src/render/source-color';
+  export {sourceVertexMaterial} from './src/render/source-lighting';`});
+const browser=await chromium.launch({headless:process.env.HEADLESS==='1',...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{}),args:['--no-sandbox','--ozone-platform=x11']});try{
   const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text())});
   const base=process.env.BASE_URL||'http://127.0.0.1:5176';await page.route(base+'/?color-test',r=>r.fulfill({contentType:'text/html',body:'<body></body>'}));await page.goto(base+'/?color-test');
+  await page.addScriptTag({content:code});if(css)await page.addStyleTag({content:css});
   const proof=await page.evaluate(async()=>{
-    const THREE=await import('/node_modules/.vite/deps/three.js'),{SourceColor,sourceIdentityLut}=await import('/src/render/source-color.ts'),{sourceVertexMaterial}=await import('/src/render/source-lighting.ts');
+    const {THREE,SourceColor,sourceIdentityLut,sourceVertexMaterial}=window.SourceColorFixture;
     const renderer=new THREE.WebGLRenderer({alpha:true,preserveDrawingBuffer:true});document.body.append(renderer.domElement);renderer.setPixelRatio(2);renderer.setSize(64,64);renderer.setClearColor(0,0);renderer.toneMapping=THREE.NoToneMapping;
     const post=new SourceColor(),linear={value:0},scene=new THREE.Scene(),camera=new THREE.OrthographicCamera(-1,1,1,-1,.1,10);camera.position.z=3;camera.up.set(0,1,0);camera.lookAt(0,0,0);const plane=new THREE.PlaneGeometry(2,2);
     const make=(rgb,z,opacity=1,add=false)=>{const original=new THREE.MeshStandardMaterial({color:new THREE.Color(...rgb),transparent:opacity<1,opacity,depthWrite:opacity===1});original.userData.sourceUnlit=true;const material=sourceVertexMaterial(original,1,{value:1},linear);if(add)material.blending=THREE.AdditiveBlending;const mesh=new THREE.Mesh(plane,material);mesh.position.z=z;scene.add(mesh);return mesh};

@@ -45,13 +45,25 @@ export class VisualPicker {
   }
   sync(preserveSearch=false){
     const selected=this.select.selectedOptions[0],label=selected?.label,detail=selected?.dataset.detail;
-    this.button.textContent=`${label || this.config.label} ▦`;
-    // One name line and one detail line keep the trigger height fixed; the full detail stays in title, aria-label and the gallery card.
-    if(detail){const text=document.createElement('span');text.className='visual-picker-trigger-text';const name=document.createElement('span');name.textContent=this.button.textContent;const small=document.createElement('small');small.className='visual-picker-detail';small.textContent=detail;text.append(name,small);this.button.replaceChildren(text);}
+    // Every trigger uses one name line; optional detail stays on its own line.
+    const text=document.createElement('span'),name=document.createElement('span');
+    text.className='visual-picker-trigger-text';name.textContent=`${label || this.config.label} ▦`;text.append(name);
+    if(detail){const small=document.createElement('small');small.className='visual-picker-detail';small.textContent=detail;text.append(small);}
+    this.button.replaceChildren(text);
     this.button.setAttribute('aria-label',label?`${this.config.label}: ${label}${detail?`, ${detail}`:''}`:this.config.label);
-    if(detail)this.button.title=detail; else this.button.removeAttribute('title');
+    this.button.title=`${label || this.config.label}${detail?` · ${detail}`:''}`;
     const thumbnail=selected?.dataset.preview;
-    if(thumbnail){registerPreviewAsset(thumbnail);const image=document.createElement('img');image.crossOrigin='anonymous';image.loading='lazy';image.decoding='async';image.src=thumbnail;image.alt='';image.onerror=()=>{image.remove();this.button.append(' · Preview unavailable');};this.button.prepend(image);}
+    if(thumbnail){
+      registerPreviewAsset(thumbnail);
+      const image=document.createElement('img');image.crossOrigin='anonymous';image.loading='lazy';image.decoding='async';image.src=thumbnail;image.alt='';
+      image.onerror=()=>{
+        if(!this.button.contains(image))return;
+        image.remove();name.append(' · Preview unavailable');
+        this.button.title+=' · Preview unavailable';
+        this.button.setAttribute('aria-label',`${this.button.getAttribute('aria-label')} · Preview unavailable`);
+      };
+      this.button.prepend(image);
+    }
     this.button.disabled=this.disabled;
     if(this.dialog){
       if(preserveSearch&&!this.button.disabled&&this.refreshIncluded)this.refreshIncluded();

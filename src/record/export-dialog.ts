@@ -150,6 +150,7 @@ export class ExportDialog {
   private refreshVideoFields: (() => void) | null = null;
   /** Robot entity chosen for a Player take's per-robot CSV. */
   private csvEntity: string | null = null;
+  private opener: HTMLElement | null = null;
 
   constructor(readonly root: HTMLElement, readonly host: ExportHost) {
     this.out = loadPrefs().out;
@@ -169,6 +170,12 @@ export class ExportDialog {
     this.body = h("div", "x-body");
     root.append(head, this.body);
     root.addEventListener("keydown", (e) => {
+      const target = e.target;
+      const editing = target instanceof HTMLInputElement || target instanceof HTMLSelectElement ||
+        target instanceof HTMLTextAreaElement || target instanceof HTMLElement && target.isContentEditable;
+      // V still records from non-editable setup controls; contain every movement/typing key.
+      if (!this.busy && !editing && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey &&
+          (e.key === "v" || e.key === "V")) return;
       if (e.key === "Escape" && !this.busy) { e.stopPropagation(); this.close(); }
       e.stopPropagation();          // typing in a field must not drive the robot or the timeline
     });
@@ -178,19 +185,23 @@ export class ExportDialog {
 
   open(tab: "video" | "data") {
     if (this.busy) return;
+    if (!this.isOpen) this.opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.root.hidden = false;
     document.body.classList.add("x-open");
     this.show(tab);
+    this.tabs.get(tab)?.focus({ preventScroll: true });
   }
 
   close() {
-    if (this.busy) return;
+    if (this.busy || !this.isOpen) return;
     this.refreshVideoFields = null;
     for (const { picker } of this.pickers) picker.dispose();
     this.pickers = [];
     this.root.hidden = true;
     document.body.classList.remove("x-open");
     this.host.onClose();
+    const opener = this.opener; this.opener = null;
+    if (opener?.isConnected) opener.focus({ preventScroll: true });
   }
 
   /** Output frame aspect (w / h) — the preview letterbox follows it. */

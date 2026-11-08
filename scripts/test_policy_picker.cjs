@@ -1,7 +1,7 @@
 /** Chromium: policy gallery retains canonical checkpoints, search and input isolation. */
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert = require('node:assert/strict');
-const attachReadyApp = require('./attach-ready-app.cjs');
+const { readyApp } = require('./attach-ready-app.cjs');
 
 (async () => {
   const browser = await chromium.launch({
@@ -15,9 +15,8 @@ const attachReadyApp = require('./attach-ready-app.cjs');
     page.on('pageerror', error => errors.push(error.message));
     await page.goto((process.env.BASE_URL || 'http://127.0.0.1:5176') + '/?plain&body=stock');
     await require('./launch-scene.cjs').launchScene(page, { terrain: 'flat', controls: true });
-    await attachReadyApp(page.context(), page);
-    await page.waitForFunction(() => window.__app?.lastFrame &&
-      document.getElementById('overlay').classList.contains('hidden'), null, { timeout: 120000 });
+    // The release chunk stays byte-identical; the real Ready App is attached through CDP.
+    await readyApp(page);
 
     const policy = page.locator('#policy-trigger');
     const gallery = page.locator('dialog[data-visual-picker="policy"]');
@@ -29,7 +28,7 @@ const attachReadyApp = require('./attach-ready-app.cjs');
     const original = await select.inputValue();
     const refresh = () => page.evaluate(() => {
       const app = window.__app;
-      app.panel.setPolicies(app.status.policies, app.status.policy, app.status.robot);
+      app.panel.setPolicies(app.status.policies, app.status.policy, app.status.robot, app.status.robotSpec);
     });
     const frames = () => page.evaluate(() => new Promise(resolve => {
       let ticks = 0;
@@ -107,6 +106,14 @@ const attachReadyApp = require('./attach-ready-app.cjs');
     const canonical = (await page.evaluate(() => window.__app.status.policies.map(entry => entry.name))).sort();
     assert.deepEqual((await select.evaluate(select => Array.from(select.options, option => option.value))).sort(), canonical);
     assert.deepEqual((await gallery.locator('button[data-value]').evaluateAll(buttons => buttons.map(button => button.dataset.value))).sort(), canonical);
+    // The running Air or EDU body's policies lead each section; cards follow the select order exactly.
+    const values = await select.evaluate(select => Array.from(select.options, option => option.value));
+    assert.deepEqual(await gallery.locator('button[data-value]').evaluateAll(buttons => buttons.map(button => button.dataset.value)), values);
+    const leads = await select.evaluate((select, spec) => Array.from(select.querySelectorAll('optgroup'), group =>
+      Array.from(group.querySelectorAll('option'), option => option.dataset.previewRobot.endsWith('_air') === spec.endsWith('_air'))),
+    await page.evaluate(() => window.__app.status.robotSpec));
+    for (const flags of leads) assert.deepEqual(flags, [...flags].sort((a, b) => Number(b) - Number(a)), 'Running body first in each section');
+    assert.ok(leads.some(flags => flags.includes(false)), 'Policies for the other body stay listed');
     await search.fill('locomotion');
     const byCategory = await cards.count();
     assert.equal(await gallery.locator('button[data-value="amp_locomotion/amp_locomotion"]').isVisible(), true);

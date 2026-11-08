@@ -1,11 +1,9 @@
 /** Chromium integration: native skyline, foreground depth, camera paths and cleanup. */
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
-const assert=require('node:assert/strict'),fs=require('node:fs');
-(async()=>{const b=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});try{const p=await b.newPage({deviceScaleFactor:Number(process.env.TEST_DPR||1)}),errors=[];p.on('pageerror',e=>errors.push(e.message));p.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
-const renderLoop=body=>process.env.RENDER_ON_DEMAND?body.replaceAll('this.renderLoop()','void 0'):body;
-await p.route('**/{src/main.ts*,assets/main-*.js}',async r=>{const response=await r.fetch();await r.fulfill({response,body:renderLoop(require('./expose-app.cjs')(await response.text()))})});
-await p.route('**/assets/main-*.js',async r=>{const response=await r.fetch();const original=await response.text(),body=renderLoop(require('./expose-app.cjs')(original));await r.fulfill({response,body})});
-await p.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&map=nt_ghost_ctg').then(() => require('./launch-scene.cjs').launchScene(p));await p.waitForFunction(()=>window.__app?.view.terrainObject&&window.__app.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:180000});
+const assert=require('node:assert/strict'),fs=require('node:fs'),{readyApp}=require('./attach-ready-app.cjs');
+(async()=>{const b=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{const p=await b.newPage({deviceScaleFactor:1}),errors=[];p.on('pageerror',e=>errors.push(e.message));p.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
+// The release chunk stays byte-identical; the real Ready App is attached through CDP.
+await p.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&map=nt_ghost_ctg').then(() => require('./launch-scene.cjs').launchScene(p));await readyApp(p,{until:()=>window.__app.view.terrainObject,timeout:180000});
 const proof=await p.evaluate(()=>{const v=window.__app.view,sky=v.sourceSky3D,world=v.terrainObject,display={...v.display};v.setDisplay({...display,robot:false});world.visible=false;
 const camera=v.camera.clone(),spawn=camera.position.clone().set(...sky.data.spawn);camera.position.copy(spawn).applyMatrix3(sky.pvs.rotation).multiplyScalar(-.0254);camera.up.set(0,0,1);const direction=camera.position.clone().set(145,383,15).applyMatrix3(sky.pvs.rotation);camera.lookAt(camera.position.clone().add(direction));camera.fov=70;camera.aspect=1.5;camera.updateProjectionMatrix();
 const canvas=document.createElement('canvas');canvas.width=600;canvas.height=400;const ctx=canvas.getContext('2d');const read=()=>{ctx.clearRect(0,0,600,400);ctx.drawImage(v.renderer.domElement,0,0);return ctx.getImageData(0,0,600,400).data};
