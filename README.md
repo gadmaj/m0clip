@@ -177,6 +177,18 @@ Check complete local Source conversion with generated BSP, GMA and ZIP fixtures
 node scripts/test_source_raw_assembly.mjs
 ```
 
+With Playwright and Chrome installed, check the local-map UI and import workers
+against a built preview:
+
+```sh
+BASE_URL=http://localhost:4173 HEADLESS=1 CHROMIUM_PATH=/path/to/chrome \
+  node scripts/test_source_raw_intake_runtime.cjs
+```
+
+This uses the same generated fixtures and reports its output as `resultsPath`.
+It checks import, companion precedence, cancellation and saved-shot reattachment;
+it does not establish compatibility with arbitrary game maps.
+
 </details>
 
 ## Host it
