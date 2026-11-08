@@ -142,6 +142,25 @@ const {readyApp}=require('./attach-ready-app.cjs');
     await race.evaluate(view=>{void window.__app.explore.restoreView(view)},saved);await race.waitForFunction(()=>window.__app.view.getBodyVisualState().loading);
     await chooseVisual(race,'robot','go2');assert.equal(await race.evaluate(()=>!!window.__app.pendingViewRestore),false);release();
     await race.waitForFunction(()=>window.__app.viewModel?.robot==='go2');await race.waitForTimeout(150);assert.equal(await race.evaluate(()=>window.__app.noclip),false);assert.equal(await race.evaluate(()=>window.__app.view.getBodyVisualState().applied),'stock');
+    // A restored Flight view must not put its HUD above the library's pointer targets.
+    await page.getByRole('button',{name:'Dog inspection',exact:true}).click();await restored(page);
+    for(const width of [320,390]){
+      await page.setViewportSize({width,height:844});
+      await page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}).click();
+      assert.ok(await page.locator('#flight-hud').isVisible(),'Exercise saved actions while Flight is active');
+      for(const name of ['Dog inspection','Share Dog inspection','Rename Dog inspection','Delete Dog inspection']){
+        const target=page.getByRole('button',{name,exact:true});await target.scrollIntoViewIfNeeded();
+        assert.ok(await target.evaluate(button=>{
+          const r=button.getBoundingClientRect();
+          return button.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));
+        }),`${name} must receive pointer input at ${width}px`);
+      }
+      await share.click();await page.waitForFunction(expected=>navigator.clipboard.readText().then(value=>value===expected),viewLink);
+      await page.getByRole('button',{name:'Rename Dog inspection',exact:true}).click();
+      await page.getByLabel('New name for Dog inspection',{exact:true}).press('Escape');
+    }
+    await page.setViewportSize(viewport);
+    if(await expandScene.isVisible())await expandScene.click();
     // Compact layouts show one advanced panel at a time; Saved views lives in Scene.
     if(!process.env.SKIP_SCREENSHOTS){await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:artifactPath('saved-views-desktop.png')});await page.setViewportSize({width:390,height:844});await page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}).click();await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:artifactPath('saved-views-mobile.png')});}
     const bounds=await page.getByRole('button',{name:'Dog inspection',exact:true}).boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<= (process.env.SKIP_SCREENSHOTS?1440:390));
