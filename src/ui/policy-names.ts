@@ -1,5 +1,5 @@
 /** Activity sections in gallery order; robot variants are card detail, never sections. */
-export const POLICY_ACTIVITIES = ['Locomotion', 'Dynamic motions', 'Dance & gestures', 'Martial arts',
+const POLICY_ACTIVITIES = ['Locomotion', 'Dynamic motions', 'Dance & gestures', 'Martial arts',
   'Motion imitation', 'Recovery & poses', 'Other policies'] as const;
 
 /** Presentation only. Canonical identifiers remain unchanged for inference,
@@ -36,4 +36,30 @@ export function policyPresentation(name: string): { title: string; label: string
     category = 'Other policies';
   }
   return { title, label: `${title} (${name})`, category, description };
+}
+
+/** Declared robot variants: 0 Air-only, 1 Air + EDU, 2 EDU-only, 3 undeclared. */
+export function policyVariantRank(models?: readonly string[]): number {
+  if (!models?.length) return 3;
+  const air = models.includes('air'), edu = models.includes('edu');
+  return air && !edu ? 0 : air ? 1 : 2;
+}
+
+/** Activity sections in POLICY_ACTIVITIES order. Within a section, policies the worker would run on the
+ * running robot's body (`_air` spec or not, from `previewRobot`) come first; every other policy stays listed
+ * after them. Both parts keep the Air-only, Air + EDU, EDU-only, FSM State, name order. */
+export function policySections<T extends { name: string; previewRobot: string; fsmId?: number; models?: string[] }>(
+  entries: readonly T[], robotSpec = ''): [string, T[]][] {
+  const other = (e: T) => robotSpec && e.previewRobot.endsWith('_air') !== robotSpec.endsWith('_air') ? 1 : 0;
+  const ordered = [...entries].sort((a, b) => other(a) - other(b)
+    || policyVariantRank(a.models) - policyVariantRank(b.models)
+    || (a.fsmId ?? 1e9) - (b.fsmId ?? 1e9) || a.name.localeCompare(b.name));
+  const sections = new Map<string, T[]>();
+  for (const e of ordered) {
+    const category = policyPresentation(e.name).category;
+    const list = sections.get(category);
+    if (list) list.push(e); else sections.set(category, [e]);
+  }
+  const activities: readonly string[] = POLICY_ACTIVITIES;
+  return [...sections].sort((a, b) => activities.indexOf(a[0]) - activities.indexOf(b[0]));
 }

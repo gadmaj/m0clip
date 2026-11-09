@@ -4,6 +4,7 @@ import type { PlayerTables, PlayerTakeEvent, PlayerTakeMeta } from './player-tak
 import { validPlayerModelIdentity } from './player-take';
 import { validLook, validShotEdits, validShotLights } from './post';
 import { validDisplay } from '../render/display';
+import { validSourceTime } from '../render/source-clock';
 import type { RenderModel, SceneIdentity } from '../sim/protocol';
 import type { SceneMode } from '../player/types';
 import { denseGeometryPartition, validGeometryData, type GeometryData, type GeometryPartition } from '../core/geometry';
@@ -84,7 +85,7 @@ export function validMeta(meta: TakeMeta): boolean {
     && typeof meta.policy === 'string' && date(meta.created) && integer(meta.ngeom) && meta.ngeom > 0 && integer(meta.nq)
     && Number.isInteger(meta.baseQadr) && (meta.baseQadr === -1 || meta.baseQadr >= 0 && meta.baseQadr + 7 <= meta.nq)
     && Array.isArray(meta.hinges) && meta.hinges.every(h => object(h) && typeof h.name === 'string' && integer(h.qadr) && h.qadr < meta.nq)
-    && (meta.sourceTime === undefined || Number.isFinite(meta.sourceTime))
+    && (meta.sourceTime === undefined || validSourceTime(meta.sourceTime))
     && (meta.display === undefined || validDisplay(meta.display))
     && (meta.flashlight === undefined || typeof meta.flashlight === 'boolean')
     && (meta.lights === undefined || validShotLights(meta.lights))

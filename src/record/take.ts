@@ -8,6 +8,7 @@
  * ./player-take); `RecordedTake` is either. */
 import type { Appearance } from "../render/scene";
 import { validDisplay, type SceneDisplay } from '../render/display';
+import { SOURCE_TIME_LIMIT_SECONDS, validSourceTime } from '../render/source-clock';
 import { unzip, zip } from "fflate";
 import {Matrix4,Quaternion,Vector3} from 'three';
 import type { Command, RobotSpec } from "../core/types";
@@ -403,6 +404,9 @@ export async function loadTake(data: ArrayBuffer): Promise<RecordedTake> {
   const head = JSON.parse(new TextDecoder().decode(raw));
   if (head.format !== FORMAT) throw new Error("not a take file");
   if (head.version !== 1 && head.version !== 2 && head.version !== 3) throw new Error('take file: unsupported version');
+  const meta: unknown = head.meta;
+  if (meta && typeof meta === 'object' && 'sourceTime' in meta && meta.sourceTime !== undefined && !validSourceTime(meta.sourceTime))
+    throw new Error(`take file: invalid map clock (sourceTime must be a number of seconds from 0 to ${SOURCE_TIME_LIMIT_SECONDS.toLocaleString('en-US')})`);
   const take = head.version === 3 ? loadPlayerFiles(head, files) : loadRobotFiles(head, files);
   if(files['shot.json']) {
     let shot:unknown;

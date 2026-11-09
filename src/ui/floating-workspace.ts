@@ -14,6 +14,9 @@ export class FloatingWorkspace {
   private workspaceTop = 84;
   private compactPanelId = 'play-window';
   private compactCollapsed = false;
+  // The stylesheet's compact breakpoint; innerWidth can disagree with it at the boundary.
+  private readonly narrow = matchMedia('(max-width: 760px)');
+  private readonly flightHud = element('flight-hud');
 
   constructor() {
     try { this.saved = JSON.parse(localStorage.getItem(STORAGE) || '{}') || {}; } catch { /* Use the default layout. */ }
@@ -22,6 +25,7 @@ export class FloatingWorkspace {
     const capture = this.window('capture-window', 'Reference clip', menu);
     const scene = this.window('scene-window', 'Scene', menu);
     const inspector = element('inspector');
+    let tools: HTMLElement | null = null;
     for (const child of original) {
       if (child.matches('.p-head')) {
         const packButton = child.querySelector('button');
@@ -29,18 +33,21 @@ export class FloatingWorkspace {
         child.remove();
       } else if (child.dataset.workspace === 'capture') capture.body!.append(child);
       else if (child.dataset.workspace === 'inspector') inspector.append(child);
+      else if (child.dataset.workspace === 'tools') tools = child;
       else if (child.matches('details')) scene.body!.append(child);
       else play.body!.append(child);
     }
-    this.register(play.root, play.body, 'Play', () => ({ x: 20, y: 96, collapsed: innerWidth <= 760 }));
-    this.register(scene.root, scene.body, 'Scene', () => ({ x: innerWidth <= 760 ? 12 : innerWidth - 324, y: innerWidth <= 760 ? 148 : 96, collapsed: innerWidth <= 760 }));
-    this.register(capture.root, capture.body, 'Reference clip', () => ({ x: innerWidth <= 760 ? 12 : innerWidth - 324, y: innerWidth <= 760 ? 200 : Math.min(352, innerHeight - 310), collapsed: true }));
+    // Window chrome follows the scene settings people open Scene for.
+    if (tools) scene.body!.append(tools);
+    this.register(play.root, play.body, 'Play', () => ({ x: 20, y: 96, collapsed: this.narrow.matches }));
+    this.register(scene.root, scene.body, 'Scene', () => ({ x: this.narrow.matches ? 12 : innerWidth - 324, y: this.narrow.matches ? 148 : 96, collapsed: this.narrow.matches }));
+    this.register(capture.root, capture.body, 'Reference clip', () => ({ x: this.narrow.matches ? 12 : innerWidth - 324, y: this.narrow.matches ? 200 : Math.min(352, innerHeight - 310), collapsed: true }));
     this.adapt(inspector, 'Inspector', () => ({ x: 20, y: innerHeight - 62, collapsed: true }));
     this.adapt(element('policy-manager'), 'Policy packs', () => ({ x: Math.max(32, (innerWidth - 340)/2), y: 100, collapsed: false }));
     this.adapt(element('export'), 'Export', () => ({ x: Math.max(32, (innerWidth - 440)/2), y: 88, collapsed: false }));
     this.adapt(element('deck'), 'Take timeline', () => ({
       x: Math.max(12, (innerWidth - 920)/2),
-      y: innerHeight - this.dockHeight - 24 - (innerWidth <= 760 ? 340 : 270), collapsed: false,
+      y: innerHeight - this.dockHeight - 24 - (this.narrow.matches ? 340 : 270), collapsed: false,
     }));
 
     const toolbar = element('viewport-tools');
@@ -118,10 +125,14 @@ export class FloatingWorkspace {
       visibility.observe(panel.root, { attributes: true, attributeFilter: ['hidden', 'class'] });
       new ResizeObserver(() => this.apply(panel)).observe(panel.root);
     }
-    window.addEventListener('resize', () => {
+    const relayout = () => {
       for (const panel of this.panels.values()) this.apply(panel);
       syncVisibility();
-    });
+    };
+    window.addEventListener('resize', relayout);
+    this.narrow.addEventListener('change', relayout);
+    // Showing, hiding or resizing the Flight HUD changes the room windows may use above it.
+    new ResizeObserver(relayout).observe(this.flightHud);
   }
 
   private window(id: string, title: string, parent: HTMLElement) {
@@ -214,7 +225,7 @@ export class FloatingWorkspace {
   }
 
   private isCompactPanel(panel: FloatingPanel) {
-    return innerWidth <= 760 && panel.root.parentElement?.id === 'panel';
+    return this.narrow.matches && panel.root.parentElement?.id === 'panel';
   }
 
   private apply(panel: FloatingPanel) {
@@ -240,7 +251,7 @@ export class FloatingWorkspace {
     const x = compact ? 12 : Math.max(12, Math.min(placement.x, innerWidth - width - 12));
     // Clamp the displayed position, not remembered desktop coordinates.
     const height = root.id === 'deck' && !collapsed
-      ? Math.min(Number.parseFloat(root.style.height) || (innerWidth <= 760 ? 340 : 270), bottom - top)
+      ? Math.min(Number.parseFloat(root.style.height) || (this.narrow.matches ? 340 : 270), bottom - top)
       : barHeight;
     const y = compact ? top : Math.max(top, Math.min(placement.y, bottom - height));
     root.style.left = `${x}px`; root.style.top = `${y}px`;
@@ -252,6 +263,12 @@ export class FloatingWorkspace {
         // Stacked controls scroll within Scene instead of covering Reference clip.
         if (gap >= 80 && below.x < x + width && below.right > x) space = Math.min(space, gap);
       }
+    }
+    // Flight controls stay on top; windows end above them and scroll their body instead.
+    const hud = this.flightHud;
+    if (!hud.hidden && hud.getClientRects().length && root.id !== 'deck') {
+      const r = hud.getBoundingClientRect();
+      if (r.left < x + width && r.right > x && r.top > y) space = Math.min(space, Math.max(barHeight, r.top - 12 - y));
     }
     root.style.setProperty('--window-space', `${space}px`);
     if (root.id === 'capture-window') {

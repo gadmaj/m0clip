@@ -63,6 +63,8 @@ from Source game files on your computer; the files are not uploaded.
 <details>
 <summary>More about scenes and takes</summary>
 
+- **Backquote** hides or shows panels when the viewport is focused.
+  **Tab** moves between controls.
 - On narrow screens, **Play**, **Scene** and **Reference clip** share one
   Controls area; use the buttons above it to switch.
 - **Reference clip** plays a motion CSV at the FPS you set. **Stop** hands control
@@ -71,6 +73,8 @@ from Source game files on your computer; the files are not uploaded.
   that motion from where the robot stands.
 - The policy gallery is grouped by activity. Each card names the motion and
   lists its robot variant, checkpoint and state number; search matches all three.
+  In each group, policies that run on the robot's current body come first;
+  choosing one of the others switches the body.
 - While a gallery is open, the scene behind it holds its last frame; simulation
   and playback keep running. Recording and screenshots still draw every frame.
 - In review, appearance, display, flashlight, lights and camera edits belong to
@@ -152,6 +156,53 @@ conversion records are left out of builds; keep them with your source assets.
 
 </details>
 
+<details>
+<summary>Browser-check artifacts</summary>
+
+Checks using `scripts/test-artifacts.cjs` create a private output directory for
+each invocation. Set `QA_ARTIFACT_DIR` to choose its parent. Explicit `QA_OUTPUT`
+and `MAP_CHECK_OUTPUT` destinations still apply to their respective checks.
+
+`test_source_body_recording.cjs` reports its downloaded GLB as `exportedGlb`.
+Pass that exact path to the texture check, which requires Pillow:
+
+```sh
+SOURCE_DOG_EXPORT="/path/from/exportedGlb" .venv/bin/python scripts/test_source_dog_export_pixels.py
+```
+
+Check complete local Source conversion with generated BSP, GMA and ZIP fixtures
+(no game files required):
+
+```sh
+node scripts/test_source_raw_assembly.mjs
+```
+
+With Playwright and Chrome installed, check the local-map UI and import workers
+against a built preview:
+
+```sh
+BASE_URL=http://localhost:4173 HEADLESS=1 CHROMIUM_PATH=/path/to/chrome \
+  node scripts/test_source_raw_intake_runtime.cjs
+```
+
+This uses the same generated fixtures and reports its output as `resultsPath`.
+It checks import, companion precedence, cancellation and saved-shot reattachment;
+it does not establish compatibility with arbitrary game maps.
+
+Check saved-view editing and restoration against the same built preview:
+
+```sh
+export BASE_URL=http://localhost:4173
+export HEADLESS=1 CHROMIUM_PATH=/path/to/chrome
+node scripts/test_saved_view_library.cjs
+node scripts/test_saved_views_runtime.cjs
+```
+
+These cover library edits, storage failures, appearance restoration and saved-view
+locks during recording, review and export. Software rendering can make them slow.
+
+</details>
+
 ## Host it
 
 Serve `dist/` at the root of an HTTPS origin (subdirectories need code changes)
@@ -193,7 +244,17 @@ host it: Vite copies everything in `public/` into the build.
 <details>
 <summary>Source maps</summary>
 
-Maps are converted on the command line, not uploaded in the browser:
+In the map gallery, choose **Open local map…**, then **Source BSP**, **Source
+GMA** or **Source ZIP**. Pick a map from the file. Use **Add archives…** for
+ZIP, GMA or VPK companions, or **Add game folder…** for loose files.
+The BSP’s embedded pak takes precedence, followed by the map archive, then
+companions in their listed order. Files stay local; no game files are downloaded.
+
+Missing or unsupported features stop conversion and appear under
+**Requirements**, without replacing the current scene. A shared cause is listed
+once; separate authored causes remain visible. Not every Source map is supported.
+
+You can also convert a map on the command line for your own host:
 
 ```sh
 .venv/bin/python scripts/import_source_bsp.py \
@@ -207,6 +268,16 @@ compatible asset mount; `--game neotokyo --maps <map-id>` uses the importer’s
 built-in NeoTokyo catalogue, not a general adapter for every Source game. See
 [`import_source_bsp.py`](scripts/import_source_bsp.py) for arguments and mounts.
 Not every prop, material or gameplay entity carries over.
+
+The material converter multiplies `$color` by `$color2` and preserves `$alpha`
+opacity. VMT colour vectors such as `{255 128 64}` use byte channels; `[1 .5 .25]`
+uses normalized channels.
+Unsupported tint ranges and alpha/mask combinations stop conversion instead of
+changing authored values.
+
+UV88 bump maps store signed X/Y channels. Source and Studio lighting reconstruct
+their surface normals; GLB export converts them to standard RGB normal maps.
+Neither path changes the stored native texture pixels.
 
 </details>
 
@@ -224,12 +295,12 @@ The packager needs Linux (`/proc/self/fd`), rejects symlinks, checks the world,
 prop, texture and physics dependencies, never overwrites an existing ZIP and
 stays under 4 GiB. The bundle itself works in any browser.
 
-In the map gallery, choose **Open map bundle…**. The file is checked locally in a
-worker and is not uploaded; cancel before installation to keep the current
-scene. Local maps last for the tab’s session. Saved takes and views remember the
-map, not its files, so reattach the same bundle after a reload. Finish loading a
-map or saved view before opening Timeline or another take. Raw BSP, GMA and VPK
-files can’t be opened in the browser.
+In the map gallery, choose **Open local map… → Converted .map.zip**. The file is
+checked locally in a worker and is not uploaded; cancel before installation to
+keep the current scene. Local maps last for the tab’s session. Saved takes and
+views remember the map, not its files, so reattach the original map and companions
+after a reload. Finish loading a map or saved view before opening Timeline or
+another take. VPKs supply companions; they are not a standalone map format here.
 
 </details>
 
@@ -356,8 +427,8 @@ attribution, and list them in
 - Saved data belongs to one browser and hostname. It is not a cloud backup.
 - Policies must match the robot model, observation/action scheme and driver.
   This is a simulator, not a safety controller for a real robot.
-- Player mode moves like Garry’s Mod but does not run its game code. The knife
-  and weapon view models are not available yet.
+- Player mode moves like Garry’s Mod but does not run its game code. Authentic
+  game-weapon models, knives and their animations are not available yet.
 
 ## Credits and licenses
 

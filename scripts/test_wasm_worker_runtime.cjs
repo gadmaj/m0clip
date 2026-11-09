@@ -1,13 +1,11 @@
 /** Chromium: the lean production runtime drives a real R1 policy inside the simulation worker. */
-const assert=require('node:assert/strict'),{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
-(async()=>{const browser=await chromium.launch({headless:true,args:['--no-sandbox']});try{
- const page=await browser.newPage({deviceScaleFactor:.25}),errors=[],wasm=[],downloads=[];
+const assert=require('node:assert/strict'),{chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),{readyApp}=require('./attach-ready-app.cjs');
+(async()=>{const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox']});try{
+ const page=await browser.newPage({deviceScaleFactor:1}),errors=[],wasm=[],downloads=[];
  page.on('pageerror',e=>errors.push(e.message));page.on('response',r=>{if(new URL(r.url()).pathname.endsWith('.wasm'))downloads.push(r.body().then(body=>wasm.push({url:r.url(),bytes:body.length,encoding:r.headers()['content-encoding']??'identity'})))});
- for(const pattern of ['**/src/main.ts*','**/assets/main-*.js'])await page.route(pattern,async route=>{
-  const response=await route.fetch(),original=await response.text(),body=require('./expose-app.cjs')(original).replaceAll('this.view.render()','void 0');await route.fulfill({response,body});
- });
  await page.goto((process.env.BASE_URL||'http://127.0.0.1:4179')+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page));
- await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});
+ // Observe the real worker without changing App rendering or simulation ticks.
+ await readyApp(page);
  await page.evaluate(()=>{
   const a=window.__app;window.__proof={frames:0,finite:true,workerErrors:[],inspect:null};
   a.worker.addEventListener('message',({data:m})=>{

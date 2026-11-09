@@ -89,3 +89,20 @@ export function validLocalMap(value: unknown, terrain: string): value is LocalMa
   return typeof m.fingerprint === 'string' && /^[a-f0-9]{64}$/.test(m.fingerprint) && m.id === `local-${m.fingerprint}`
     && terrain === `map:${m.id}` && typeof m.name === 'string' && typeof m.game === 'string';
 }
+
+/** Authored map policy only; viewer FOV and runtime view fade are separate state. */
+export interface SourceMapPropView { levelScreenFade?: readonly [number, number] }
+
+/** Validate and snapshot before staging can commit or callers can mutate metadata. */
+export function sourceMapPropView(value: unknown): SourceMapPropView | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new TypeError('Invalid Source map prop view policy');
+  const range = (value as SourceMapPropView).levelScreenFade;
+  if (range === undefined) return {};
+  if (!Array.isArray(range) || range.length !== 2
+    || typeof range[0] !== 'number' || !Number.isFinite(range[0])
+    || typeof range[1] !== 'number' || !Number.isFinite(range[1]))
+    throw new TypeError('Invalid Source map level screen fade policy');
+  return { levelScreenFade: [range[0], range[1]] };
+}

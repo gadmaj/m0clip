@@ -3,13 +3,13 @@ const assert=require('node:assert/strict'),{build}=require('esbuild'),{deflateSy
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const palette=[0xf800,0x07e0,0x001f,0xffff,0xffe0,0x07ff];
 function fixture(format){
- const header=Buffer.alloc(96);header.write('VTF\0');header.writeUInt32LE(7,4);header.writeUInt32LE(5,8);header.writeUInt32LE(96,12);header.writeUInt16LE(4,16);header.writeUInt16LE(4,18);header.writeUInt32LE(0x4000|4|8,20);header.writeUInt16LE(1,24);header.writeUInt32LE(format,52);header[56]=3;header.writeUInt32LE(0xffffffff,57);header.writeUInt16LE(1,65);header.writeUInt32LE(1,68);header[80]=0x30;header.writeUInt32LE(96,84);
+ const header=Buffer.alloc(96);header.write('VTF\0');header.writeUInt32LE(7,4);header.writeUInt32LE(5,8);header.writeUInt32LE(96,12);header.writeUInt16LE(4,16);header.writeUInt16LE(4,18);header.writeUInt32LE(0x4000|4|8,20);header.writeUInt16LE(1,24);header.writeUInt32LE(format,52);header[56]=3;header.writeUInt32LE(0xffffffff,57);header.writeUInt16LE(1,63);header.writeUInt32LE(1,68);header[80]=0x30;header.writeUInt32LE(96,84);
  const blocks=[];for(let mip=2;mip>=0;mip--)for(let face=0;face<6;face++){const block=Buffer.alloc(format===13?8:16);block.writeUInt16LE(palette[(mip+face)%palette.length],format===13?0:8);if(format===14)block.fill([255,119,0][mip],0,8);if(format===15)block[0]=[255,64,0][mip];blocks.push(block)}
  return [...deflateSync(Buffer.concat([header,...blocks]))];
 }
 function rgbaFixture(){
  const rgba=[19,37,73,0,51,91,127,64,151,181,211,128,231,241,251,255],header=Buffer.alloc(80);
- header.write('VTF\0');header.writeUInt32LE(7,4);header.writeUInt32LE(2,8);header.writeUInt32LE(80,12);header.writeUInt16LE(2,16);header.writeUInt16LE(2,18);header.writeUInt32LE(4|8,20);header.writeUInt16LE(1,24);header.writeUInt32LE(0,52);header[56]=1;header.writeUInt32LE(0xffffffff,57);header.writeUInt16LE(1,65);
+ header.write('VTF\0');header.writeUInt32LE(7,4);header.writeUInt32LE(2,8);header.writeUInt32LE(80,12);header.writeUInt16LE(2,16);header.writeUInt16LE(2,18);header.writeUInt32LE(4|8,20);header.writeUInt16LE(1,24);header.writeUInt32LE(0,52);header[56]=1;header.writeUInt32LE(0xffffffff,57);header.writeUInt16LE(1,63);
  return{data:[...deflateSync(Buffer.concat([header,Buffer.from(rgba)]))],rgba};
 }
 function pngPixels(png){

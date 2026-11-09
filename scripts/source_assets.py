@@ -197,12 +197,17 @@ def material(fs: FileSystem, name: str, depth: int = 0) -> dict | None:
     if '$basetexture' not in kv: return None
     flag = lambda k: str(kv.get(k, '0')).strip().lower() not in ('0', '', 'false')
     number = lambda k, default: float(kv.get(k, default))
-    vector = lambda k, default: [float(v) for v in re.findall(r'[-+]?[0-9]*\.?[0-9]+', kv.get(k, default))][:3]
+    def vector(k, default):
+        text = kv.get(k, default).strip()
+        scale = 1 / 255 if text.startswith('{') else 1
+        values = [float(v) * scale for v in re.findall(r'[-+]?(?:\d*\.)?\d+(?:[eE][-+]?\d+)?', text)]
+        return [values[i] if i < len(values) else values[0] for i in range(3)]
     result = dict(shader=shader, basetexture=kv['$basetexture'], alphatest=flag('$alphatest'),
         alphatestreference=number('$alphatestreference', .7), translucent=flag('$translucent'),
         selfillum=flag('$selfillum'), unlit=shader in ('unlitgeneric', 'sdk_unlitgeneric'),
         halflambert=flag('$halflambert') or flag('$phong'), nocull=flag('$nocull'), additive=flag('$additive'),
-        selfillumtint=vector('$selfillumtint', '[1 1 1]'), color=vector('$color', '[1 1 1]'), ssbump=flag('$ssbump'),
+        selfillumtint=vector('$selfillumtint', '[1 1 1]'), color=vector('$color', '[1 1 1]'),
+        color2=vector('$color2', '[1 1 1]'), alpha=number('$alpha', 1), ssbump=flag('$ssbump'),
         nodiffusebumplighting=flag('$nodiffusebumplighting'),
         envmap=kv.get('$envmap', ''), envmaptint=vector('$envmaptint', '[1 1 1]'),
         envmapcontrast=number('$envmapcontrast', 0), envmapsaturation=number('$envmapsaturation', 1),

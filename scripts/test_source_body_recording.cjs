@@ -1,19 +1,48 @@
 /** Native Dog: load gating, skin, paint/light/fade, recording, GLB/PNG and stock restoration. */
+const artifactPath=require('./test-artifacts.cjs');
+const captureGlb=require('./capture-glb.cjs');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict');
-const {chooseVisual}=require('./choose-visual.cjs');
-(async()=>{const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});try{const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:Number(process.env.TEST_DPR||1)}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/WebGLProgram|shader/.test(m.text()))errors.push(m.text())});
-await page.route('**/{src/main.ts*,assets/main-*.js}',async r=>{const response=await r.fetch();await r.fulfill({response,body:require('./expose-app.cjs')(await response.text())})});
-await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain').then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});
+const {chooseVisual}=require('./choose-visual.cjs'),{readyApp}=require('./attach-ready-app.cjs');
+const path=require('node:path'),buildFixture=require('./build-fixture.cjs');
+(async()=>{
+const fixture=await buildFixture({
+  root:path.resolve(__dirname,'..'),
+  source:`
+    export { saveTake, loadTake } from './src/record/take';
+    export { unzipSync } from 'fflate';
+    export { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    export { AnimationMixer, Matrix4, Vector3 } from 'three';
+  `,
+  platform:'browser',format:'iife',globalName:'BodyRecordingFixture',
+});
+const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{const page=await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:Number(process.env.TEST_DPR||1)}),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/WebGLProgram|shader/.test(m.text()))errors.push(m.text())});
+// The release chunk stays byte-identical; the real Ready App is attached through CDP.
+await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain').then(() => require('./launch-scene.cjs').launchScene(page, { controls: true }));await readyApp(page);
+await page.addScriptTag({content:fixture.code});
+if(fixture.css)await page.addStyleTag({content:fixture.css});
 await page.getByText('Robot appearance',{exact:true}).click();const body=page.locator('#character-trigger');
 let release,requested;const gate=new Promise(r=>release=r),started=new Promise(r=>requested=r);await page.route('**/assets/source-robots/halflife2-dog/dog.glb',async r=>{requested();await gate;await r.continue()});await chooseVisual(page,'character','dog');await started;
-await page.getByRole('button',{name:'Record V',exact:true}).click();assert.equal(await body.isDisabled(),true);assert.deepEqual(await page.evaluate(()=>({starting:window.__app.recordStarting,recording:!!window.__app.rec,applied:window.__app.view.getBodyVisualState().applied})),{starting:true,recording:false,applied:'stock'});release();await page.waitForFunction(()=>window.__app.rec&&window.__app.view.getBodyVisualState().applied==='dog');await page.waitForTimeout(1200);await page.getByTitle('Stop recording and open the timeline (V)',{exact:true}).click();await page.waitForFunction(()=>window.__app.timeline.isOpen);assert.equal(await body.isDisabled(),true);
-const proof=await page.evaluate(async()=>{const a=window.__app,v=a.view,rig=v.sourceBody;const {saveTake,loadTake}=await import('/src/record/take.ts');const saved=await loadTake(await(await saveTake(a.take)).arrayBuffer());
+await page.getByRole('button',{name:'Record V',exact:true}).click();assert.equal(await body.isDisabled(),true);assert.deepEqual(await page.evaluate(()=>({starting:window.__app.recordStarting,recording:!!window.__app.rec,applied:window.__app.view.getBodyVisualState().applied})),{starting:true,recording:false,applied:'stock'});release();await page.waitForFunction(()=>window.__app.rec&&window.__app.view.getBodyVisualState().applied==='dog');await page.waitForTimeout(1200);await page.getByTitle('Stop recording and open the timeline (V)',{exact:true}).click();await page.waitForFunction(()=>window.__app.timeline.isOpen);
+await page.evaluate(async()=>{const a=window.__app,v=a.view,rig=v.sourceBody;const {saveTake,loadTake}=window.BodyRecordingFixture;const saved=await loadTake(await(await saveTake(a.take)).arrayBuffer());
 const initial={frames:a.take.n,body:a.take.meta.appearance.sourceBody,savedBody:saved.meta.appearance.sourceBody,triangles:rig.meshes.reduce((n,m)=>n+m.geometry.index.count/3,0),bones:rig.bones.length,parts:rig.partNames(),stockVisible:v.geomMeshes.filter(m=>m?.userData.robotGeom&&m.visible).length};
 const displayBefore=v.getDisplay(),flashlightBefore=v.getFlashlight();
 const exportDisplay={...displayBefore,wireframe:true,characterWireframe:true,decals:false};
 v.setDisplay(exportDisplay);v.setFlashlight(true);
 const liveMaterials=rig.materials.map(({material})=>({material,wireframe:material.wireframe,map:material.map,normalMap:material.normalMap}));
-const{exportGlb}=await import('/src/record/export-blender.ts');const blob=await exportGlb(a.take,v,a.takeModel,{fps:10,t0:0,t1:Math.min(.4,a.take.duration),camera:null,floor:false});const binary=await blob.arrayBuffer();window.__bodyExport=binary;const{GLTFLoader}=await import('/node_modules/three/examples/jsm/loaders/GLTFLoader.js');const loaded=await new GLTFLoader().parseAsync(binary,'');const meshes=[];loaded.scene.traverse(o=>{if(o.isSkinnedMesh)meshes.push(o)});const THREE=await import('/node_modules/.vite/deps/three.js');const mixer=new THREE.AnimationMixer(loaded.scene);mixer.clipAction(loaded.animations[0]).play();mixer.setTime(.2);loaded.scene.updateMatrixWorld(true);
+window.__bodyExportContext={initial,displayBefore,flashlightBefore,exportDisplay,liveMaterials};
+});
+const exportRange=await page.evaluate(()=>[0,Math.min(.4,window.__app.take.duration)]);
+const exportedGlb=await captureGlb(page,{fps:10,camera:false,floor:false,file:'source-dog-export.glb',range:exportRange});
+const proof=await page.evaluate(async()=>{const a=window.__app,v=a.view,rig=v.sourceBody,{GLTFLoader,unzipSync}=window.BodyRecordingFixture,THREE=window.BodyRecordingFixture;
+const {initial,displayBefore,flashlightBefore,exportDisplay,liveMaterials}=window.__bodyExportContext;
+const blob=window.__exportedGlb;if(!blob)throw new Error('The real dialog did not save a GLB');
+const binary=await blob.arrayBuffer(),loaded=await new GLTFLoader().parseAsync(binary,'');const meshes=[];
+// The map can contain skinned props too; compare only the exported robot's native body.
+loaded.scene.traverse(o=>{
+  if(!o.isSkinnedMesh)return;
+  let owner=o;while(owner&&!owner.userData.sourceRobotPart)owner=owner.parent;
+  if(owner?.userData.sourceRobotPart===rig.root.userData.sourceRobotPart)meshes.push(o);
+});const mixer=new THREE.AnimationMixer(loaded.scene);mixer.clipAction(loaded.animations[0]).play();mixer.setTime(.2);loaded.scene.updateMatrixWorld(true);
 const expected=rig.retarget.createPose();rig.retarget.fromRecorded(a.take.sampleGeometry([.2]),0,expected);
 const rootMatrix=new THREE.Matrix4().compose(expected.position,expected.quaternion,new THREE.Vector3().setScalar(rig.retarget.scale));const expectedWorld=[],up=new THREE.Matrix4().makeRotationX(-Math.PI/2);let poseError=0;
 for(let i=0;i<rig.retarget.native.bones.length;i++){const bone=rig.retarget.native.bones[i],local=new THREE.Matrix4().compose(new THREE.Vector3(...bone.position),expected.bones[i],new THREE.Vector3(1,1,1));const world=(bone.parent<0?rootMatrix:expectedWorld[bone.parent]).clone().multiply(local);expectedWorld.push(world);const matrix=up.clone().multiply(world);poseError=Math.max(poseError,...matrix.elements.map((v,j)=>Math.abs(v-meshes[0].skeleton.bones[i].matrixWorld.elements[j])));}
@@ -37,9 +66,22 @@ equal(v.getFlashlight(),true,'GLB export preserves effective browser flashlight'
 for(const entry of liveMaterials)if(entry.material.wireframe!==entry.wireframe||entry.material.map!==entry.map||entry.material.normalMap!==entry.normalMap)throw new Error('GLB export mutates live wireframe or textures');
 glb.settingsMetadata=true;glb.wireframeIsMetadataOnly=true;
 v.setDisplay(displayBefore);v.setFlashlight(flashlightBefore);
-const{renderVideo}=await import('/src/record/export-video.ts');const stage=a.stage();const frames=await renderVideo({width:240,height:180,fps:5,speed:1,t0:0,t1:.4,container:'png',codec:'avc',quality:'medium',transparent:false,floor:true},stage,()=>{},new AbortController().signal);return{initial,glb,pngBytes:frames.size}});
-const data=await page.evaluate(()=>Array.from(new Uint8Array(window.__bodyExport)));require('node:fs').writeFileSync('/tmp/source-dog-export.glb',Buffer.from(data));assert.ok(proof.initial.frames>=10);assert.equal(proof.initial.body,'dog');assert.equal(proof.initial.savedBody,'dog');assert.equal(proof.initial.triangles,5855);assert.equal(proof.initial.bones,58);assert.equal(proof.initial.stockVisible,0);assert.equal(proof.glb.triangles,5855);assert.equal(proof.glb.bones,58);assert.equal(proof.glb.animations,1);assert.ok(proof.glb.poseError<1e-4,JSON.stringify(proof.glb));assert.ok(proof.glb.tracks>=60&&proof.glb.base&&proof.glb.normal&&proof.pngBytes>500);
+const d=a.dialog,save=d.host.save,outputBefore={...d.out},previousRange=[a.timeline.rangeIn,a.timeline.rangeOut];let frames;
+try{
+  Object.assign(d.out,{res:'custom',width:240,height:180,fps:5,speed:1,container:'png',codec:'avc',quality:'medium',transparent:false,floor:true});
+  a.timeline.rangeIn=0;a.timeline.rangeOut=.4;a.openExport('video');d.host.save=blob=>{frames=blob};
+  await d.renderVideoJob();if(!frames)throw new Error(d.status.textContent);
+}finally{d.host.save=save;d.close();Object.assign(d.out,outputBefore);[a.timeline.rangeIn,a.timeline.rangeOut]=previousRange}
+const pngs=Object.values(unzipSync(new Uint8Array(await frames.arrayBuffer())));
+const png={frames:pngs.length,dimensions:pngs.map(bytes=>{const data=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);return[data.getUint32(16),data.getUint32(20)]}),signatures:pngs.map(bytes=>Array.from(bytes.slice(0,8))),offscreenRestored:!v.offscreen};
+return{initial,glb,pngBytes:frames.size,png}});
+assert.equal(proof.png.frames,2);assert.ok(proof.png.dimensions.every(([width,height])=>width===240&&height===180));for(const signature of proof.png.signatures)assert.deepEqual(signature,[137,80,78,71,13,10,26,10]);assert.equal(proof.png.offscreenRestored,true);
+assert.ok(proof.initial.frames>=10);assert.equal(proof.initial.body,'dog');assert.equal(proof.initial.savedBody,'dog');assert.equal(proof.initial.triangles,5855);assert.equal(proof.initial.bones,58);assert.equal(proof.initial.stockVisible,0);assert.equal(proof.glb.triangles,5855);assert.equal(proof.glb.bones,58);assert.equal(proof.glb.animations,1);assert.ok(proof.glb.poseError<1e-4,JSON.stringify(proof.glb));assert.ok(proof.glb.tracks>=60&&proof.glb.base&&proof.glb.normal);
 await page.evaluate(()=>window.__app.closeReview());await page.waitForFunction(()=>!window.__app.timeline.isOpen);await chooseVisual(page,'character','stock');await page.waitForFunction(()=>window.__app.view.getBodyVisualState().applied==='stock');await page.evaluate(()=>window.__app.openReview());await page.waitForFunction(()=>window.__app.view.getBodyVisualState().applied==='dog');await page.evaluate(()=>window.__app.closeReview());await page.waitForFunction(()=>window.__app.view.getBodyVisualState().applied==='stock');await chooseVisual(page,'character','dog');await page.waitForFunction(()=>window.__app.view.getBodyVisualState().applied==='dog');
 const materialProof=await page.evaluate(()=>{const a=window.__app,v=a.view,original=v.getAppearance();v.setAppearance({...original,parts:{...original.parts,left_elbow_link:{color:0xff0000,finish:'matte'}}});const rig=v.sourceBody;const red=rig.materials.filter(e=>e.part==='left_elbow_link').every(e=>e.material.color.getHex()===0xff0000);v.setAppearance({...original,robotLight:{brightness:80,color:0xffffff,range:20,dull:false}});const bright=rig.materials.every(e=>e.material.emissiveIntensity===16&&e.material.emissiveMap===null);v.setAppearance({...original,robotLight:{brightness:80,color:0xffffff,range:20,dull:true}});const dull=rig.materials.every(e=>e.material.roughness===1&&e.material.metalness===0&&e.material.specularIntensity===0&&e.material.emissiveIntensity===0);v.setAppearance(original);v.setRobotOpacityOverride(.5);v.render();const fade=rig.materials.every(e=>e.material.opacity===.5);v.setRobotOpacityOverride(0);v.render();const hidden=!rig.root.visible&&v.robotLight.brightness.value===0;v.setRobotOpacityOverride(null);v.setRobotHidden(false);v.render();return{red,bright,dull,fade,hidden}});assert.ok(Object.values(materialProof).every(Boolean));
-await body.scrollIntoViewIfNeeded();if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:'/tmp/source-dog-r1-desktop.png'});await page.setViewportSize({width:390,height:844});await body.scrollIntoViewIfNeeded();if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:'/tmp/source-dog-r1-mobile.png'});const bounds=await body.boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=390);
-assert.deepEqual(errors,[]);console.log(JSON.stringify({...proof,materialProof,stockRestored:true,mobileBounds:bounds,errors}));}finally{await browser.close()}})().catch(e=>{console.error(e);process.exitCode=1});
+await body.scrollIntoViewIfNeeded();if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:artifactPath('source-dog-r1-desktop.png')});
+await page.setViewportSize({width:390,height:844});
+if(!await body.isVisible())await page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}).click();
+await body.scrollIntoViewIfNeeded();if(!process.env.SKIP_SCREENSHOTS)await page.screenshot({path:artifactPath('source-dog-r1-mobile.png')});
+const bounds=await body.boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=390);
+assert.deepEqual(errors,[]);console.log(JSON.stringify({...proof,materialProof,stockRestored:true,mobileBounds:bounds,exportedGlb,errors}));}finally{await browser.close()}})().catch(e=>{console.error(e);process.exitCode=1});

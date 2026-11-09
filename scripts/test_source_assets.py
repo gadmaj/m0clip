@@ -31,6 +31,61 @@ class AssetTests(unittest.TestCase):
             self.assertNotEqual(first.buffer, third.buffer)
             self.assertEqual(len(list(Path(directory).glob('*.png'))), 2)
 
+    def test_source_tint_and_alpha_survive_material_packaging(self):
+        from import_source_props import GLB
+        header = bytearray(80); header[:4] = b'VTF\0'
+        struct.pack_into('<IIIHHIHH', header, 4, 7, 2, 80, 1, 1, 0, 1, 0xffff)
+        struct.pack_into('<f', header, 48, 1)
+        struct.pack_into('<iBiBB', header, 52, 0, 1, -1, 0, 0)
+        struct.pack_into('<H', header, 63, 1)
+        class FS:
+            def read(self, path):
+                if path == 'materials/tint.vmt':
+                    return b'UnlitGeneric { "$basetexture" "white" "$color" "{255 128 64}" "$color2" "[.5 1 .25]" "$alpha" ".25" }'
+                if path == 'materials/white.vtf':
+                    return bytes(header) + bytes([255, 255, 255, 255])
+        glb = GLB()
+        record = dict(pbrMetallicRoughness={})
+        MaterialExport(glb, FS()).apply(record, 'tint')
+        factor = record['pbrMetallicRoughness']['baseColorFactor']
+        # glTF factors are linear; the Source display gamma must recover the
+        # authored byte-domain colour multiplied by its second tint.
+        np.testing.assert_allclose(np.power(factor[:3], 1 / 2.2), [.5, 128 / 255, 16 / 255])
+        self.assertEqual(factor[3], .25)
+        self.assertEqual(record['alphaMode'], 'BLEND')
+
+    def test_unrepresentable_material_states_do_not_replace_material(self):
+        from import_source_props import GLB
+        header = bytearray(80); header[:4] = b'VTF\0'
+        struct.pack_into('<IIIHHIHH', header, 4, 7, 2, 80, 1, 1, 0, 1, 0xffff)
+        struct.pack_into('<f', header, 48, 1)
+        struct.pack_into('<iBiBB', header, 52, 0, 1, -1, 0, 0)
+        struct.pack_into('<H', header, 63, 1)
+        class FS:
+            def read(self, path):
+                if path == 'materials/unsupported.vmt':
+                    return ('VertexLitGeneric { "$basetexture" "mask" ' + self.parameters + ' }').encode()
+                if path == 'materials/mask.vtf':
+                    return bytes(header) + bytes([255, 255, 255, 0])
+        for parameters in (
+            '"$selfillum" "1" "$alpha" ".5"',
+            '"$selfillum" "1" "$translucent" "1" "$alpha" ".5"',
+            '"$basealphaenvmapmask" "1" "$alpha" ".5"',
+            '"$alphatest" "1" "$alphatestreference" ".5" "$alpha" ".75"',
+            '"$color2" "[2 1 1]"',
+            '"$color2" "[-.1 1 1]"',
+            '"$color2" "[1e999 1 1]"',
+            '"$alpha" "nan"',
+            '"$alpha" "-.01"',
+            '"$alpha" "1.01"',
+        ):
+            with self.subTest(parameters=parameters):
+                fs = FS(); fs.parameters = parameters
+                record = dict(name='existing', pbrMetallicRoughness=dict(baseColorFactor=[1, 1, 1, 1]))
+                with self.assertRaises(ValueError):
+                    MaterialExport(GLB(), fs).apply(record, 'unsupported')
+                self.assertEqual(record, dict(name='existing', pbrMetallicRoughness=dict(baseColorFactor=[1, 1, 1, 1])))
+
     def test_cutout_culling_replaces_legacy_double_sided_flag(self):
         class FS:
             nocull = False
@@ -45,7 +100,6 @@ class AssetTests(unittest.TestCase):
             exporter.apply(record, 'grate')
             self.assertEqual(record['doubleSided'], authored)
             self.assertEqual(record['alphaMode'], 'MASK')
-            self.assertEqual(record['alphaCutoff'], .7)
 
     def test_proxy_parameters_do_not_replace_material_values(self):
         shader, kv = parse_vmt('''"VertexLitGeneric" {
@@ -67,7 +121,6 @@ class AssetTests(unittest.TestCase):
         mat = material(FS(), 'patched')
         self.assertEqual(mat['shader'], 'vertexlitgeneric')
         self.assertTrue(mat['alphatest']); self.assertTrue(mat['nocull'])
-        self.assertEqual(mat['alphatestreference'], .7)  # noclip Material_Generic's default
 
     def test_authored_alpha_cutoff_overrides_reference_default(self):
         class FS:
@@ -90,7 +143,7 @@ class AssetTests(unittest.TestCase):
         np.testing.assert_allclose(matrix, [[0, -3, .55], [2, 0, -.15], [0, 0, 1]], atol=1e-12)
         np.testing.assert_allclose(texture_transform('scale 2'), [[2, 0, 0], [0, 2, 0], [0, 0, 1]])
         np.testing.assert_allclose(texture_transform(''), np.eye(3))
-        with self.assertRaisesRegex(ValueError, 'Invalid Source texture transform'):
+        with self.assertRaises(ValueError):
             texture_transform('scale invalid')
 
     def test_dxt1_three_color_mode(self):

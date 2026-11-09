@@ -5,6 +5,7 @@ Reference: noclip.website SourceEngine/VTF.ts and Materials/Material_Generic.ts 
 from __future__ import annotations
 import io
 import hashlib
+import math
 from pathlib import Path
 import struct
 import tempfile
@@ -69,6 +70,15 @@ class MaterialExport:
     def apply(self, record, name):
         meta = material(self.fs, name)
         if not meta: return
+        tint = [a * b for a, b in zip(meta['color'], meta['color2'])]
+        alpha = meta['alpha']
+        if (not math.isfinite(alpha) or alpha < 0 or alpha > 1
+                or any(not math.isfinite(value) or value < 0 or value > 1 for value in tint)):
+            raise ValueError(f'Source tint/alpha is outside the core glTF factor range on {name}')
+        if alpha < 1 and meta['alphatest']:
+            raise ValueError(f'Unsupported Source alpha testing with scalar-alpha blending on {name}')
+        if alpha < 1 and (meta['selfillum'] or meta['basealphaenvmapmask']):
+            raise ValueError(f'Unsupported Source scalar opacity with a base-alpha lighting mask on {name}')
         base = self.texture(meta['basetexture'])
         if base is not None:
             previous = record['pbrMetallicRoughness'].get('baseColorTexture', {}).get('index')
@@ -76,13 +86,13 @@ class MaterialExport:
                 images, textures = self.glb.json['images'], self.glb.json['textures']
                 images[textures[previous]['source']] = dict(images[textures[base]['source']])
             record['pbrMetallicRoughness']['baseColorTexture'] = dict(index=base)
-        record['pbrMetallicRoughness']['baseColorFactor'] = [*meta['color'], 1]
+        record['pbrMetallicRoughness']['baseColorFactor'] = [value ** 2.2 for value in tint] + [alpha]
         record['doubleSided'] = meta['nocull']
         if meta.get('envmap') and meta['envmap'] != 'env_cubemap':
             faces = [self.texture(meta['envmap'], face=i) for i in range(6)]
             if all(i is not None for i in faces): meta['envmapFaces'] = faces
         if meta['alphatest']: record.update(alphaMode='MASK', alphaCutoff=meta['alphatestreference'])
-        elif meta['translucent'] or meta['additive']: record.update(alphaMode='BLEND')
+        elif meta['translucent'] or meta['additive'] or meta['alpha'] < 1: record.update(alphaMode='BLEND')
         else: record['alphaMode'] = 'OPAQUE'
         if meta.get('detail') and meta['detailblendmode'] != 0:
             raise ValueError(f'Unsupported Source detail blend mode {meta["detailblendmode"]} on {name}')

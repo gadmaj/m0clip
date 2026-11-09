@@ -1,19 +1,19 @@
 /** Chromium: saved views restore native visuals, camera roll and navigation after model loading. */
+const artifactPath=require('./test-artifacts.cjs');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const assert=require('node:assert/strict');
 const {chooseVisual}=require('./choose-visual.cjs');
+const {readyApp}=require('./attach-ready-app.cjs');
 (async()=>{
-  const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});
+  const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});
   const errors=[];
   async function pageIn(context){
     const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
-    const renderLoop=body=>process.env.RENDER_ON_DEMAND?body.replaceAll('this.renderLoop()','void 0'):body;
-    await page.route('**/{src/main.ts*,assets/main-*.js}',async route=>{const response=await route.fetch();await route.fulfill({response,body:renderLoop(require('./expose-app.cjs')(await response.text()))});});
-    await page.route('**/assets/main-*.js',async route=>{const response=await route.fetch(),original=await response.text();const body=renderLoop(require('./expose-app.cjs')(original));await route.fulfill({response,body});});
     return page;
   }
   const base=process.env.BASE_URL||'http://127.0.0.1:5176';
-  async function ready(page){await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:120000});}
+  // The release chunk stays byte-identical; the real Ready App is attached through CDP after launch.
+  const ready=page=>readyApp(page);
   async function restored(page){await page.waitForFunction(()=>!window.__app.pendingViewRestore,null,{timeout:120000});}
   async function matches(page,view){
     const actual=await page.evaluate(()=>window.__app.captureView());
@@ -23,7 +23,7 @@ const {chooseVisual}=require('./choose-visual.cjs');
     assert.equal(actual.fov,view.fov);
   }
   try{
-    const context=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:Number(process.env.TEST_DPR||1)}),page=await pageIn(context);
+    const context=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:1}),page=await pageIn(context);
     await page.goto(base+'/?plain').then(() => require('./launch-scene.cjs').launchScene(page, { terrain: 'flat', controls: true }));await ready(page);
     const saved=await page.evaluate(async()=>{
       const a=window.__app;a.setNoclip(true);a.flight.stop();a.heldView=true;
@@ -37,10 +37,34 @@ const {chooseVisual}=require('./choose-visual.cjs');
     await page.evaluate(()=>{const a=window.__app;a.look.setState({...a.look.getState(),antialiasing:'none'});a.look.restoreAppearance(a.viewModel.robot,{colorway:'product',sourceBody:'stock',parts:{},robotLight:{brightness:0,color:0xffffff,range:5,dull:true}});a.setNoclip(false);a.setFlashlight(false);a.flight.speed=12;a.flight.hover=false;a.view.camera.position.set(8,8,8);});
     await page.getByRole('button',{name:'Dog inspection',exact:true}).click();await restored(page);await page.waitForTimeout(150);await matches(page,saved);
     assert.equal(await page.evaluate(()=>window.__app.view.getBodyVisualState().applied),'dog');
-    const viewLink=await page.evaluate(async()=>{const a=window.__app;await a.explore.share(a.captureView());return document.querySelector('[aria-label="Shareable view link"]').value;});assert.equal(new URL(viewLink).searchParams.get('body'),'dog');
+    await context.grantPermissions(['clipboard-read','clipboard-write'],{origin:new URL(base).origin});
+    const share=page.getByRole('button',{name:'Share Dog inspection',exact:true});
+    await share.click();
+    const viewLink=await page.getByLabel('Shareable view link',{exact:true}).inputValue();
+    await page.waitForFunction(expected=>navigator.clipboard.readText().then(value=>value===expected),viewLink);
+    assert.equal(new URL(viewLink).searchParams.get('body'),'dog');
+    assert.ok(await share.evaluate(button=>document.activeElement===button),'Sharing must keep focus on its button');
+    await page.keyboard.press('Tab');
+    assert.ok(await page.getByRole('button',{name:'Rename Dog inspection',exact:true}).evaluate(button=>document.activeElement===button),'Tab must continue within the saved-view row');
+    // A short nested library must hand its wheel to the containing Scene panel.
+    const viewport=page.viewportSize();
+    await page.setViewportSize({width:390,height:844});
+    await page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}).click();
+    await page.getByRole('button',{name:'Dog inspection',exact:true}).hover();
+    const wheelStart=await page.locator('#saved-view-list').evaluate(list=>({
+      top:list.closest('.floating-body').scrollTop,overflow:list.scrollHeight>list.clientHeight,
+    }));
+    assert.equal(wheelStart.overflow,false,'Exercise the non-overflowing nested library');
+    assert.ok(wheelStart.top>0,'The Scene panel must be scrolled before wheeling up');
+    await page.mouse.wheel(0,-120);
+    await page.waitForFunction(top=>document.getElementById('saved-view-list').closest('.floating-body').scrollTop<top,wheelStart.top);
+    await page.setViewportSize(viewport);
+    const expandScene=page.getByRole('button',{name:'Expand Scene panel',exact:true});
+    if(await expandScene.isVisible())await expandScene.click();
     // A fresh receiver's robot, lighting and paint preferences must not replace the shared view.
-    const receiver=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:Number(process.env.TEST_DPR||1)});await receiver.addInitScript(()=>{localStorage.setItem('ume-prefs',JSON.stringify({robot:'go2',terrain:'park',policy:'does-not-exist'}));localStorage.setItem('ume-appearance',JSON.stringify({r1:{colorway:'product',sourceBody:'stock',parts:{}}}));});
+    const receiver=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:1});await receiver.addInitScript(()=>{localStorage.setItem('ume-prefs',JSON.stringify({robot:'go2',terrain:'park',policy:'does-not-exist'}));localStorage.setItem('ume-appearance',JSON.stringify({r1:{colorway:'product',sourceBody:'stock',parts:{}}}));});
     const fresh=await pageIn(receiver);await fresh.goto(viewLink).then(() => require('./launch-scene.cjs').launchScene(fresh, { controls: true }));await ready(fresh);await restored(fresh);await matches(fresh,saved);
+    await receiver.close();
     const head={...saved,appearance:{...saved.appearance,sourceBody:'stock'},sourceHead:'ghost'};
     await page.evaluate(view=>window.__app.explore.restoreView(view),head);await restored(page);await matches(page,head);assert.equal(await page.evaluate(()=>window.__app.view.getSourceHead()),'ghost');
     // Crossing robots and terrain exercises the worker barrier and restores each model's own paint.
@@ -62,29 +86,105 @@ const {chooseVisual}=require('./choose-visual.cjs');
       return{before,after:a.captureView(),modelKept:a.viewModel===model,takeKept:a.timeline.isOpen&&a.take===take};
     },go2);
     assert.deepEqual(reviewGuard.after,reviewGuard.before);assert.ok(reviewGuard.modelKept&&reviewGuard.takeKept);
-    await page.evaluate(()=>window.__app.closeReview());
-    const exportGuard=await page.evaluate(async view=>{
-      const a=window.__app,before=a.captureView(),model=a.viewModel;a.exporting=true;
-      try{await a.explore.restoreView(view)}finally{a.exporting=false}
-      return{before,after:a.captureView(),modelKept:a.viewModel===model};
-    },go2);
-    assert.deepEqual(exportGuard.after,exportGuard.before);assert.ok(exportGuard.modelKept);
+    // Hold genuine export preparation, not the App's exporting flag (same boundary as export-setup).
+    await page.evaluate(()=>{
+      const a=window.__app,d=a.dialog,stage=d.host.stage,out={...d.out};let release;
+      const gate=new Promise(resolve=>{release=resolve});
+      const task=window.__savedViewExport={waiting:false,release,restore:()=>{d.host.stage=stage;Object.assign(d.out,out)}};
+      Object.assign(d.out,{res:'custom',width:240,height:160,fps:5,speed:1,container:'png',transparent:true});
+      a.openExport('video');
+      d.host.stage=()=>{const value=stage();return{...value,prepare:async()=>{task.waiting=true;await gate;await value.prepare?.()}}};
+      task.job=d.renderVideoJob();
+    });
+    let exportGuard,guardFailure;
+    try{
+      await page.waitForFunction(()=>window.__savedViewExport.waiting);
+      exportGuard=await page.evaluate(async view=>{
+        const a=window.__app,before=a.captureView(),model=a.viewModel,take=a.take;
+        const active=a.exporting&&a.dialog.busy,readOnly=a.explore.readOnly;
+        await a.explore.restoreView(view);
+        return{before,after:a.captureView(),modelKept:a.viewModel===model,takeKept:a.take===take,active,readOnly};
+      },go2);
+      assert.ok(exportGuard.active&&exportGuard.readOnly&&exportGuard.takeKept);
+      assert.deepEqual(exportGuard.after,exportGuard.before);assert.ok(exportGuard.modelKept);
+    }catch(error){guardFailure=error;throw error}
+    finally{
+      try{
+        await page.locator('#export').getByRole('button',{name:'Cancel',exact:true}).click();
+        await page.evaluate(async()=>{
+          const task=window.__savedViewExport;task.release();
+          try{await task.job}finally{task.restore();delete window.__savedViewExport}
+        });
+      }catch(error){if(!guardFailure)throw error;console.error('Export guard cleanup failed:',error)}
+    }
+    assert.equal(await page.evaluate(()=>window.__app.exporting||window.__app.dialog.busy||window.__app.explore.readOnly),false);
+    await page.evaluate(()=>{window.__app.dialog.close();window.__app.closeReview()});
     // Old camera-only bookmarks remain readable without overwriting the robot appearance.
     const legacy={...saved,look:{...saved.look}};delete legacy.look.antialiasing;for(const key of ['appearance','sourceHead','orientation','noclip','flight'])delete legacy[key];
     await page.evaluate(view=>window.__app.explore.restoreView(view),legacy);await restored(page);assert.deepEqual(await page.evaluate(()=>window.__app.view.getAppearance()),saved.appearance);
     assert.equal(await page.evaluate(()=>window.__app.view.sourceColor.antialiasing),'fxaa');
     // Latest selection wins even while the first view is waiting for a native model download.
-    const raceContext=await browser.newContext({deviceScaleFactor:Number(process.env.TEST_DPR||1)}),race=await pageIn(raceContext);await race.goto(base+'/?plain').then(() => require('./launch-scene.cjs').launchScene(race, { terrain: 'flat', controls: true }));await ready(race);
+    const raceContext=await browser.newContext({deviceScaleFactor:1}),race=await pageIn(raceContext);await race.goto(base+'/?plain').then(() => require('./launch-scene.cjs').launchScene(race, { terrain: 'flat', controls: true }));await ready(race);
+    const raceScene=race.locator('#workspace-panels button[aria-controls="scene-window"]');
+    if(await raceScene.getAttribute('aria-expanded')!=='true')await raceScene.click();
+    await race.getByText('Saved views',{exact:true}).click();
+    const pendingName=race.getByLabel('View name',{exact:true});await pendingName.fill('Partial restore');
     let release,started;const gate=new Promise(resolve=>release=resolve),requested=new Promise(resolve=>started=resolve);
     await race.route('**/assets/source-robots/halflife2-dog/dog.glb',async route=>{started();await gate;await route.continue();});
     await race.evaluate(view=>{void window.__app.explore.restoreView(view)},saved);await requested;
+    // A genuine held model restore cannot save a mixture of old scene and new camera settings.
+    assert.equal(await race.evaluate(()=>!!window.__app.pendingViewRestore||!!window.__app.viewRestoreAbort),true);
+    await pendingName.press('Enter');
+    assert.equal(await pendingName.inputValue(),'Partial restore');
+    assert.equal(await race.getByRole('button',{name:'Partial restore',exact:true}).count(),0);
+    assert.equal(await race.evaluate(()=>JSON.parse(localStorage.getItem('ume-saved-views-v1')||'[]').some(bookmark=>bookmark.name==='Partial restore')),false);
     const stock={...saved,appearance:{colorway:'grey',sourceBody:'stock',parts:{},robotLight:{brightness:0,color:0xffffff,range:8,dull:false}},position:[5,6,7],target:[2,3,4]};
     await race.evaluate(view=>window.__app.explore.restoreView(view),stock);await restored(race);await matches(race,stock);assert.equal(await race.evaluate(()=>window.__app.view.getBodyVisualState().applied),'stock');
     await race.evaluate(view=>{void window.__app.explore.restoreView(view)},saved);await race.waitForFunction(()=>window.__app.view.getBodyVisualState().loading);
     await chooseVisual(race,'robot','go2');assert.equal(await race.evaluate(()=>!!window.__app.pendingViewRestore),false);release();
     await race.waitForFunction(()=>window.__app.viewModel?.robot==='go2');await race.waitForTimeout(150);assert.equal(await race.evaluate(()=>window.__app.noclip),false);assert.equal(await race.evaluate(()=>window.__app.view.getBodyVisualState().applied),'stock');
-    if(!process.env.SKIP_SCREENSHOTS){await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-views-desktop.png'});await page.setViewportSize({width:390,height:844});await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/saved-views-mobile.png'});}
+    await raceContext.close();
+    // A restored Flight view must keep its HUD and the saved-view actions clear of each other.
+    await page.getByRole('button',{name:'Dog inspection',exact:true}).click();await restored(page);
+    const receives=locator=>locator.evaluate(node=>{
+      const r=node.getBoundingClientRect();
+      return r.width>0&&r.height>0&&node.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));
+    });
+    const hudClear=async label=>{
+      // Resize and panel handlers apply on the next frames.
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      assert.ok(await page.locator('#flight-hud').isVisible(),`Flight is active at ${label}`);
+      const overlap=await page.evaluate(()=>{const h=document.getElementById('flight-hud').getBoundingClientRect();return [...document.querySelectorAll('.floating-window')].filter(w=>w.getClientRects().length&&getComputedStyle(w).visibility!=='hidden').map(w=>({id:w.id,r:w.getBoundingClientRect()})).filter(({r})=>r.left<h.right&&r.right>h.left&&r.top<h.bottom&&r.bottom>h.top).map(({id})=>id)});
+      assert.deepEqual(overlap,[],`No window overlaps the Flight HUD at ${label}`);
+      for(const id of ['flight-place','flight-speed','flight-hover','flight-exit'])assert.ok(await receives(page.locator('#'+id)),`#${id} must receive pointer input at ${label}`);
+    };
+    for(const width of [320,390]){
+      await page.setViewportSize({width,height:844});
+      await page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}).click();
+      await hudClear(width+'px');
+      for(const name of ['Dog inspection','Share Dog inspection','Rename Dog inspection','Delete Dog inspection']){
+        const target=page.getByRole('button',{name,exact:true});await target.scrollIntoViewIfNeeded();
+        assert.ok(await receives(target),`${name} must receive pointer input at ${width}px`);
+      }
+      await page.evaluate(()=>navigator.clipboard.writeText(''));
+      await share.click();
+      await page.waitForFunction(()=>navigator.clipboard.readText().then(value=>value.includes('#view=')));
+      await page.getByRole('button',{name:'Rename Dog inspection',exact:true}).click();
+      await page.getByLabel('New name for Dog inspection',{exact:true}).press('Escape');
+      await page.getByRole('button',{name:'Delete Dog inspection',exact:true}).click();
+      const undo=page.getByRole('button',{name:'Undo delete',exact:true});await undo.scrollIntoViewIfNeeded();
+      assert.ok(await receives(undo),`Undo delete must receive pointer input at ${width}px`);
+      await undo.click();await page.getByRole('button',{name:'Dog inspection',exact:true}).waitFor();
+      await hudClear(width+'px after undo');
+    }
+    // Default desktop windows end above the Flight controls too.
+    await page.setViewportSize({width:1280,height:812});
+    await hudClear('1280px');
+    await page.setViewportSize(viewport);
+    if(await expandScene.isVisible())await expandScene.click();
+    // Compact layouts show one advanced panel at a time; Saved views lives in Scene.
+    if(!process.env.SKIP_SCREENSHOTS){await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:artifactPath('saved-views-desktop.png')});await page.setViewportSize({width:390,height:844});await page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}).click();await page.getByLabel('View name',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:artifactPath('saved-views-mobile.png')});}
     const bounds=await page.getByRole('button',{name:'Dog inspection',exact:true}).boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<= (process.env.SKIP_SCREENSHOTS?1440:390));
-    assert.deepEqual(errors,[]);console.log(JSON.stringify({savedAppearance:true,sourceHead:true,robotLight:true,roll:true,flight:true,freshLink:true,crossModelTerrain:true,recordingGuard:true,reviewGuard:true,exportGuard:true,legacy:true,latestSelection:true,manualNavigationCancels:true,bounds,errors}));
+    assert.deepEqual(errors,[]);console.log(JSON.stringify({savedAppearance:true,sourceHead:true,robotLight:true,roll:true,flight:true,freshLink:true,crossModelTerrain:true,recordingGuard:true,reviewGuard:true,exportGuard:true,partialRestoreGuard:true,legacy:true,latestSelection:true,manualNavigationCancels:true,bounds,errors}));
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1});

@@ -12,7 +12,7 @@ import { applyStaticShot, grabShotView, defaultShot, ShotPath, type Shot } from 
 import { loadTake, saveTake, TakeRecorder, type RecordedTake } from "./record/take";
 import { PlayerTakeRecorder, contentRequirements, verifyPlayerContent, type PlayerTake, type PlayerTakeMeta } from './record/player-take';
 import { eventList, fmtTime, Timeline, type ViewMode } from "./record/timeline";
-import { download, capturePng, stamp } from "./render/recorder";
+import { BlankCaptureError, download, capturePng, stamp } from "./render/recorder";
 import { SceneView, type Appearance, type HeadVisual } from "./render/scene";
 import { SceneCamera } from './render/scene-camera';
 import type { FromWorker, InspectMsg, RenderModel, StatusMsg, ToWorker, SceneIdentity } from "./sim/protocol";
@@ -415,10 +415,10 @@ class App {
       onExportSetup: () => this.openExport("video"),
       onOpenShots:()=>{void this.openShots();},
       onLoadTake: (file) => void this.openTakeFile(file),
-      onLocalMap: async file=>{
+      onLocalMap: async (file,signal)=>{
         if(this.rec||this.playerRec||this.recordStarting||this.timeline.isOpen||this.exporting||(this.mapPreparing&&!this.viewRestoreAbort))throw new Error('Finish the current recording, review or export before loading a map.');
         await this.cancelViewRestore();
-        try{await openLocalMap(file,undefined,(source,signal,onCommit)=>this.changeTerrain(`map:${source.id}`,source,{signal,onCommit}));}
+        try{await openLocalMap(file,undefined,(source,signal,onCommit)=>this.changeTerrain(`map:${source.id}`,source,{signal,onCommit}),signal);}
         catch(error){if(!(error instanceof DOMException&&error.name==='AbortError'))throw error;}
       },
       onLoadCsv: (file, fps) => this.loadCsv(file, fps),
@@ -563,17 +563,10 @@ class App {
     });
     window.addEventListener("keydown", (e) => this.onKey(e));
     window.addEventListener("keyup", (e) => this.onKeyUp(e));
-    // Return keyboard control to the simulation after a dropdown or ordinary action.
-    // Dropdowns consume W/S and buttons consume Space; navigation owns its focus.
+    // Native dropdowns consume driving keys; buttons keep focus and own Space/Enter in onKey.
     document.addEventListener("change", (e) => {
       if (this.inputBlocked) return;
-      if (e.target instanceof HTMLSelectElement) e.target.blur();
-    });
-    document.addEventListener("click", (e) => {
-      if (this.inputBlocked) return;
-      if ((e.target as Element | null)?.closest?.('.help-dialog,.help-trigger,[data-visual-picker],#workspace-panels')) return;
-      const b = (e.target as Element | null)?.closest?.("button");
-      if (b instanceof HTMLButtonElement) b.blur();
+      if (e.target instanceof HTMLSelectElement && !e.target.closest('dialog,[role="dialog"]')) e.target.blur();
     });
     // a key released while the window is unfocused never sends keyup — stop instead of walking on
     window.addEventListener("blur", () => {
@@ -647,8 +640,31 @@ class App {
     this.send({ t: "init", robot: selection.robot, terrain: selection.terrain, localMap:mapSource(selection.terrain)?.payload, loadingId: launch.loadingId, catalogue,
       robotExplicit:selection.robotChanged||selection.preserveView,
       policy: selection.robotChanged || selection.robot !== prefs.robot ? undefined : prefs.policy });
-    if (this.pendingViewRestore) this.send({ t: 'viewReady', request: this.pendingViewRestore.id });
+    if (this.pendingViewRestore)this.send({ t: 'viewReady', request: this.pendingViewRestore.id });
     this.send({ t: "inspect", on: true });   // left column always streams
+  }
+
+  /** Both scene modes count the same owned module intakes without crediting independent visual reads. */
+  private plannedStartupAssets(plan: WorkerAssetPlan, visuals: VisualAssetPlan, prepared: PlannedAsset[]): PlannedAsset[] {
+    const catalogue = this.startupCatalogue;
+    const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+    const priorLocalAssets = priorIntakeAssets(catalogue, launch.priorLocalMapIntake, entries, catalogue.runtime.localMap);
+    const priorSourceAssets = priorIntakeAssets(catalogue, launch.priorSourceMapIntake, entries, catalogue.runtime.sourceClient);
+    const priorPageAssets = priorSourceAssets.length ? [...priorLocalAssets, ...priorSourceAssets] : priorLocalAssets;
+    const pageRoots = launch.usesSourceAssembly || launch.usesSourceMetadata
+      ? [...catalogue.runtime.page, ...catalogue.runtime.sourceClient] : catalogue.runtime.page;
+    const assets = plannedAssets(catalogue, pageRoots, [], priorPageAssets);
+    assets.push(...plannedAssets(catalogue, [...plan.urls, ...visuals.urls, ...prepared.map(asset => asset.url)], prepared));
+    if (launch.usesLocalMapVerification) for (const asset of plannedAssets(catalogue, catalogue.runtime.localMapVerification, [])) {
+      asset.realm = 'map-verification'; assets.push(asset);
+    }
+    if (launch.usesSourceMetadata) for (const asset of plannedAssets(catalogue, catalogue.runtime.sourceMetadata, [])) {
+      asset.realm = 'source-metadata'; assets.push(asset);
+    }
+    if (launch.usesSourceAssembly) for (const asset of plannedAssets(catalogue, catalogue.runtime.sourceAssembly, [])) {
+      asset.realm = 'source-assembly'; assets.push(asset);
+    }
+    return assets;
   }
 
   /** Player startup plan: the map and flashlight visuals, plus the chosen body's exact fetched files. */
@@ -666,15 +682,7 @@ class App {
       for (const [tool, path] of Object.entries(PLAYER_VIEW_MODELS) as [PlayerTool, string][]) if (content?.has(path)) views[tool] = path;
       this.playerLiveActors = { body: studioBodyPath(bodyId) ?? bodyId, content, views };
       const prepared = [...plan.prepared, ...visuals.prepared, ...body.planned];
-      const priorPageAssets = priorIntakeAssets(catalogue, launch.priorLocalMapIntake,
-        performance.getEntriesByType('resource') as PerformanceResourceTiming[]);
-      const assets = [
-        ...plannedAssets(catalogue, catalogue.runtime.page, [], priorPageAssets),
-        ...plannedAssets(catalogue, [...plan.urls, ...visuals.urls, ...prepared.map(asset => asset.url)], prepared),
-        ...(launch.usesLocalMapVerification
-          ? plannedAssets(catalogue, catalogue.runtime.localMapVerification, []).map(asset => ({ ...asset, realm: 'map-verification' as const }))
-          : []),
-      ];
+      const assets = this.plannedStartupAssets(plan, visuals, prepared);
       launch.freezeAssets(plan.generation, assets, prepared);
       this.send({ t: 'loadingProceed', generation: plan.generation, token: plan.token });
       this.prepareMapVisual(selection.terrain);
@@ -765,17 +773,7 @@ class App {
         return;
       }
       const prepared = [...plan.prepared, ...visuals.prepared];
-      // File intake can have already evaluated page dependencies before Load.
-      // Exclude only that page scope; independent worker/visual reads still count.
-      const priorPageAssets = priorIntakeAssets(catalogue, launch.priorLocalMapIntake,
-        performance.getEntriesByType('resource') as PerformanceResourceTiming[]);
-      const assets = [
-        ...plannedAssets(catalogue, catalogue.runtime.page, [], priorPageAssets),
-        ...plannedAssets(catalogue, [...plan.urls, ...visuals.urls, ...prepared.map(asset => asset.url)], prepared),
-        ...(launch.usesLocalMapVerification
-          ? plannedAssets(catalogue, catalogue.runtime.localMapVerification, []).map(asset => ({ ...asset, realm: 'map-verification' as const }))
-          : []),
-      ];
+      const assets = this.plannedStartupAssets(plan, visuals, prepared);
       launch.freezeAssets(plan.generation, assets, prepared);
       this.send({ t: 'loadingProceed', generation: plan.generation, token: plan.token });
       this.prepareMapVisual(selection.terrain);
@@ -815,8 +813,8 @@ class App {
     const id=++this.mapRequest;
     this.stopAndRearm();this.cancelScreenshot();
     signal?.throwIfAborted();
-    const stage=terrain===this.mapVisualTerrain&&this.view.mapSource?.id===source?.id
-      ?null:await this.view.stageTerrainVisual(source);
+    const reuse=terrain===this.mapVisualTerrain&&this.view.mapSource?.id===source?.id;
+    const stage=reuse?null:await this.view.stageTerrainVisual(source);
     if(signal?.aborted){stage?.dispose();signal.throwIfAborted();}
     // From here the worker compiles this map for its current robot; a newer choice waits for it.
     if(this.mapRobotChoice)this.mapRobotChoice='later';
@@ -872,9 +870,9 @@ class App {
     catch(error){
       if(!terrain.startsWith('map:local-'))throw error;
       const id=terrain.slice(4),fingerprint=id.slice(6);
-      if(!/^[a-f0-9]{64}$/.test(fingerprint))throw new Error('Choose a verified map bundle before restoring this view.');
+      if(!/^[a-f0-9]{64}$/.test(fingerprint))throw new Error('Choose the original local map files before restoring this view.');
       const expected=identity??this.sessionMaps.get(id)?.identity??{id,fingerprint,name:'Local map',game:'Local'};
-      const observer = launch.active ? launch.beginLocalMapVerification() : undefined;
+      const observer = launch.active ? launch.beginLocalMapIntake() : undefined;
       return openLocalMap(undefined,expected,undefined,signal,observer).then(source=>{
         signal?.throwIfAborted();
         this.sessionMaps.set(source.id,{identity:expected,source:new WeakRef(source)});
@@ -959,9 +957,10 @@ class App {
       requestLock: () => this.player?.input.requestLock(),
       spawnRobot: robot => this.send({ t: 'playerSpawnRobot', robot }),
     });
+    const blocked = () => this.inputBlocked || this.timeline.isOpen || this.exporting || this.dialog.isOpen
+      || this.model?.mode !== 'player' || !!document.getElementById('policy-notice');
     const input = new PlayerInputController(this.view.renderer.domElement, {
-      blocked: () => this.inputBlocked || this.timeline.isOpen || this.exporting || this.dialog.isOpen
-        || this.model?.mode !== 'player' || !!document.getElementById('policy-notice'),
+      blocked,
       input: frame => {
         Object.assign(this.playerSentInput, frame);
         this.playerInputSent = true;
@@ -981,7 +980,11 @@ class App {
       },
       spawnMenu: () => hud.openSpawnMenu(),
       holdDistance: direction => this.send({ t: 'playerWheel', direction }),
-      locked: locked => { if (!locked) this.send({ t: 'playerStop' }); },
+      locked: locked => {
+        // Pointer lock owns the keyboard immediately, before the HUD's next frame.
+        if (!locked) this.send({ t: 'playerStop' });
+        else if (!blocked()) this.view.renderer.domElement.focus({ preventScroll: true });
+      },
       // The held view is part of every input frame; the camera reads the controller directly.
       thirdPerson: () => {},
       lockError: () => hud.lockFailed(),
@@ -1214,7 +1217,7 @@ class App {
     }).observe(toolbar);
     window.addEventListener('keydown', e => {
       if (this.inputBlocked) return;
-      if (e.code === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
+      if (e.code === 'Backquote' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
           && e.target === this.view.renderer.domElement) {
         e.preventDefault(); panels.click();
       }
@@ -2711,7 +2714,7 @@ class App {
     }
     if (!prev || prev.robot !== s.robot || prev.robotSpec !== s.robotSpec ||
         policyOptionsChanged || prev.policy !== s.policy)
-      this.panel.setPolicies(s.policies, s.policy, s.robot);
+      this.panel.setPolicies(s.policies, s.policy, s.robot, s.robotSpec);
     // the manager lists only the ACTIVE family's packs (r1+r1_air | go2)
     const famPacks = s.packs.filter((p) => fam(p.robot) === s.robot);
     if (!prev || prev.robot !== s.robot ||
@@ -2924,15 +2927,15 @@ class App {
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       const filename=`${mapId(terrain)??terrain}_${model.robot??'player'}_${stamp()}.png`;
       const created=new Date().toISOString();
-      const blob=await Promise.race([capturePng(this.view.renderer.domElement),aborted]);
+      const blob=await Promise.race([capturePng(this.view.renderer.getContext() as WebGL2RenderingContext),aborted]);
       if(!current()){this.cancelScreenshot();return}
       if(this.view.renderer.getContext().isContextLost())throw new Error('Viewport unavailable.');
       download(blob,filename);message='PNG downloaded · saving to Shots…';
       this.retainScreenshot(blob,filename.slice(0,-4),created,model.mode,model.robot,terrain,request);
-    }catch{
+    }catch(error){
       if(request!==this.screenshotRequest)return;
       message=!current()?'The scene changed. Take the screenshot again when it has loaded.'
-        :this.view.renderer.getContext().isContextLost()?'The viewport is unavailable. Wait for it to recover, then try Screenshot again.'
+        :error instanceof BlankCaptureError||this.view.renderer.getContext().isContextLost()?'The viewport is unavailable. Wait for it to recover, then try Screenshot again.'
         :phase==='prepare'?'Scene visuals could not load. Retry the map or robot model, then try Screenshot again.'
         :'The PNG could not be saved. Try Screenshot again.';
     }finally{

@@ -1,32 +1,23 @@
 /** Chromium: select upgraded maps through the real worker and render their native assets. */
-const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os');
+const artifactPath=require('./test-artifacts.cjs');
+const assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const {readyApp}=require('./attach-ready-app.cjs');
 (async()=>{
  const root=path.resolve('public/assets/maps'),index=JSON.parse(await fs.readFile(path.join(root,'index.json'),'utf8'));
  const maps=process.env.MAP_IDS?process.env.MAP_IDS.split(','):index.maps.map(m=>m.id);
  assert.ok(maps.length&&maps.every(id=>index.maps.some(m=>m.id===id)));
- const output=process.env.MAP_CHECK_OUTPUT||path.join(os.homedir(),'.local/state/unitree-renderer/map-expansion/browser');
+ const output=process.env.MAP_CHECK_OUTPUT||artifactPath();
  await fs.mkdir(output,{recursive:true});
- const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});
+ const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});
  const results=[],errors=[];
  try {
-  const page=await browser.newPage({viewport:{width:1280,height:800},deviceScaleFactor:.25});
+  const page=await browser.newPage({viewport:{width:1280,height:800},deviceScaleFactor:1});
   page.on('pageerror',e=>errors.push(e.message));
   page.on('console',m=>{if(m.type()==='error')console.log('Browser error: '+m.text());if(m.text().startsWith('[physics]'))console.log(m.text());if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
-  if(process.env.TRACE_WORKER)await page.context().route('**/assets/sim.worker-*.js',async route=>{
-   const response=await route.fetch(),body=await response.text();
-   const engine=body.match(/this\.eng\s*=\s*await\s+([\w$]+)\.create/)?.[1];
-   const sim=[...body.matchAll(/([\w$]+)\.onMessage\(/g)].at(-1)?.[1];assert.ok(engine&&sim,'Worker trace must match');
-   const hook=`\nconst traceCreate=${engine}.create.bind(${engine});${engine}.create=async(...args)=>{console.log('[physics] create start');try{const result=await traceCreate(...args);console.log('[physics] create done');return result;}catch(e){console.error('[physics] create failed',e,e?.stack);throw e;}};
-   for(const name of ['buildEngine','renderModel']){const original=${sim}[name].bind(${sim});${sim}[name]=function(...args){console.log('[physics] '+name+' start '+this.terrain);try{const result=original(...args);if(result?.then)return result.then(value=>{console.log('[physics] '+name+' done');return value},e=>{console.error('[physics] '+name+' failed',e,e?.stack);throw e;});console.log('[physics] '+name+' done');return result;}catch(e){console.error('[physics] '+name+' failed',e,e?.stack);throw e;}};}`;
-   await route.fulfill({response,body:body+hook});
-  });
-  const expose=body=>require('./expose-app.cjs')(body).replaceAll('this.renderLoop()','void 0');
-  for(const pattern of ['**/src/main.ts*','**/assets/main-*.js'])await page.route(pattern,async route=>{
-   const response=await route.fetch(),original=await response.text(),body=expose(original);await route.fulfill({response,body});
-  });
   await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page));
-  await page.waitForFunction(()=>window.__app?.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:180000});
+  // The release chunk stays byte-identical; the real Ready App is attached through CDP.
+  await readyApp(page,{timeout:180000});
   for(const id of maps) {
    console.log(`Loading ${id}`);
    const manifest=JSON.parse(await fs.readFile(path.join(root,id,'manifest.json'),'utf8'));

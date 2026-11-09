@@ -1,9 +1,11 @@
+import type { TransferRealm } from './transfers';
+
 /** HTTP-decoded asset entities. Explicit .gz files count before application inflation. */
 export interface PlannedAsset {
   url: string;
   bytes: number;
   /** Independent worker module reads cannot be credited from the page realm. */
-  realm?: 'map-verification';
+  realm?: TransferRealm;
 }
 
 /** Optional module intake state captured before this load starts. */
@@ -26,6 +28,12 @@ export interface StartupAssetCatalogue {
     localMap: string[];
     /** Full converted-map verifier, selected only by a Load that uses it. */
     localMapVerification: string[];
+    /** Optional Source client page graph; completed prior reads are excluded. */
+    sourceClient: string[];
+    /** Explicit file inspection worker, outside the later scene scope. */
+    sourceMetadata: string[];
+    /** Fresh conversion worker graph, never credited from page imports. */
+    sourceAssembly: string[];
   };
   mapVisuals: Record<string, string[]>;
   modelBundles: Record<string, string[]>;

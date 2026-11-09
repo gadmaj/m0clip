@@ -397,7 +397,10 @@ async function runSuite() {
             assert.ok(result.viewport.scroll <= result.viewport.width + 1, 'Mobile scene must not require horizontal document scrolling');
           }
           assert.deepEqual(errors, [], 'Successful load must not introduce uncaught application errors');
-          assert.deepEqual(networkErrors, [], 'Successful scene load must not lose network failures');
+          // The scene load owns every request issued from the Load click on. Earlier requests are launch
+          // browsing (picker previews are cancelled with their closed dialog); an unknown start stays owned.
+          const sceneFailures = networkErrors.filter(failure => failure.started === undefined || failure.started >= result.loadStartedAt);
+          assert.deepEqual(sceneFailures, [], 'Successful scene load must not lose network failures');
         }
         const active = samples.filter(sample => sample.state === 'loading' && !sample.error);
         const layout = samples.filter(sample => sample.loadingVisible && sample.byteBox?.height);

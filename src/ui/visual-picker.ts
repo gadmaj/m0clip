@@ -14,7 +14,7 @@ export interface VisualPickerConfig {
   description?:(value:string)=>string;
   /** Called only after the user explicitly opens this mode. Results do not select anything. */
   catalog?:{label:string;load:(query:string,offset:number,signal:AbortSignal)=>Promise<VisualCatalogPage>};
-  intake?: {label:string;select:(file:File,signal:AbortSignal)=>Promise<void>};
+  intake?: {label:string;open:(signal:AbortSignal)=>Promise<void>};
 }
 /** A view over a canonical select, never a second selection model. */
 export class VisualPicker {
@@ -27,6 +27,7 @@ export class VisualPicker {
   private generation = 0;
   private disposed = false;
   private request:AbortController|null = null;
+  private intakeRequest:AbortController|null = null;
   private searchTimer?:number;
   private refreshIncluded:(()=>void)|null=null;
   private readonly changed = () => this.sync();
@@ -45,13 +46,25 @@ export class VisualPicker {
   }
   sync(preserveSearch=false){
     const selected=this.select.selectedOptions[0],label=selected?.label,detail=selected?.dataset.detail;
-    this.button.textContent=`${label || this.config.label} ▦`;
-    // One name line and one detail line keep the trigger height fixed; the full detail stays in title, aria-label and the gallery card.
-    if(detail){const text=document.createElement('span');text.className='visual-picker-trigger-text';const name=document.createElement('span');name.textContent=this.button.textContent;const small=document.createElement('small');small.className='visual-picker-detail';small.textContent=detail;text.append(name,small);this.button.replaceChildren(text);}
+    // Every trigger uses one name line; optional detail stays on its own line.
+    const text=document.createElement('span'),name=document.createElement('span');
+    text.className='visual-picker-trigger-text';name.textContent=`${label || this.config.label} ▦`;text.append(name);
+    if(detail){const small=document.createElement('small');small.className='visual-picker-detail';small.textContent=detail;text.append(small);}
+    this.button.replaceChildren(text);
     this.button.setAttribute('aria-label',label?`${this.config.label}: ${label}${detail?`, ${detail}`:''}`:this.config.label);
-    if(detail)this.button.title=detail; else this.button.removeAttribute('title');
+    this.button.title=`${label || this.config.label}${detail?` · ${detail}`:''}`;
     const thumbnail=selected?.dataset.preview;
-    if(thumbnail){registerPreviewAsset(thumbnail);const image=document.createElement('img');image.crossOrigin='anonymous';image.loading='lazy';image.decoding='async';image.src=thumbnail;image.alt='';image.onerror=()=>{image.remove();this.button.append(' · Preview unavailable');};this.button.prepend(image);}
+    if(thumbnail){
+      registerPreviewAsset(thumbnail);
+      const image=document.createElement('img');image.crossOrigin='anonymous';image.loading='lazy';image.decoding='async';image.src=thumbnail;image.alt='';
+      image.onerror=()=>{
+        if(!this.button.contains(image))return;
+        image.remove();name.append(' · Preview unavailable');
+        this.button.title+=' · Preview unavailable';
+        this.button.setAttribute('aria-label',`${this.button.getAttribute('aria-label')} · Preview unavailable`);
+      };
+      this.button.prepend(image);
+    }
     this.button.disabled=this.disabled;
     if(this.dialog){
       if(preserveSearch&&!this.button.disabled&&this.refreshIncluded)this.refreshIncluded();
@@ -97,10 +110,13 @@ export class VisualPicker {
     const grid=document.createElement('div'); grid.className='visual-picker-grid'; dialog.append(grid);
     const status=document.createElement('p');status.setAttribute('role','status');status.setAttribute('aria-live','polite');status.hidden=true;dialog.append(status);
     if(this.config.intake){
-      const input=document.createElement('input');input.type='file';input.accept='.zip,application/zip';input.hidden=true;dialog.append(input);
       const actions=document.createElement('div');actions.className='visual-picker-actions';header.after(actions);
-      const intake=action(this.config.intake.label,()=>input.click());actions.append(intake);
-      input.onchange=async()=>{const file=input.files?.[0];if(!file)return;this.cancelRequest();const request=this.request=new AbortController();intake.disabled=true;status.hidden=false;status.textContent='Reading map index…';try{await this.config.intake!.select(file,request.signal);if(this.dialog===dialog)this.close();}catch(error){if(this.dialog===dialog){status.textContent=error instanceof Error?error.message:String(error);intake.disabled=false;input.value='';}}};
+      const intake=action(this.config.intake.label,async()=>{
+        this.cancelRequest();this.intakeRequest?.abort();const request=this.intakeRequest=new AbortController();intake.disabled=true;
+        try{await this.config.intake!.open(request.signal);if(this.dialog===dialog)this.close();}
+        catch(error){if(this.dialog===dialog){status.hidden=false;status.textContent=error instanceof DOMException&&error.name==='AbortError'?'Map selection cancelled.':error instanceof Error?error.message:String(error);intake.disabled=false;intake.focus();}}
+        finally{if(this.intakeRequest===request)this.intakeRequest=null;}
+      });actions.append(intake);
     }
     const navigation=document.createElement('div');navigation.className='visual-picker-actions';navigation.hidden=true;
     const previous=action('Previous',()=>{offset=Math.max(0,offset-(page?.limit??40));void loadSource();});
@@ -193,5 +209,5 @@ export class VisualPicker {
     document.body.append(dialog);VisualPicker.opened.add(this);dialog.showModal();switchMode(false);
     window.dispatchEvent(new Event('visual-picker-open'));(search??title).focus();
   }
-  dispose(){if(this.disposed)return;this.disposed=true;this.close(false);this.select.removeEventListener('change',this.changed);this.root.remove();}
+  dispose(){if(this.disposed)return;this.disposed=true;this.intakeRequest?.abort();this.intakeRequest=null;this.close(false);this.select.removeEventListener('change',this.changed);this.root.remove();}
 }

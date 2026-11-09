@@ -1,7 +1,7 @@
 /** Compare imported materials with actual noclip GLSL on nonunit/interpolated normals. */
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
-const {fixture,png}=require('./source_material_fixture.cjs');
+const {fixture,png,COOKIE_GRAY,materialView,install}=require('./source_material_fixture.cjs');
 const root=process.env.NOCLIP_REFERENCE||path.resolve('../noclip.website');
 const base=fs.readFileSync(path.join(root,'src/SourceEngine/Materials/MaterialBase.ts'),'utf8');
 const generic=fs.readFileSync(path.join(root,'src/SourceEngine/Materials/Material_Generic.ts'),'utf8');
@@ -35,22 +35,15 @@ function materialFixture(config){
  return data;
 }
 (async()=>{
- const browser=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});
+ const browser=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});
  try{
-  const page=await browser.newPage({deviceScaleFactor:.25}),errors=[];
-  page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
-  const expose=source=>require('./expose-app.cjs')(source).replaceAll('this.renderLoop()','void 0');
-  for(const pattern of['**/src/main.ts*','**/assets/main-*.js'])await page.route(pattern,async route=>{const response=await route.fetch();await route.fulfill({response,body:expose(await response.text())})});
-  await page.addInitScript(()=>localStorage.setItem('ume-prefs',JSON.stringify({robot:'r1',terrain:'flat'})));
-  await page.route('**/assets/source/flashlight.png',route=>route.fulfill({contentType:'image/png',body:png([64,64,64,255])}));
-  let config=cases[0];await page.route('**/nt_ghost_ctg/visual.glb*',route=>route.fulfill({contentType:'model/gltf+json',body:JSON.stringify(materialFixture(config))}));
-  await page.route('**/nt_ghost_ctg/manifest.json',route=>route.fulfill({json:{}}));
-  for(const file of['lighting.json','lightstyles.json'])await page.route('**/nt_ghost_ctg/'+file,route=>route.fulfill({status:404,body:''}));
-  await page.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&body=stock').then(() => require('./launch-scene.cjs').launchScene(page));await page.waitForFunction(()=>window.__app?.lastFrame&&window.__app.view.flashlight.ready,null,{timeout:120000});
+  // Component-only: each owned case is a verified local bundle installed in the real renderer.
+  const errors=[],page=await materialView(browser,errors);
   const results=[];
-  for(config of cases){
-   const result=await page.evaluate(async({config,native,projected,projectedSpecular})=>{
-    const v=window.__app.view;await v.setTerrainVisual(null);await v.setTerrainVisual(window.__app.sourceForTerrain('map:nt_ghost_ctg'));v.setDisplay({...v.display,robot:false});v.setSourceLighting(true);v.sourceColorMap=false;v.sourceAmbient.linearOutput.value=1;v.flashlight.cookie.value.colorSpace='';v.flashlight.cookie.value.needsUpdate=true;
+  for(const config of cases){
+   await install(page,`Source normal ${config.name}`,materialFixture(config));
+   const result=await page.evaluate(async({config,native,projected,projectedSpecular,gray})=>{
+    const v=window.__view;v.setSourceLighting(true);v.sourceColorMap=false;v.sourceAmbient.linearOutput.value=1;
     const camera=v.camera;camera.position.set(0,0,0);camera.quaternion.set(0,0,0,1);camera.aspect=1;camera.fov=60;camera.updateProjectionMatrix();
     v.beginOffscreen(64,64,{transparent:true,floor:false});
     const read=()=>{const canvas=document.createElement('canvas');canvas.width=canvas.height=64;const ctx=canvas.getContext('2d');ctx.drawImage(v.renderer.domElement,0,0);return Array.from(ctx.getImageData(32,32,1,1).data)};
@@ -66,7 +59,7 @@ function materialFixture(config){
      SpecularLightInput t_SpecularLightInput;t_SpecularLightInput.PositionWorld=v_PositionWorld;t_SpecularLightInput.NormalWorld=t_NormalWorld;t_SpecularLightInput.WorldDirectionToEye=eye;t_SpecularLightInput.Fresnel=${config.light?'1.0':'0.0'};t_SpecularLightInput.SpecularExponent=5.0;t_SpecularLightInput.RimExponent=1.0;
      ${config.ambient?'diffuse+=AmbientLight(t_NormalWorld);':''}
      ${config.light?'WorldLight light;light.Position=vec4(0,0,0,3);light.Color=vec4(.125,.0625,.03125,1);light.Direction=vec4(-2.0/3.0,-2.0/3.0,1.0/3.0,0);light.DistAttenuation=vec4(1,0,0,0);diffuse+=WorldLightCalcDiffuse(v_PositionWorld,t_NormalWorld,false,1.0,light);t_SpecularLighting+=WorldLightCalcSpecular(t_SpecularLightInput,light).SpecularLight;':''}
-     if(flashlight){vec3 t_ProjectedLightColor=vec3(64.0/255.0);${projected}diffuse+=t_ProjectedLightColor;${config.phong?projectedSpecular:''}}
+     if(flashlight){vec3 t_ProjectedLightColor=vec3(${gray}.0/255.0);${projected}diffuse+=t_ProjectedLightColor;${config.phong?projectedSpecular:''}}
      vec3 result=albedo*diffuse+t_SpecularLighting;
      ${config.reflection?`result=vec3(.25,.125,.0625)*${config.phong?`CalcFresnelTerm2Ranges(dot(t_NormalWorld,eye),vec3(${(config.fresnel||[0,0,0]).map(v=>v.toFixed(8)).join(',')}))`:'CalcFresnelTerm2(dot(t_NormalWorld,eye))'}+t_SpecularLighting;`:''}
      color=vec4(result,1);
@@ -77,7 +70,7 @@ function materialFixture(config){
     const draw=enabled=>{gl.uniform1i(gl.getUniformLocation(program,'flashlight'),enabled);gl.drawArrays(gl.TRIANGLES,0,6);const data=new Uint8Array(4);gl.readPixels(32,31,1,1,gl.RGBA,gl.UNSIGNED_BYTE,data);return Array.from(data)};
     const reference={off:draw(0),on:draw(1)};for(const buffer of buffers)gl.deleteBuffer(buffer);gl.deleteProgram(program);gl.deleteShader(vertex);gl.deleteShader(fragment);gl.getExtension('WEBGL_lose_context').loseContext();
     return{name:config.name,actual:{off,on},reference};
-   },{config,native,projected,projectedSpecular});
+   },{config,native,projected,projectedSpecular,gray:COOKIE_GRAY});
    results.push(result);
   }
   console.log(JSON.stringify({results,errors}));

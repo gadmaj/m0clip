@@ -1,10 +1,10 @@
 /** Chromium integration: native skyline, foreground depth, camera paths and cleanup. */
+const artifactPath=require('./test-artifacts.cjs');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
-const assert=require('node:assert/strict'),fs=require('node:fs');
-(async()=>{const b=await chromium.launch({headless:false,args:['--no-sandbox','--ozone-platform=x11']});try{const p=await b.newPage(),errors=[];p.on('pageerror',e=>errors.push(e.message));p.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
-await p.route('**/{src/main.ts*,assets/main-*.js}',async r=>{const response=await r.fetch();await r.fulfill({response,body:require('./expose-app.cjs')(await response.text())})});
-await p.route('**/assets/main-*.js',async r=>{const response=await r.fetch();const original=await response.text(),body=require('./expose-app.cjs')(original);await r.fulfill({response,body})});
-await p.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&map=nt_ghost_ctg').then(() => require('./launch-scene.cjs').launchScene(p));await p.waitForFunction(()=>window.__app?.view.terrainObject&&window.__app.lastFrame&&document.querySelector('#overlay').classList.contains('hidden'),null,{timeout:180000});
+const assert=require('node:assert/strict'),fs=require('node:fs'),{readyApp}=require('./attach-ready-app.cjs');
+(async()=>{const b=await chromium.launch({headless:process.env.HEADLESS==='1',executablePath:process.env.CHROMIUM_PATH,args:['--no-sandbox','--ozone-platform=x11']});try{const p=await b.newPage(),errors=[];p.on('pageerror',e=>errors.push(e.message));p.on('console',m=>{if(m.type()==='error'&&/shader|WebGLProgram/.test(m.text()))errors.push(m.text())});
+// The release chunk stays byte-identical; the real Ready App is attached through CDP.
+await p.goto((process.env.BASE_URL||'http://127.0.0.1:5176')+'/?plain&map=nt_ghost_ctg').then(() => require('./launch-scene.cjs').launchScene(p));await readyApp(p,{until:()=>window.__app.view.terrainObject,timeout:180000});
 const proof=await p.evaluate(()=>{const v=window.__app.view,visibility=v.sourceVisibility,world=v.terrainObject;
 const camera=v.camera.clone();camera.position.set(0,0,0);camera.lookAt(0,10,1);camera.updateMatrixWorld();
 const statics=[],surfaces=[];world.traverse(o=>{if(typeof o.userData.sourceStaticIndex==='number')statics.push(o);if(o.isMesh&&o.geometry.userData.sourceFaceRanges)surfaces.push([o,o.geometry,o.geometry.index.count])});
@@ -18,5 +18,5 @@ const originalDisplay={...v.display};v.setDisplay({...originalDisplay,decals:fal
 visibility.draw=draw;v.flashlight.set(true);v.renderWith(camera);const flashlight={...visibility.stats};v.flashlight.set(false);
 v.beginOffscreen(720,480);v.renderWith(v.camera);const defaultView=v.renderer.domElement.toDataURL('image/png');v.endOffscreen();v.render();return{before,stats,inside:first,restored,fallback,fallbackInside,framed,transparent,decalHidden,flashlight,image,defaultView}});
 assert.equal(proof.before.staticProps,1750);assert.equal(proof.stats.cluster,281);assert.equal(proof.stats.faces,2006);assert.equal(proof.stats.staticProps,404);assert.equal(proof.inside.staticProps,404);assert.deepEqual(proof.inside.skyProps,[]);assert.ok(proof.inside.indices<proof.before.indices);assert.ok(proof.restored&&proof.decalHidden);assert.equal(proof.fallback.fallback,true);assert.equal(proof.fallback.staticProps,1750);assert.deepEqual(proof.fallback,proof.framed);assert.equal(proof.transparent.cluster,281);assert.equal(proof.flashlight.cluster,281);assert.deepEqual(errors,[]);
-fs.writeFileSync('/tmp/ghost-main-pvs.png',Buffer.from(proof.image.split(',')[1],'base64'));delete proof.image;fs.writeFileSync('/tmp/ghost-main-pvs-default-view.png',Buffer.from(proof.defaultView.split(',')[1],'base64'));delete proof.defaultView;
+fs.writeFileSync(artifactPath('ghost-main-pvs.png'),Buffer.from(proof.image.split(',')[1],'base64'));delete proof.image;fs.writeFileSync(artifactPath('ghost-main-pvs-default-view.png'),Buffer.from(proof.defaultView.split(',')[1],'base64'));delete proof.defaultView;
 await p.evaluate(async()=>{const v=window.__app.view,visibility=v.sourceVisibility;await v.setTerrainVisual(null);window.__visibilityDisposed=v.sourceVisibility===null&&visibility.surfaces.length===0});assert.ok(await p.evaluate(()=>window.__visibilityDisposed));console.log(JSON.stringify({...proof,cleanup:true,errors}));}finally{await b.close()}})().catch(e=>{console.error(e);process.exitCode=1});
