@@ -51,13 +51,15 @@ export class Pong {
   }
 
   private setPaused(paused: boolean) {
+    // A hidden document cannot run frames: a court revealed or resumed while hidden stays paused, never "playing" and frozen.
+    paused ||= document.hidden;
     this.paused = paused; this.keys.clear();
     this.button.textContent = paused ? 'Play Pong' : 'Pause Pong';
     this.button.setAttribute('aria-pressed', String(!paused));
     cancelAnimationFrame(this.animation); this.animation = 0;
     this.draw();
     // Reduced-motion users start paused; playing the revealed court remains opt-in.
-    if (!paused && !this.stopped && !document.hidden) {
+    if (!paused && !this.stopped) {
       this.last = performance.now(); this.animation = requestAnimationFrame(this.tick);
     }
   }
