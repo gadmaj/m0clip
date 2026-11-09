@@ -75,7 +75,8 @@ export interface PlayerMoveProfile {
   readonly airWishCap: number;
   readonly jumpImpulse: number;
   /** Garry's Mod Sandbox jump boost: the share of the forward move added along the flat view when
-   * a jump is pressed on the ground, with horizontal speed held to (1 + share) × max speed. */
+   * a jump is pressed on the ground. Horizontal speed afterwards is capped at the larger of the
+   * speed before the boost and (1 + share) × max speed. */
   readonly jumpBoost: number;
   /** The jump boost share while fully ducked. */
   readonly duckJumpBoost: number;

@@ -226,6 +226,44 @@ try {
     assert.ok(speed2d(state) <= P.walkSpeed * 1.5 + 1e-9, 'no boost on landing while jump is held');
   });
 
+  // GMod's formula alone lets a hop square to the view gain speed on every jump; m0clip caps it.
+  await run('repeated side hops above the boost limit never gain speed', () => {
+    const { state, cmd, tick } = player();
+    state.velocity.set([0, 700, 0]);
+    cmd.yaw = 0; // facing +X, moving +Y: square to the view
+    let previous = Infinity;
+    for (let hop = 0; hop < 5; hop++) {
+      cmd.buttons = 0;
+      for (let i = 0; i < 200 && !state.grounded; i++) tick();
+      assert.equal(state.grounded, true, `on the floor before hop ${hop}`);
+      state.velocity.set([0, 700, 0]);
+      cmd.buttons = B.jump;
+      tick();
+      assert.equal(events.jumped, true, `hop ${hop} jumped`);
+      assert.ok(speed2d(state) <= 700 + 1e-9, `hop ${hop} speed ${speed2d(state)} stays at or below its take-off speed`);
+      assert.ok(speed2d(state) <= previous + 1e-9, `hop ${hop} does not compound`);
+      previous = speed2d(state);
+    }
+  });
+
+  await run('landed is reported only on the tick that touches the ground', () => {
+    const { state, cmd, tick } = player();
+    cmd.buttons = B.jump;
+    tick();
+    cmd.buttons = 0;
+    assert.equal(state.grounded, false, 'airborne after the jump');
+    let airborneLanded = 0, landings = 0;
+    for (let i = 0; i < 200; i++) {
+      const wasAirborne = !state.grounded;
+      tick();
+      if (events.landed) landings++;
+      if (events.landed && !state.grounded) airborneLanded++;
+      if (wasAirborne && state.grounded) { assert.equal(events.landed, true, 'the touchdown tick reports landed'); break; }
+    }
+    assert.equal(airborneLanded, 0, 'no airborne tick reports landed');
+    assert.equal(landings, 1, 'exactly one landing');
+  });
+
   if (failed) { console.log(`${failed} failed`); process.exitCode = 1; }
 } finally {
   await rm(fixture, { force: true });

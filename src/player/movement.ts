@@ -158,6 +158,7 @@ export class PlayerMover {
     events.jumped = false;
     events.landed = false;
     events.stepHeight = 0;
+    this.touchedGround = false;
     const wasGrounded = state.grounded;
     const buttons = cmd.buttons | 0;
     // Sandbox StartMove: a jump pressed while on the ground earns the boost applied after the move.
@@ -341,17 +342,26 @@ export class PlayerMover {
   }
 
   /** Garry's Mod Sandbox jump boost along the flat view (fx, fy): a share of the forward move,
-   * reduced so horizontal speed ends at most (1 + share) × max speed. Past that limit the boost turns
-   * negative and slows the jump; it points backward when the player is moving backward. */
+   * reduced by any excess over (1 + share) × max speed, and pointing backward when the player
+   * moves backward. GMod's formula alone lets a hop roughly perpendicular to the view gain speed
+   * on every jump (the reduction is added sideways), so the result is also capped at the larger
+   * of the speed before the boost and (1 + share) × max speed. Aligned hops are unaffected. */
   private sandboxJumpBoost(fx: number, fy: number, fmove: number, maxSpeed: number): void {
     const v = this.s.velocity;
     const share = this.s.ducked ? this.profile.duckJumpBoost : this.profile.jumpBoost;
+    const before = Math.hypot(v[0], v[1]);
+    const limit = maxSpeed * (1 + share);
     let add = Math.abs(fmove * share);
-    const excess = add + Math.hypot(v[0], v[1]) - maxSpeed * (1 + share);
+    const excess = add + before - limit;
     if (excess > 0) add -= excess;
     if (v[0] * fx + v[1] * fy < 0) add = -add;
     v[0] += fx * add;
     v[1] += fy * add;
+    const after = Math.hypot(v[0], v[1]), cap = Math.max(before, limit);
+    if (after > cap) {
+      v[0] *= cap / after;
+      v[1] *= cap / after;
+    }
   }
 
   private friction(): void {
