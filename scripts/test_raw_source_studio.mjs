@@ -149,7 +149,39 @@ const strip=fixture(),oldStrip=Buffer.from(strip.vtx.subarray(143,170));oldStrip
 strip.vtx.writeUInt32LE(6,93);strip.vtx.writeUInt32LE(70,105);strip.vtx.writeUInt32LE(6,155);strip.vtx[173]=2;
 [0,1,2,2,1,0].forEach((value,i)=>strip.vtx.writeUInt16LE(value,137+i*2));
 strip.files['models/fixture.dx90.vtx']=new Blob([strip.vtx]);
-assert.deepEqual(Array.from((await readSourceStudioModel(strip.fs,'models/fixture.mdl')).meshes[0].indices),[0,1,2,1,2,0]);
+const stripModel=await readSourceStudioModel(strip.fs,'models/fixture.mdl');
+assert.deepEqual(Array.from(stripModel.meshes[0].indices),[0,1,2,1,2,0]);
+assert.equal(stripModel.meshes[0].indices.buffer.byteLength,24,'Degenerate strip triangles are counted out before allocation, not left in a larger buffer');
+// Two strips claiming the same index range would replay those indices.
+const overlapping=fixture();overlapping.vtx.copy(overlapping.vtx,170,143,170);overlapping.vtx.writeUInt32LE(2,101);
+overlapping.files['models/fixture.dx90.vtx']=new Blob([overlapping.vtx]);
+await assert.rejects(readSourceStudioModel(overlapping.fs,'models/fixture.mdl'),/VTX strips overlap/);
+// Many strip groups may legally point at one shared vertex/index/strip array.
+// Their declared expansion is charged to the import-wide geometry budget before
+// any vertex or index array is allocated, and indices are then sized exactly.
+function sharedGroups(count){
+  const d=fixture(),vtx=Buffer.alloc(200+count*25+60),verts=200+count*25,indices=verts+27,stripAt=indices+6;
+  d.vtx.copy(vtx,0,0,200);d.vtx.copy(vtx,verts,110,137);d.vtx.copy(vtx,indices,137,143);d.vtx.copy(vtx,stripAt,143,170);
+  vtx.writeUInt32LE(count,76);vtx.writeUInt32LE(200-76,80);
+  for(let i=0;i<count;i++){const g=200+i*25;vtx.writeUInt32LE(3,g);vtx.writeUInt32LE(verts-g,g+4);vtx.writeUInt32LE(3,g+8);vtx.writeUInt32LE(indices-g,g+12);vtx.writeUInt32LE(1,g+16);vtx.writeUInt32LE(stripAt-g,g+20);vtx[g+24]=2;}
+  d.files['models/fixture.dx90.vtx']=new Blob([vtx]);return d;
+}
+const sharedCount=200,sharedBytes=sharedCount*(3*72+3*4);
+let largestGeometryArray=0;
+const OriginalFloat32Array=globalThis.Float32Array,OriginalUint32Array=globalThis.Uint32Array;
+globalThis.Float32Array=class extends OriginalFloat32Array{constructor(...args){super(...args);largestGeometryArray=Math.max(largestGeometryArray,this.length);}};
+globalThis.Uint32Array=class extends OriginalUint32Array{constructor(...args){super(...args);largestGeometryArray=Math.max(largestGeometryArray,this.length);}};
+try{await assert.rejects(readSourceStudioModel(sharedGroups(sharedCount).fs,'models/fixture.mdl',{maxGeometryBytes:sharedBytes-1}),/geometry would exceed/);}
+finally{globalThis.Float32Array=OriginalFloat32Array;globalThis.Uint32Array=OriginalUint32Array;}
+assert(largestGeometryArray<sharedCount*3,`Refused before allocating mesh arrays (largest ${largestGeometryArray})`);
+const sharedModel=await readSourceStudioModel(sharedGroups(sharedCount).fs,'models/fixture.mdl',{maxGeometryBytes:sharedBytes});
+assert.equal(sharedModel.meshes[0].indices.length,sharedCount*3);assert.equal(sharedModel.meshes[0].positions.length,sharedCount*9);
+// The budget spans every model of one import, not each model separately.
+const twoModels=fixture();for(const ext of ['mdl','vvd','dx90.vtx'])twoModels.files[`models/copy.${ext}`]=twoModels.files[`models/fixture.${ext}`];
+const budgetImport=new SourceStudioImport(twoModels.fs,{maxGeometryBytes:2*228-1});
+await budgetImport.readModel('models/fixture.mdl');await assert.rejects(budgetImport.readModel('models/copy.mdl'),/geometry would exceed/);
+const roomyImport=new SourceStudioImport(twoModels.fs,{maxGeometryBytes:2*228});
+await roomyImport.readModel('models/fixture.mdl');await roomyImport.readModel('models/copy.mdl');
 const quad=fixture(),quadPayload=Buffer.from(quad.vtx.subarray(110,170));
 quad.mdl.writeUInt32LE(49,4);quad.vtx.fill(0,110,190);quadPayload.copy(quad.vtx,118);
 quad.vtx.writeUInt32LE(33,89);quad.vtx.writeUInt32LE(60,97);quad.vtx.writeUInt32LE(66,105);
@@ -185,11 +217,12 @@ function valveCompressed(payload){
 }
 // Absolute BSP game-lump offset is deliberately unrelated to its Blob-relative
 // directory position. Version5 carries lighting origin and authored leaf IDs.
-function propWorld({version=5,bspVersion=20,compressed=false,outerCompressed=false,useLightingOrigin=true,lightingOrigin=[100,300,300]}={}){
-  const sizes={4:56,5:60,6:64,11:80},sprp=Buffer.alloc(142+sizes[version]);sprp.writeUInt32LE(1,0);sprp.write('models/fixture.mdl',4);sprp.writeUInt32LE(1,132);sprp.writeUInt16LE(0,136);sprp.writeUInt32LE(1,138);
+function propWorld({version=5,bspVersion=20,l4d=false,compressed=false,outerCompressed=false,useLightingOrigin=true,lightingOrigin=[100,300,300]}={}){
+  const sizes={4:56,5:60,6:64,8:l4d?68:72,11:80},sprp=Buffer.alloc(142+sizes[version]);sprp.writeUInt32LE(1,0);sprp.write('models/fixture.mdl',4);sprp.writeUInt32LE(1,132);sprp.writeUInt16LE(0,136);sprp.writeUInt32LE(1,138);
   const p=142;sprp.writeFloatLE(100,p);sprp.writeFloatLE(300,p+4);sprp.writeFloatLE(300,p+8);sprp.writeFloatLE(90,p+16);sprp.writeUInt16LE(1,p+28);sprp[p+31]=useLightingOrigin?2:0;lightingOrigin.forEach((v,i)=>sprp.writeFloatLE(v,p+44+i*4));
   if(version>=5)sprp.writeFloatLE(1,p+56);
   if(version===6){sprp.writeUInt16LE(70,p+60);sprp.writeUInt16LE(95,p+62);}
+  if(version===8){Buffer.from([1,2,3,4]).copy(sprp,p+60);if(l4d)Buffer.from([11,22,33,44]).copy(sprp,p+64);else{sprp.writeUInt32LE(useLightingOrigin?2:0,p+64);sprp.writeUInt16LE(16,p+68);sprp.writeUInt16LE(32,p+70);}}
   if(version===11){Buffer.from([1,2,3,4,11,22,33,44]).copy(sprp,p+60);sprp.writeUInt32LE(0x100,p+72);sprp.writeFloatLE(2,p+76);}
   const payload=compressed?valveCompressed(sprp):sprp,game=Buffer.alloc(20+payload.length+(compressed?4:0));game.write('prps',4);game.writeUInt16LE(compressed?1:0,8);game.writeUInt16LE(version,10);game.writeUInt32LE(1020,12);game.writeUInt32LE(sprp.length,16);game.writeUInt32LE(1,0);payload.copy(game,20);
   const original=Buffer.alloc(1000+game.length);game.copy(original,1000);const worldModel=Buffer.alloc(48),lumps=Array.from({length:64},()=>({length:0,version:0}));lumps[35]={offset:1000,length:outerCompressed?40:game.length,uncompressedSize:outerCompressed?game.length:0};lumps[10]={length:56,version:0};
@@ -204,6 +237,14 @@ for(const settings of [{version:4},{version:6},{version:11,bspVersion:21},{compr
   if(settings.version===6)assert.deepEqual(p.dxLevels,[70,95]);
   if(settings.version===11){assert.equal(p.scale,2);assert.equal(p.flagsEx,0x100);assert.deepEqual(p.diffuseModulation,[11,22,33,44]);assert.deepEqual(p.cpuLevels,[1,2]);}
 }
+// L4D1 is BSP20 with 68-byte version-8 records: only the L4D branch fits that
+// lump exactly, so it is chosen without an explicit variant. TF2-style 72-byte
+// records keep the BSP20 default, and an explicit wrong branch still refuses.
+const l4d1=(await readSourceProps(propWorld({version:8,l4d:true}),data.fs)).placements[0];
+assert.deepEqual(l4d1.diffuseModulation,[11,22,33,44]);assert.deepEqual(l4d1.cpuLevels,[1,2]);assert.equal(l4d1.lightmapResolution,undefined);near(l4d1.worldLightingOrigin,[2.54,0,0]);
+const tf2=(await readSourceProps(propWorld({version:8}),data.fs)).placements[0];
+assert.deepEqual(tf2.lightmapResolution,[16,32]);assert.deepEqual(tf2.diffuseModulation,[255,255,255,255]);near(tf2.worldLightingOrigin,[2.54,0,0]);
+await assert.rejects(readSourceProps(propWorld({version:8,l4d:true}),data.fs,{staticPropVariant:'source2007'}),/out-of-bounds|record size/);
 // Inactive native lighting-origin bytes may contain NaN/garbage; active fields remain strict.
 const inactiveLight=await readSourceProps(propWorld({useLightingOrigin:false,lightingOrigin:[NaN,Infinity,-Infinity]}),data.fs);
 near(inactiveLight.placements[0].sourceLightingOrigin,[100,300,300]);

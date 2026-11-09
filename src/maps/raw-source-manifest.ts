@@ -200,13 +200,15 @@ export function composeSourceMapFiles(world: SourceWorld, lighting: SourceLighti
     throw new RangeError('Source manifest metadata allocation limit exceeded');
   const bytes = encodeSourceJson(manifest, { ...options.jsonLimits, signal, maxBytes: size.byteLength });
   add('manifest.json', new Blob([bytes], { type: 'application/json' }));
-  // Writers retain their input blockers. Join shared causes once, without
+  // Writers retain their input blockers, and per-variant writers can repeat the
+  // same cause. Join identical code/path/face/detail records once, without
   // collapsing independently authored faces or paths that share a code.
-  const causes = new Set(lighting.requirements);
-  for (const requirement of assets.requirements) causes.add(requirement);
-  for (const requirement of options.requirements) causes.add(requirement);
-  if (propViewRequirement) causes.add(propViewRequirement);
-  const requirements = Array.from(causes, item => Object.freeze({ ...item }));
+  const causes = new Map<string, SourceLightingRequirement>();
+  for (const requirement of [...lighting.requirements, ...assets.requirements, ...options.requirements, ...(propViewRequirement ? [propViewRequirement] : [])]) {
+    const key = JSON.stringify([requirement.code, requirement.path ?? null, requirement.face ?? null, requirement.detail]);
+    if (!causes.has(key)) causes.set(key, requirement);
+  }
+  const requirements = Array.from(causes.values(), item => Object.freeze({ ...item }));
   signal?.throwIfAborted();
   return { manifest, files, requirements: Object.freeze(requirements), limitations: Object.freeze([...world.limitations]) };
 }

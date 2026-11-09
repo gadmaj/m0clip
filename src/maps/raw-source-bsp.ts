@@ -1,6 +1,6 @@
 // Source geometry algorithms follow noclip.website e47a8cc (Copyright 2018 Jasper
 // St. Pierre, MIT; see LICENSE.noclip) and this project's Python Source converter.
-import { decodeValveLzma, sourceAbort } from './raw-source-lzma';
+import { decodeValveLzma, sourceAbort, sourceLzmaWorkingBytes } from './raw-source-lzma';
 export { buildSourceWorld as decodeSourceWorld } from './raw-source-geometry';
 export type { SourceWorld, SourceSurface, SourceCollision, SourceFrame, SourceHeightfield } from './raw-source-geometry';
 
@@ -39,13 +39,6 @@ export interface SourceBsp {
    * static-prop placements/leaves) to the SAME aggregate ceilings as lumps, before
    * any read, decode or allocation. Throws without charging. */
   reserve(decodedBytes: number, workingBytes: number): SourceBspReservation;
-}
-/** Conservative JS numeric-array slot costs, not engine heap metrics: read input,
- * Valve->alone adapter copy, codec output, dictionary and probabilities. */
-export function sourceLzmaWorkingBytes(readBytes: number, storedBytes: number, size: number, property: number, dictionary: number): number {
-  const lc = property % 9, lp = Math.floor(property / 9) % 5;
-  return readBytes + storedBytes + size * 16 + Math.max(dictionary, 4096) * 16
-    + (1 << (lc + lp)) * (0x300 * 16 + 128) + 256 * 1024;
 }
 export interface SourceEntityOptions {
   signal?: AbortSignal;

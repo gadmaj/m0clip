@@ -154,6 +154,20 @@ assert.deepEqual(cubeExporter.requirements,[]);
 assert.deepEqual([...await texturePixels(cubeResult,bindings[0])],[7,8,9,255]);
 assert.deepEqual([...await texturePixels(cubeResult,bindings[5])],[255,5,99,0]);
 assert.deepEqual(cubeResult.json.materials[local].pbrMetallicRoughness.baseColorFactor,[0,0,0,1]);
+// Only an env_cubemap $envmap varies with the nearby cubemap: a plain material
+// bound near two different cubemaps is still one variant with no requirement.
+const plainCube=await cubeExporter.material('local',faces.slice().reverse());
+assert.notEqual(plainCube,local,'An env_cubemap material keeps one variant per actual cubemap');
+const plainCubeFs=await filesystem({'materials/cube.vtf':vtf({frames:1,faces:6}),'materials/plain.vmt':'VertexLitGeneric { }'});
+const plainCubeGlb=new SourceGlb(),plainCubeExporter=new SourceMaterialExport(plainCubeGlb,plainCubeFs);
+const plainFaces=await Promise.all(Array.from({length:6},(_,face)=>plainCubeExporter.texture('materials/cube.vtf',0,face)));
+const plainA=await plainCubeExporter.material('plain',plainFaces),plainB=await plainCubeExporter.material('plain',plainFaces.slice().reverse());
+assert.equal(plainA,plainB);assert.equal(plainA,await plainCubeExporter.material('plain'));assert.deepEqual(plainCubeExporter.requirements,[]);
+// A Patch whose include is absent lists that file as missing, not a failed import.
+const patchFs=await filesystem({'materials/patched.vmt':'Patch { include "materials/absent.vmt" insert { "$alpha" ".5" } }'});
+const patchExporter=new SourceMaterialExport(new SourceGlb(),patchFs);
+assert.equal(await patchExporter.material('patched'),undefined);
+assert.deepEqual(patchExporter.requirements.map(({code,path})=>({code,path})),[{code:'missing-material',path:'materials/absent.vmt'}]);
 const sphericalGlb=new SourceGlb(),spherical=new SourceMaterialExport(sphericalGlb,await filesystem({
   'materials/sphere.vtf':vtf({frames:1}),
   'materials/sphere.vmt':'VertexLitGeneric { "$envmap" "sphere" }',

@@ -1,11 +1,13 @@
 /**
  * Explicit, import-scoped Source mounts. No discovery, network access, URLs or script execution.
- * Supports VPK 1/2, uncompressed GMAD 3, ordinary stored/Deflate ZIP and loose Blobs.
+ * Supports VPK 1/2, uncompressed GMAD 3, stored/Deflate/LZMA ZIP and loose Blobs.
  * Import-owned metadata, path-index, retained-resource and extraction-workspace budgets.
  * CRC is verified only for selected resources; archive MD5/signatures and the optional GMA
- * whole-archive footer are not authenticity checks. No archive payload is executed.
+ * whole-archive footer are not authenticity checks. A GMA CRC of 0 means none was recorded
+ * (fastgmad writes no CRCs). No archive payload is executed.
  */
 import { BoundedInflate, deflateFeedBytes, deflateWorkspaceBytes } from './deflate';
+import { decodeZipLzma, SOURCE_ZIP_LZMA_MAX_LITERAL_BITS, sourceLzmaWorkingBytes } from './raw-source-lzma';
 
 export interface SourceLooseFile { readonly path: string; readonly blob: Blob }
 export interface SourceVpkChunk { readonly index: number; readonly blob: Blob }
@@ -51,6 +53,9 @@ export interface SourceFileSystemLimits {
   maxNameLength: number;
   maxExpandedPathChars: number;
   maxMetadataBytes: number;
+  /** Largest body this filesystem decompresses into memory (Deflate/LZMA ZIP members).
+   * Slices of selected Blobs (loose, VPK, GMA, stored ZIP) allocate nothing here and
+   * are bounded by the caller's allowance; readFile's default allowance equals this. */
   maxResourceBytes: number;
   /** Retained unique bodies plus concurrent extraction workspace, reserved before reads. */
   maxTotalResourceBytes: number;
@@ -164,6 +169,8 @@ interface Entry {
   missingChunk?: number;
   /** Temporary input/output ownership beyond the retained Blob. */
   workingBytes?: number;
+  /** The body is decompressed into memory rather than sliced from a selected Blob. */
+  inflates?: boolean;
   load: (signal?: AbortSignal) => Promise<Blob>;
 }
 interface ParsedMount {
@@ -396,7 +403,11 @@ async function gma(file: Blob, label: string, budget: ImportBudget, signal?: Abo
     aborted(signal);
     const path = entry.path, start = dataStart + entry.offset;
     bounds(file, start, entry.bytes, `GMA entry ${path}`);
-    paths.add(path, { bytes: entry.bytes, load: async readSignal => verify(file.slice(start, start + entry.bytes), entry.crc, path, readSignal) }, true);
+    // fastgmad writes CRC 0 for every entry: no checksum was recorded, not a mismatch.
+    const load = entry.crc === 0 && entry.bytes > 0
+      ? async (readSignal?: AbortSignal) => { aborted(readSignal); return file.slice(start, start + entry.bytes); }
+      : (readSignal?: AbortSignal) => verify(file.slice(start, start + entry.bytes), entry.crc, path, readSignal);
+    paths.add(path, { bytes: entry.bytes, load }, true);
   }
   return { entries: paths.entries, requiredContents, addon: Object.freeze({ name, description, author, version }) };
 }
@@ -411,6 +422,16 @@ function zipExtras(bytes: Uint8Array, path: string) {
     pos += 4 + size;
     if (pos > bytes.length) fail(`truncated ZIP extra field: ${path}`);
   }
+}
+/** Extraction ownership reserved before a member is read: local metadata pages plus
+ * the method's codec state. LZMA's window is clamped to the declared output, and its
+ * probability tables are reserved for the largest accepted lc+lp. */
+function zipWorkingBytes(entry: ZipEntry): number {
+  const metadata = 2 * 65535 + 46;
+  if (entry.method === 8) return entry.bytes + deflateWorkspaceBytes;
+  if (entry.method === 14) return metadata + entry.bytes
+    + sourceLzmaWorkingBytes(entry.compressed, entry.compressed, entry.bytes, SOURCE_ZIP_LZMA_MAX_LITERAL_BITS, entry.bytes);
+  return metadata + Math.min(blockSize, entry.bytes);
 }
 async function zip(file: Blob, label: string, budget: ImportBudget, signal?: AbortSignal): Promise<ParsedMount> {
   if (file.size < 22) fail(`truncated ZIP in ${label}`);
@@ -441,7 +462,7 @@ async function zip(file: Blob, label: string, budget: ImportBudget, signal?: Abo
     if (!(flags & 0x800) && nameBytes.some(byte => byte > 127)) fail(`non-UTF-8 ZIP name unsupported in ${label}`);
     const name = text(nameBytes, `${label} ZIP name`), isDirectory = /[\\/]$/.test(name);
     const path = paths.prepare([isDirectory ? name.slice(0, -1) : name]);
-    if (flags & ~0x80e || method !== 0 && method !== 8) fail(`unsupported ZIP encryption/compression: ${path}`);
+    if (flags & ~0x80e) fail(`unsupported ZIP encryption/flags: ${path}`);
     const attrs = cd.getUint32(pos + 38, true), kind = (attrs >>> 16) & 0xf000;
     if (kind && kind !== 0x8000 && kind !== 0x4000 || (kind === 0x4000 || Boolean(attrs & 0x10)) && !isDirectory || kind === 0x8000 && isDirectory) fail(`non-regular/inconsistent ZIP entry: ${path}`);
     const entry: ZipEntry = { path, name, flags, method, crc: cd.getUint32(pos + 16, true), compressed: cd.getUint32(pos + 20, true), bytes: cd.getUint32(pos + 24, true), offset: cd.getUint32(pos + 42, true), limit: offset, minimumEnd: 0 };
@@ -453,7 +474,12 @@ async function zip(file: Blob, label: string, budget: ImportBudget, signal?: Abo
     if (isDirectory) {
       if (entry.bytes || entry.compressed) fail(`nonempty ZIP directory: ${path}`);
       paths.add(path, undefined, true);
-    } else paths.add(path, { bytes: entry.bytes, workingBytes: entry.method === 8 ? entry.bytes + deflateWorkspaceBytes : 2 * 65535 + 46 + Math.min(blockSize, entry.bytes), load: readSignal => extractZip(file, entry, readSignal) }, true);
+    } else if (method === 0 || method === 8 || method === 14) paths.add(path, { bytes: entry.bytes, inflates: method !== 0, workingBytes: zipWorkingBytes(entry), load: readSignal => extractZip(file, entry, readSignal) }, true);
+    // One member in an unsupported codec must not block every other resource.
+    else paths.add(path, { bytes: entry.bytes, inflates: true, workingBytes: 0, load: async readSignal => {
+      aborted(readSignal);
+      fail(`${path} uses ZIP compression method ${method}; only stored, Deflate and LZMA members can be read. Repack it with one of those.`);
+    } }, true);
     pos = next;
   }
   if (pos !== size) fail(`trailing ZIP central directory data in ${label}`);
@@ -485,6 +511,17 @@ async function extractZip(file: Blob, entry: ZipEntry, signal?: AbortSignal) {
     if (descriptor.getUint32(0, true) !== entry.crc || descriptor.getUint32(4, true) !== entry.compressed || descriptor.getUint32(8, true) !== entry.bytes) fail(`inconsistent ZIP descriptor: ${entry.path}`);
   }
   if (entry.method === 0) return verify(file.slice(start, start + entry.bytes), entry.crc, entry.path, signal);
+  if (entry.method === 14) {
+    const compressed = await read(file, start, entry.compressed, `ZIP body ${entry.path}`, signal);
+    let output: Uint8Array<ArrayBuffer>;
+    try { output = await decodeZipLzma(compressed, entry.bytes, signal); } catch (error) {
+      aborted(signal);
+      fail(`cannot decode LZMA ${entry.path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    aborted(signal);
+    if (output.length !== entry.bytes || ((updateCrc(0xffffffff, output) ^ 0xffffffff) >>> 0) !== entry.crc) fail(`wrong ZIP size/CRC: ${entry.path}`);
+    return new Blob([output]);
+  }
   const output = new Uint8Array(entry.bytes);
   let size = 0, crc = 0xffffffff;
   const inflate = new BoundedInflate(entry.compressed, entry.bytes, chunk => {
@@ -568,7 +605,8 @@ export class SourceFileSystem {
     if (path.length > this.limits.maxPathLength) fail('path length limit exceeded');
     const canonical = canonicalSourcePath(path), entry = this.selected.get(canonical);
     if (!entry) return undefined;
-    if (entry.bytes > maxBytes || entry.bytes > this.limits.maxResourceBytes) fail(`resource byte allowance exceeded: ${canonical}`);
+    if (entry.bytes > maxBytes) fail(`resource byte allowance exceeded: ${canonical}`);
+    if (entry.inflates && entry.bytes > this.limits.maxResourceBytes) fail(`${canonical} decompresses to ${entry.bytes} bytes, over the ${this.limits.maxResourceBytes}-byte limit for compressed archive members; store it uncompressed`);
     let resource = this.reads.get(canonical);
     if (!resource) {
       if (this.ownedResources >= this.limits.maxResources) fail('import retained resource count limit exceeded');

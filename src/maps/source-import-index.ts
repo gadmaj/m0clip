@@ -45,10 +45,14 @@ export async function selectedSourceBsp(choice: SourceImportChoice): Promise<{ f
     return { file: choice.file, mapName, mounts: choice.mounts };
   }
   const archive: SourceMount = { kind: choice.format, file: choice.file, label: choice.file.name };
-  const filesystem = await SourceFileSystem.create([archive]);
+  // This filesystem performs exactly one read: the chosen BSP. Like a directly
+  // selected BSP, a stored slice has no whole-file cap (readSourceBsp bounds each
+  // lump); a compressed member still obeys the filesystem's decompression limit.
+  const filesystem = await SourceFileSystem.create([archive], undefined, { maxTotalResourceBytes: Number.MAX_SAFE_INTEGER });
   if (!filesystem.mapCandidates.length) throw new Error('This archive contains no Source BSP maps.');
-  if (!filesystem.mapCandidates.some(map => map.path === path)) throw new Error('The selected BSP is not in this archive. Select a listed map explicitly.');
-  const file = await filesystem.readFile(path);
+  const candidate = filesystem.mapCandidates.find(map => map.path === path);
+  if (!candidate) throw new Error('The selected BSP is not in this archive. Select a listed map explicitly.');
+  const file = await filesystem.readFile(path, undefined, candidate.bytes);
   if (!file) throw new Error('The selected BSP is unavailable in this archive.');
   await checkSourceBspHeader(file);
   // The assembler prepends the chosen BSP pak. Archive beats explicit companions.

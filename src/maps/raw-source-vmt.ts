@@ -115,6 +115,14 @@ export class SourceMaterialError extends Error {
     this.name = 'SourceMaterialError';
   }
 }
+/** A Patch names an include absent from the selected files: a missing resource the
+ * caller lists as a requirement, not a malformed material. */
+export class SourceMaterialMissingIncludeError extends SourceMaterialError {
+  constructor(readonly includedPath: string, path: string) {
+    super(`missing Patch include ${includedPath}`, path);
+    this.name = 'SourceMaterialMissingIncludeError';
+  }
+}
 
 export function parseSourceVmt(text: string, options: SourceKeyValuesOptions = {}): SourceVmt {
   const document = parseSourceKeyValues(text, options);
@@ -365,7 +373,7 @@ async function resolveMaterial(name: string, filesystem: Pick<SourceFileSystem, 
       let base: ResolvedTree | undefined;
       const includedPath = sourceMaterialPath(include.value);
       try { base = await resolve(includedPath); } finally { stack.pop(); }
-      if (!base) throw new SourceMaterialError(`missing Patch include ${includedPath}`, current);
+      if (!base) throw new SourceMaterialMissingIncludeError(includedPath, current);
       context.budget.reserve(base.sources.length, base.sources.length + 1, (base.sources.length + 1) * 32);
       sources = [...sources, ...base.sources];
       if (!localIssues.size && body.entries.every(entry => ['include', 'replace', 'insert'].includes(entry.key))) inheritedIssues = base.issues;

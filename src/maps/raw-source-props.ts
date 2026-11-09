@@ -1,10 +1,10 @@
 // Adapted from noclip.website StaticDetailObject.ts (Copyright 2018 Jasper
 // St. Pierre, MIT; see LICENSE.noclip) and scripts/import_source_props.py.
 import type { SourceWorld, SourceFrame, SourceSurface } from './raw-source-geometry';
-import { sourceLzmaWorkingBytes, type SourceBspReservation, type SourceEntity } from './raw-source-bsp';
+import type { SourceBspReservation, SourceEntity } from './raw-source-bsp';
 import type { SourceLightingRequirement } from './raw-source-lighting';
 import type { SourceFileSystem } from './raw-source-files';
-import { decodeValveLzma, sourceAbort } from './raw-source-lzma';
+import { decodeValveLzma, sourceAbort, sourceLzmaWorkingBytes } from './raw-source-lzma';
 import { SourceModelBinary as Binary, sourceModelPath, sourceQAngle, sourceModelMultiply, sourceModelPoint, type SourceModelVector } from './raw-source-model-binary';
 import { SourceStudioImport, SourceStudioMissingResourceError, type SourceStudioModel, type SourceStudioOptions } from './raw-source-studio';
 export { sourceQAngle } from './raw-source-model-binary';
@@ -88,8 +88,9 @@ export interface SourcePropsOptions extends SourceStudioOptions {
    * charged to the owning BSP import's aggregate ceilings before any read. */
   maxGameLumpBytes?: number;
   maxGameLumps?: number;
-  /** Branches reused sprp version numbers with different layouts; never guess an
-   * equal-length ambiguous fork. Default follows BSP19/20 TF2 vs BSP21/22 CS:GO. */
+  /** Branches reused sprp version numbers with different layouts. Default follows
+   * BSP19/20 TF2 vs BSP21/22 CS:GO, unless only the other branch's record size
+   * fits the lump exactly; a lump neither size fits is refused, never guessed. */
   staticPropVariant?: 'source2007' | 'left4dead';
 }
 
@@ -246,8 +247,16 @@ export async function readSourceStaticProps(world: SourceWorld, lumps: readonly 
     const nameCount=data.u(0);data.range(4,nameCount,128);
     let p=4+nameCount*128;const leafCount=data.u(p);p+=4;data.range(p,leafCount,2);const leafStart=p;p+=leafCount*2;
     const count=data.u(p);p+=4;
-    const fork=options.staticPropVariant??(bsp.version>=21?'left4dead':'source2007');
-    const size=56+(version>=5?4:0)+(version>=6&&version<=7?4:0)+(version>=8?4:0)+(fork==='left4dead'?((version>=7?4:0)+(version>=9?4:0)+(version>=10?4:0)+(version>=11?4:0)):(version>=7?8:0));
+    const stride=(branch:'source2007'|'left4dead')=>56+(version>=5?4:0)+(version>=6&&version<=7?4:0)+(version>=8?4:0)+(branch==='left4dead'?((version>=7?4:0)+(version>=9?4:0)+(version>=10?4:0)+(version>=11?4:0)):(version>=7?8:0));
+    let fork=options.staticPropVariant;
+    if(!fork){
+      // BSP19/20 conventionally carry TF2-lineage records and BSP21/22 L4D-lineage
+      // ones. When only the other branch's stride fits the lump exactly (L4D1 is
+      // BSP20 with 68-byte version-8 records), that branch is the only reading.
+      const conventional=bsp.version>=21?'left4dead':'source2007',other=conventional==='left4dead'?'source2007':'left4dead',records=data.bytes.length-p;
+      fork=count*stride(conventional)!==records&&count*stride(other)===records?other:conventional;
+    }
+    const size=stride(fork);
     data.range(p,count,size);if(p+count*size!==data.bytes.length)throw new Error(`Unsupported sprp v${version}/${fork} record size; select the actual branch, not an inferred stride`);
     // Lean preflight: authored leaf ranges may be reused by any number of records,
     // so every record's own expansion is charged in full before anything is allocated.
@@ -303,13 +312,19 @@ export async function readSourceProps(world: SourceWorld, filesystem: Pick<Sourc
   const modelsBytes=await world.bsp.getLump(14,options.signal),modelTable=new Binary(modelsBytes,'BSP models');if(modelsBytes.length%48)throw new Error('Malformed BSP model table');
   const facesLump=world.bsp.lumps[53].length&&world.bsp.lumps[58].length?58:7,faceBytes=await world.bsp.getLump(facesLump,options.signal);if(faceBytes.length%56)throw new Error('Malformed BSP face table');
   const brushModels=new Map<number,{faces:Uint32Array;surfaces:readonly SourceSurface[]}>();
+  // First entity per targetname, as entities.find returned; built once on first use.
+  let targetMap:Map<string,SourceEntity>|undefined;
+  const targets=()=>{
+    if(!targetMap){targetMap=new Map();for(const other of world.bsp.entities){const name=other.values.targetname;if(name!==undefined&&!targetMap.has(name))targetMap.set(name,other);}}
+    return targetMap;
+  };
   for(let i=0;i<world.bsp.entities.length;i++){
     const entity=world.bsp.entities[i],e=entity.values,classname=e.classname??'',origin=vector(e,'origin'),angles=entityAngles(e),render=entityRender(entity),model=e.model??'';
     const kind:SourceEntityVisual['kind']=model.toLowerCase().endsWith('.mdl')?'studio-model':model.startsWith('*')?'brush':/sprite|glow/.test(classname)?'sprite':/^(?:keyframe_rope|move_rope)$/.test(classname)?'rope':/^(?:env_|light|sky_|color_correction)/.test(classname)?'environment':'unclassified';
     entities.push({entityIndex:i,entity,kind,sourceOrigin:origin,sourceAngles:angles,render});
     if(kind==='studio-model'){
       const scale=scalar(e,'modelscale',1),skin=integer(e,'skin',0),body=integer(e,'body',0),animation:SourceEntityAnimation={defaultAnimation:e.DefaultAnim??e.defaultanim??'',sequence:e.sequence??'',cycle:scalar(e,'cycle',0),playbackRate:scalar(e,'playbackrate',1),skin,body,temporalSupport:'authored-state-not-simulated'};
-      const lightingTarget=e.lightingorigin?world.bsp.entities.find(other=>other.values.targetname===e.lightingorigin):undefined;
+      const lightingTarget=e.lightingorigin?targets().get(e.lightingorigin):undefined;
       if(e.lightingorigin&&!lightingTarget)throw new Error(`Missing Source prop lightingorigin target ${e.lightingorigin}`);
       placements.push({kind:'entity-model',index:placements.length,entityIndex:i,modelPath:sourceModelPath(model),classname,sourceOrigin:origin,sourceAngles:angles,scale,matrix:sourcePropMatrix(world.frame,origin,angles,scale),matrixInputUnits:'metres',skin,body,solid:integer(e,'solid',6),flags:0,flagsEx:0,leaves:new Uint16Array(),sourceLightingOrigin:lightingTarget?vector(lightingTarget.values,'origin'):undefined,castShadow:render.castShadow,fadeMinDistance:scalar(e,'fademindist',-1),fadeMaxDistance:scalar(e,'fademaxdist',0),forcedFadeScale:scalar(e,'fadescale',1),diffuseModulation:[...render.color,render.amount],render,animation,entity});
     }else if(kind==='brush'){
@@ -330,7 +345,12 @@ export async function readSourceProps(world: SourceWorld, filesystem: Pick<Sourc
   const studio=new SourceStudioImport(filesystem,options);
   for(const path of new Set(placements.map(p=>p.modelPath))){
     sourceAbort(options.signal);
-    try{const model=await studio.readModel(path);models.set(path,model);for(const material of model.materials)if(!material.path)missingMaterials.push({model:path,name:material.name,candidates:material.candidates});for(const mesh of model.meshes)for(const material of mesh.materialBySkin)if(!material.path&&!missingMaterials.some(m=>m.model===path&&m.name===material.name))missingMaterials.push({model:path,name:material.name,candidates:material.candidates});for(const resource of model.missingResources)missingAnimationResources.push({model:path,path:resource});}
+    try{
+      const model=await studio.readModel(path),missingNames=new Set<string>();models.set(path,model);
+      for(const material of model.materials)if(!material.path){missingNames.add(material.name);missingMaterials.push({model:path,name:material.name,candidates:material.candidates});}
+      for(const mesh of model.meshes)for(const material of mesh.materialBySkin)if(!material.path&&!missingNames.has(material.name)){missingNames.add(material.name);missingMaterials.push({model:path,name:material.name,candidates:material.candidates});}
+      for(const resource of model.missingResources)missingAnimationResources.push({model:path,path:resource});
+    }
     catch(error){if(error instanceof SourceStudioMissingResourceError)missingModels.push({path,resources:error.paths});else throw error;}
   }
   // Lighting samples use the original authored Source point, never a twice-framed

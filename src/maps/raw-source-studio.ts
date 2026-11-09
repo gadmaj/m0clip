@@ -9,7 +9,14 @@ export interface SourceStudioOptions {
   /** Decode one actual VTX LOD, retaining all bodygroups and skin families. */
   lod?: number;
   maxFileBytes?: number;
+  /** Vertices decoded for one model; defaults to 4,000,000. */
   maxVertices?: number;
+  /** Import-wide decoded geometry: every model's vertex arrays (72 B per vertex:
+   * position, normal, tangent, UV, joints, weights) plus its index arrays (4 B per
+   * declared index), charged before allocation. Defaults to 512 MiB, about seven
+   * million vertices; HL2/CS:S maps use a small fraction of that. Strip indices
+   * are charged at their declared count, which also bounds decode work. */
+  maxGeometryBytes?: number;
   /** Import-wide unique retained resource bytes; defaults to 512 MiB. */
   maxInputBytes?: number;
   /** Cumulative copied input and decoded metadata/scratch ownership, charged
@@ -107,6 +114,8 @@ function validateMdl(m: Binary): number {
 interface StudioContext {
   options: SourceStudioOptions;
   vertexMaximum: number; skinMaximum: number; skinReferenceMaximum: number;
+  /** Charge decoded vertex/index arrays to the import-wide geometry budget. */
+  geometry(bytes: number, path: string): void;
   includeMaximum: number; depthMaximum: number;
   animations: Map<string, { path: string; rawBlob: Blob; animation: SourceStudioNativeAnimation }>;
   depths: Map<string, number>;
@@ -131,10 +140,11 @@ export class SourceStudioImport {
     options = { ...options };
     const maximum = options.maxFileBytes ?? 128 * 1024 ** 2, vertexMaximum = options.maxVertices ?? 4_000_000;
     const inputMaximum = options.maxInputBytes ?? 512 * 1024 ** 2, metadataMaximum = options.maxMetadataBytes ?? 256 * 1024 ** 2;
+    const geometryMaximum = options.maxGeometryBytes ?? 512 * 1024 ** 2;
     const objectMaximum = options.maxMetadataObjects ?? 1_000_000, skinMaximum = options.maxSkinFamilies ?? 65_536, skinReferenceMaximum = options.maxSkinReferences ?? 65_536;
     const includeMaximum = options.maxIncludedModels ?? 1024, depthMaximum = options.maxIncludeDepth ?? 64;
-    if (![maximum, vertexMaximum, inputMaximum, metadataMaximum, objectMaximum, skinMaximum, skinReferenceMaximum, includeMaximum, depthMaximum].every(n => Number.isSafeInteger(n) && n > 0) || maximum < 408) throw new Error('Invalid Source studio allocation limits');
-    let inputBytes = 0, metadataBytes = 0, objects = 0, reads: Promise<unknown> = Promise.resolve();
+    if (![maximum, vertexMaximum, inputMaximum, metadataMaximum, geometryMaximum, objectMaximum, skinMaximum, skinReferenceMaximum, includeMaximum, depthMaximum].every(n => Number.isSafeInteger(n) && n > 0) || maximum < 408) throw new Error('Invalid Source studio allocation limits');
+    let inputBytes = 0, metadataBytes = 0, geometryBytes = 0, objects = 0, reads: Promise<unknown> = Promise.resolve();
     const blobs = new Map<string, Promise<Blob | undefined>>(), binaries = new Map<string, Promise<Binary>>();
     const reserve = (bytes: number, count: number) => {
       sourceAbort(options.signal);
@@ -160,6 +170,11 @@ export class SourceStudioImport {
     };
     this.context = {
       options, vertexMaximum, skinMaximum, skinReferenceMaximum, includeMaximum, depthMaximum, animations: new Map(), depths: new Map(), reserve, string,
+      geometry(bytes, path) {
+        sourceAbort(options.signal);
+        if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > geometryMaximum - geometryBytes) throw new Error(`${path}: decoded model geometry would exceed this import's ${geometryMaximum}-byte limit for all models' vertex and index arrays`);
+        geometryBytes += bytes;
+      },
       relativeString: (binary, base, field) => string(binary, base + binary.i(base + field)),
       checkpoint(index) {
         sourceAbort(options.signal);
@@ -333,6 +348,8 @@ async function readStudioModel(context: StudioContext, path: string): Promise<So
           meshVertices+=nv;
           t.range(g+t.u(g+4),nv,9);t.range(g+t.u(g+12),ni,2);t.range(ss,ns,stripStride);
           if(version>=49)t.range(g+t.u(g+29),t.u(g+25),2);
+          // Strips own disjoint index ranges; overlap would replay the same indices.
+          let previousEnd=0,ordered=true;
           for(let si=0;si<ns;si++) {
             const st=ss+si*stripStride,n=t.u(st),start=t.u(st+4),flags=t.b(st+18);
             if(start>ni||n>ni-start)throw new Error(`${path}: VTX strip index range out of bounds`);
@@ -340,11 +357,28 @@ async function readStudioModel(context: StudioContext, path: string): Promise<So
             if(flags===1){if(n%3)throw new Error(`${path}: incomplete VTX triangle list`);maximumIndices+=n;}
             else if(flags===2)maximumIndices+=Math.max(n-2,0)*3;
             else throw new Error(`${path}: unsupported VTX strip flags ${flags}`);
+            if(n){if(start<previousEnd)ordered=false;previousEnd=start+n;}
+          }
+          if(!ordered){
+            reserve(64+ns*48,ns+1);
+            const ranges=Array.from({length:ns},(_,si)=>[t.u(ss+si*stripStride+4),t.u(ss+si*stripStride)]).filter(range=>range[1]).sort((a,b)=>a[0]-b[0]);
+            for(let i=1;i<ranges.length;i++)if(ranges[i][0]<ranges[i-1][0]+ranges[i-1][1])throw new Error(`${path}: VTX strips overlap within one strip group`);
           }
         }
         decodedVertices+=meshVertices;
         if(decodedVertices>vertexMaximum||maximumIndices>vertexMaximum*12)throw new Error(`${path}: decoded studio allocation limit`);
-        const positions=new Float32Array(meshVertices*3),normals=new Float32Array(meshVertices*3),tangents=new Float32Array(meshVertices*4),uv=new Float32Array(meshVertices*2),joints=new Uint16Array(meshVertices*4),weights=new Float32Array(meshVertices*4),indexStorage=new Uint32Array(maximumIndices);
+        // Charge declared counts before reading any index, then size indices exactly.
+        context.geometry(meshVertices*72+maximumIndices*4,path);
+        let indexCount=0;
+        for(let gi=0;gi<groupCount;gi++) {
+          const g=groupStart+gi*groupStride,ix=g+t.u(g+12),ns=t.u(g+16),ss=g+t.u(g+20);
+          for(let si=0;si<ns;si++) {
+            const st=ss+si*stripStride,n=t.u(st),start=t.u(st+4);
+            if(t.b(st+18)===1){indexCount+=n;continue;}
+            for(let j=0;j+2<n;j++){const a=t.h(ix+(start+j)*2),b=t.h(ix+(start+j+1)*2),c=t.h(ix+(start+j+2)*2);if(a!==b&&b!==c&&a!==c)indexCount+=3;}
+          }
+        }
+        const positions=new Float32Array(meshVertices*3),normals=new Float32Array(meshVertices*3),tangents=new Float32Array(meshVertices*4),uv=new Float32Array(meshVertices*2),joints=new Uint16Array(meshVertices*4),weights=new Float32Array(meshVertices*4),indices=new Uint32Array(indexCount);
         let vertexCursor=0,indexCursor=0;
         for(let gi=0;gi<groupCount;gi++) {
           const g=groupStart+gi*groupStride,nv=t.u(g),vs=g+t.u(g+4),ni=t.u(g+8),ix=g+t.u(g+12),ns=t.u(g+16),ss=g+t.u(g+20),baseVertex=vertexCursor;
@@ -374,11 +408,11 @@ async function readStudioModel(context: StudioContext, path: string): Promise<So
             const changes=t.u(st+19);t.range(st+t.u(st+23),changes,8);
             for(let ci=0;ci<changes;ci++){const change=st+t.u(st+23)+ci*8;if(t.u(change+4)>=bones.length)throw new Error(`${path}: VTX bone state out of range`);}
             const get=(j:number)=>{const index=t.h(ix+(start+j)*2);if(index>=nv||index<first||index>=first+nverts)throw new Error(`${path}: VTX strip index out of range`);return baseVertex+index;};
-            if(flags===1)for(let j=0;j<n;j++)indexStorage[indexCursor++]=get(j);
-            else for(let j=0;j+2<n;j++){const a=get(j),b=get(j+1),c=get(j+2);if(a===b||b===c||a===c)continue;indexStorage[indexCursor++]=j%2?b:a;indexStorage[indexCursor++]=j%2?a:b;indexStorage[indexCursor++]=c;}
+            if(flags===1)for(let j=0;j<n;j++)indices[indexCursor++]=get(j);
+            else for(let j=0;j+2<n;j++){const a=get(j),b=get(j+1),c=get(j+2);if(a===b||b===c||a===c)continue;indices[indexCursor++]=j%2?b:a;indices[indexCursor++]=j%2?a:b;indices[indexCursor++]=c;}
           }
         }
-        const indices=indexStorage.subarray(0,indexCursor);
+        if(indexCursor!==indices.length)throw new Error(`${path}: VTX index count changed during decode`);
         // Match the native converter: choose front winding against authored normals
         // once per mesh, not a negative scale or a per-triangle normal rewrite.
         let agreement=0;

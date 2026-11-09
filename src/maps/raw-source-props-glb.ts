@@ -153,6 +153,8 @@ export async function appendSourceProps(glb: SourceGlb, materials: SourceMateria
   for (const missing of props.missingModels) block('prop-missing-model', missing.path, `Missing native model resources: ${missing.resources.join(', ')}`);
   for (const missing of props.missingMaterials) block('prop-missing-material', missing.model, `Missing ${missing.name}: ${missing.candidates.join(', ')}`);
   for (const missing of props.missingAnimationResources) block('prop-missing-animation-resource', missing.path, `Required by ${missing.model}; original authored state is retained.`);
+  const missingModelPaths = new Set(props.missingModels.map(missing => missing.path));
+  const missingAnimationPaths = new Set(props.missingAnimationResources.map(missing => missing.path));
   const reserve = (bytes: number, vertices = 0) => {
     if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > options.maxGeometryBytes - result.geometryBytes || vertices > options.maxVertices - result.vertices)
       throw new Error('Source prop geometry limit exceeded');
@@ -239,10 +241,10 @@ export async function appendSourceProps(glb: SourceGlb, materials: SourceMateria
     sourceAbort(options.signal);
     const model = props.models.get(placement.modelPath);
     if (!model) {
-      if (!props.missingModels.some(m => m.path === placement.modelPath)) block('prop-missing-model', placement.modelPath, `Placement ${placement.index} has no native model.`);
+      if (!missingModelPaths.has(placement.modelPath)) block('prop-missing-model', placement.modelPath, `Placement ${placement.index} has no native model.`);
       continue;
     }
-    for (const path of model.missingResources) if (!props.missingAnimationResources.some(m => m.path === path)) block('prop-missing-animation-resource', path, `Required by ${model.path}.`);
+    for (const path of model.missingResources) if (!missingAnimationPaths.has(path)) block('prop-missing-animation-resource', path, `Required by ${model.path}.`);
     if (placement.matrixInputUnits !== 'metres' || placement.matrix.length !== 16 || placement.matrix.some(n => !Number.isFinite(n))) throw new Error('Invalid native Source prop placement matrix');
     if (!Number.isSafeInteger(placement.skin)) {
       block('prop-skin-selection', model.path, `Placement ${placement.index}: skin ${placement.skin} is not a safe integer.`); continue;

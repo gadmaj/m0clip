@@ -468,6 +468,10 @@ try {
     {...composeLimits,requirements:[...composeLimits.requirements,distinctFace]});
   assert.deepEqual(distinct.requirements.filter(item=>item.code==='directional-style-runtime').map(item=>item.face).sort(),[0,1],
     'Separate authored faces remain separate requirements even when their codes match');
+  const variantCopies=[0,1].map(()=>({code:'material-shader-runtime',path:'materials/variant.vmt',detail:'Native shader x is not implemented by the existing renderer.',blocking:true}));
+  const joined=composeSourceMapFiles(manifestWorld,sharedLighting,sharedAssets,{...composeLimits,requirements:[...composeLimits.requirements,...variantCopies]});
+  assert.equal(joined.requirements.filter(item=>item.path==='materials/variant.vmt').length,1,
+    'Per-variant material writers repeating one cause list it once');
   await assert.rejects(finalizeSourceAssembly(composed,'Fixture','Fixture'),error=>
     error.requirements.filter(item=>item.code==='directional-style-runtime').length===1);
   const finalized=await finalizeGeneratedMapBundle({...composeLimits,files:composed.files,maxHashBytes:16*1024**2});

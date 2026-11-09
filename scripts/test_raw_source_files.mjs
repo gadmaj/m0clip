@@ -8,11 +8,16 @@ import { zipSync, strToU8 } from 'fflate';
 import { Worker } from 'node:worker_threads';
 import { once } from 'node:events';
 import { constants as zlibConstants, deflateRawSync } from 'node:zlib';
+import { spawnSync } from 'node:child_process';
 
 const compiled = await build({ entryPoints: ['src/maps/raw-source-files.ts'], bundle: true, platform: 'node', format: 'cjs', write: false });
 const module = { exports: {} };
 new Function('module', 'require', compiled.outputFiles[0].text)(module, createRequire(import.meta.url));
 const { SourceFileSystem, SourceMissingChunkError, canonicalSourcePath } = module.exports;
+const indexCompiled = await build({ entryPoints: ['src/maps/source-import-index.ts'], bundle: true, platform: 'node', format: 'cjs', write: false });
+const indexModule = { exports: {} };
+new Function('module', 'require', indexCompiled.outputFiles[0].text)(indexModule, createRequire(import.meta.url));
+const { selectedSourceBsp } = indexModule.exports;
 
 {
   const crcTable = Uint32Array.from({ length: 256 }, (_, n) => {
@@ -46,7 +51,7 @@ const { SourceFileSystem, SourceMissingChunkError, canonicalSourcePath } = modul
   }
   function gma(entries, options = {}) {
     const header = Buffer.alloc(21); header.write('GMAD'); header[4] = 3;
-    const table = entries.flatMap(([path, body], index) => [u32(index + 1), z(path), u64(body.length), u32(crc(body))]);
+    const table = entries.flatMap(([path, body], index) => [u32(index + 1), z(path), u64(body.length), u32(options.zeroCrc ? 0 : crc(body))]);
     return new Blob([header, z('required-content-id'), z(''), z(options.name ?? 'Fixture'), z('{"description":"fixture"}'), z('Author'), u32(1), ...table, u32(0), ...entries.map(([, body]) => body), ...(options.footer ? [u32(0)] : [])]);
   }
   const text = async (fs, path) => (await fs.readFile(path))?.text();
@@ -155,6 +160,38 @@ const { SourceFileSystem, SourceMissingChunkError, canonicalSourcePath } = modul
     const sizeAt = huge.indexOf(Buffer.from('a\0'), 21) + 2;
     huge.writeBigUInt64LE(1n << 63n, sizeAt);
     await assert.rejects(SourceFileSystem.create([{ kind: 'gma', file: new Blob([huge]) }]));
+    // fastgmad records CRC 0 for every entry: that is no checksum, not a mismatch.
+    const fastgmad = await SourceFileSystem.create([{ kind: 'gma', file: gma([['maps/fast.bsp', Buffer.from('fastgmad body')]], { zeroCrc: true }) }]);
+    assert.equal(await text(fastgmad, 'maps/fast.bsp'), 'fastgmad body');
+    // A GMA-contained BSP over the 128 MiB decompression limit is a slice of the
+    // selected file, so choosing it allocates nothing beyond small metadata pages.
+    class SparseBlob {
+      static largest = 0;
+      constructor(size, parts, offset = 0) { this.size = size; this.parts = parts; this.offset = offset; }
+      slice(start = 0, end = this.size) {
+        start = Math.max(0, Math.min(start, this.size)); end = Math.max(start, Math.min(end, this.size));
+        return new SparseBlob(end - start, this.parts, this.offset + start);
+      }
+      async arrayBuffer() {
+        SparseBlob.largest = Math.max(SparseBlob.largest, this.size);
+        if (this.size > 1024 * 1024) throw new Error('test fixture: unexpected large materialization');
+        const out = new Uint8Array(this.size);
+        for (const { at, bytes } of this.parts) {
+          const from = Math.max(at, this.offset), to = Math.min(at + bytes.length, this.offset + this.size);
+          if (from < to) out.set(bytes.subarray(from - at, to - at), from - this.offset);
+        }
+        return out.buffer;
+      }
+    }
+    const bigBytes = 129 * 1024 * 1024, gmaHeader = Buffer.alloc(21); gmaHeader.write('GMAD'); gmaHeader[4] = 3;
+    const bigMeta = Buffer.concat([gmaHeader, z(''), z('Big'), z('{}'), z('Author'), u32(1), u32(1), z('maps/big.bsp'), u64(bigBytes), u32(0), u32(0)]);
+    const vbsp = Buffer.alloc(1036); vbsp.write('VBSP'); vbsp.writeInt32LE(20, 4);
+    const bigGma = Object.assign(new SparseBlob(bigMeta.length + bigBytes, [{ at: 0, bytes: bigMeta }, { at: bigMeta.length, bytes: vbsp }]), { name: 'big.gma' });
+    const bigSelection = await selectedSourceBsp({ kind: 'source', format: 'gma', file: bigGma, mapPath: 'maps/big.bsp', name: 'Big', game: 'Garry’s Mod', mounts: [] });
+    assert.equal(bigSelection.file.size, bigBytes);
+    assert.equal(bigSelection.mapName, 'big');
+    assert(SparseBlob.largest <= 64 * 1024, `Selecting the slice materialized ${SparseBlob.largest} bytes`);
+    await assert.rejects((await SourceFileSystem.create([{ kind: 'gma', file: bigGma }])).readFile('maps/big.bsp'), /allowance/, 'Callers without an explicit allowance keep the default cap');
 
     for (const level of [0, 6]) {
       const bytes = zipSync({ 'materials/ok.vmt': strToU8('selected'), 'materials/unused.vmt': strToU8('not selected') }, { level });
@@ -168,6 +205,29 @@ const { SourceFileSystem, SourceMissingChunkError, canonicalSourcePath } = modul
         assert.equal(await text(bad, 'materials/unused.vmt'), 'not selected');
       }
     }
+    // LZMA (method 14) members, as bspzip -repack -compress writes, from an
+    // independent encoder: Python's zipfile (APPNOTE header, end-marker flag set).
+    const lzmaBody = Buffer.from(Array.from({ length: 300 }, (_, i) => `brush ${i % 17} face ${i * 7919 % 1000};`).join('\n'));
+    const pythonZip = spawnSync('python3', ['-c', `
+import io, sys, zipfile
+body = sys.stdin.buffer.read()
+out = io.BytesIO()
+with zipfile.ZipFile(out, 'w') as archive:
+    archive.writestr(zipfile.ZipInfo('materials/lzma.vmt'), body, compress_type=zipfile.ZIP_LZMA)
+    archive.writestr(zipfile.ZipInfo('materials/empty.vmt'), b'', compress_type=zipfile.ZIP_LZMA)
+    archive.writestr(zipfile.ZipInfo('materials/bzip2.vmt'), body, compress_type=zipfile.ZIP_BZIP2)
+    archive.writestr(zipfile.ZipInfo('materials/stored.vmt'), b'stored', compress_type=zipfile.ZIP_STORED)
+sys.stdout.buffer.write(out.getvalue())`], { input: lzmaBody });
+    assert.equal(pythonZip.status, 0, `Independent ZIP fixture encoding failed: ${pythonZip.stderr}`);
+    const lzmaZip = pythonZip.stdout, lzmaFs = await create([{ kind: 'zip', file: new Blob([lzmaZip]) }], {});
+    assert.equal(lzmaZip.readUInt16LE(8), 14, 'The fixture member really uses method 14');
+    assert.deepEqual(Buffer.from(await (await lzmaFs.readFile('materials/lzma.vmt')).arrayBuffer()), lzmaBody);
+    assert.equal((await lzmaFs.readFile('materials/empty.vmt')).size, 0);
+    assert.equal(await text(lzmaFs, 'materials/stored.vmt'), 'stored', 'An unsupported member does not block its siblings');
+    await assert.rejects(lzmaFs.readFile('materials/bzip2.vmt'), /compression method 12/);
+    const damagedLzma = Buffer.from(lzmaZip), lzmaData = 30 + 'materials/lzma.vmt'.length + 9 + 40;
+    damagedLzma[lzmaData] ^= 0x55;
+    await assert.rejects((await create([{ kind: 'zip', file: new Blob([damagedLzma]) }], {})).readFile('materials/lzma.vmt'));
     // Independently wrap raw zlib Deflate: fixed/dynamic and a stored block crossing
     // multiple bounded codec feeds must preserve exact output and native ZIP CRC.
     function deflateZip(body, compressed = deflateRawSync(body), declared = body.length, checksum = crc(body)) {
@@ -237,6 +297,7 @@ const { SourceFileSystem, SourceMissingChunkError, canonicalSourcePath } = modul
     const declaredFs = await create([{ kind: 'zip', file: expansionFile }], {});
     expansionFile.tracking = true;
     await assert.rejects(declaredFs.readFile('a', undefined, 32));
+    await assert.rejects(declaredFs.readFile('a', undefined, Number.MAX_SAFE_INTEGER), /decompresses to 268435456 bytes/, 'A generous caller allowance never lifts the decompression limit');
     assert.equal(expansionFile.bytesRead, 0, 'Reject declared expansion before reading local headers or output');
     const overflowFs = await create([{ kind: 'zip', file: new Blob([deflateZip(body, undefined, 1)]) }, loose('a', 'never fallback')], {});
     await assert.rejects(overflowFs.readFile('a'));

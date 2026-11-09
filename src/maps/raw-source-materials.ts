@@ -2,7 +2,7 @@
  * Source material/VTF conventions: noclip.website (Jasper St. Pierre, MIT; LICENSE.noclip).
  */
 import { canonicalSourcePath, type SourceFileSystem } from './raw-source-files';
-import { createSourceMaterialResolver, parseSourceVector, SourceMaterialBudget, sourceMaterialPath, type ResolvedSourceMaterial, type SourceMaterialOptions } from './raw-source-vmt';
+import { createSourceMaterialResolver, parseSourceVector, SourceMaterialBudget, SourceMaterialMissingIncludeError, sourceMaterialPath, type ResolvedSourceMaterial, type SourceMaterialOptions } from './raw-source-vmt';
 import { readSourceVtf, type SourceVtf } from './raw-source-vtf';
 import { sourceVtfPixelKind } from './raw-source-vtf-codec';
 import { SourceGlb, type SourceGltfRoot } from './raw-source-gltf';
@@ -60,7 +60,7 @@ export class SourceMaterialExport {
   private readonly textures = new Map<string, Promise<number | undefined>>();
   private readonly materials = new Map<string, Promise<number | undefined>>();
   private readonly skyMaterials = new Map<string, Promise<SourceSkyMaterial | undefined>>();
-  private readonly descriptors = new Map<string, Promise<ResolvedSourceMaterial | undefined>>();
+  private readonly descriptors = new Map<string, Promise<ResolvedSourceMaterial | SourceMaterialMissingIncludeError | undefined>>();
   private readonly originals: Record<string, unknown> = Object.create(null);
   private readonly maxInputBytes: number;
   private readonly maxMaterials: number;
@@ -209,21 +209,43 @@ export class SourceMaterialExport {
     return index;
   }
 
+  /** One resolution per path. A missing Patch include is returned as a listed
+   * requirement for the absent file rather than failing the whole import. */
+  private describe(path: string): Promise<ResolvedSourceMaterial | SourceMaterialMissingIncludeError | undefined> {
+    let pending = this.descriptors.get(path);
+    if (!pending) {
+      pending = this.resolveMaterial(path).catch(error => {
+        if (error instanceof SourceMaterialMissingIncludeError) return error;
+        throw error;
+      });
+      this.descriptors.set(path, pending);
+    }
+    return pending;
+  }
+
   /** Cubemap bindings are caller-selected from the actual BSP/prop position, not
-   * guessed by basename. Geometry/lightmap variants remain the scene assembler's job.
+   * guessed by basename. Only a material whose $envmap is env_cubemap varies with
+   * that binding; every other material is one variant whatever cubemap is nearby.
+   * Geometry/lightmap variants remain the scene assembler's job.
    */
   material(name: string, localCubeFaces?: readonly number[]): Promise<number | undefined> {
     this.options.signal?.throwIfAborted();
-    const path = sourceMaterialPath(name);
-    if (localCubeFaces && (localCubeFaces.length !== 6 || localCubeFaces.some(i => !Number.isSafeInteger(i) || i < 0 || i >= this.glb.json.textures.length))) throw new Error('Invalid native Source cubemap bindings');
-    const key = localCubeFaces ? `${path}\0${localCubeFaces.join(',')}` : path;
-    let pending = this.materials.get(key);
-    if (!pending) {
-      if (this.materials.size + this.skyMaterials.size >= this.maxMaterials) throw new Error('Source material variant limit exceeded');
-      pending = this.encodeMaterial(path, localCubeFaces?.slice());
-      this.materials.set(key, pending);
-    }
-    return pending;
+    const path = sourceMaterialPath(name), bindings = localCubeFaces?.slice();
+    if (bindings && (bindings.length !== 6 || bindings.some(i => !Number.isSafeInteger(i) || i < 0 || i >= this.glb.json.textures.length))) throw new Error('Invalid native Source cubemap bindings');
+    return (async () => {
+      const descriptor = bindings ? await this.describe(path) : undefined;
+      this.options.signal?.throwIfAborted();
+      const cubeFaces = descriptor && !(descriptor instanceof SourceMaterialMissingIncludeError)
+        && descriptor.textures.some(texture => texture.kind === 'local-cubemap' && texture.parameter === '$envmap') ? bindings : undefined;
+      const key = cubeFaces ? `${path}\0${cubeFaces.join(',')}` : path;
+      let pending = this.materials.get(key);
+      if (!pending) {
+        if (this.materials.size + this.skyMaterials.size >= this.maxMaterials) throw new Error('Source material variant limit exceeded');
+        pending = this.encodeMaterial(path, cubeFaces);
+        this.materials.set(key, pending);
+      }
+      return pending;
+    })();
   }
 
   /** Ordinary camera-centered sky only. Compressed HDR needs a different native
@@ -241,9 +263,11 @@ export class SourceMaterialExport {
   }
 
   private async encodeSkyMaterial(path: string): Promise<SourceSkyMaterial | undefined> {
-    let pending = this.descriptors.get(path);
-    if (!pending) { pending = this.resolveMaterial(path); this.descriptors.set(path, pending); }
-    const descriptor = await pending;
+    const descriptor = await this.describe(path);
+    if (descriptor instanceof SourceMaterialMissingIncludeError) {
+      this.block('missing-material', descriptor.includedPath, `Select the local game file containing ${descriptor.includedPath}, which ${path} patches.`);
+      return undefined;
+    }
     this.options.signal?.throwIfAborted();
     if (!descriptor) { this.block('missing-material', path, 'Select the local game file containing this sky material.'); return undefined; }
     this.originals[path] = { shader: descriptor.shader, sources: descriptor.sources, parameters: descriptor.parameters,
@@ -315,9 +339,11 @@ export class SourceMaterialExport {
   }
 
   private async encodeMaterial(path: string, localCubeFaces?: readonly number[]): Promise<number | undefined> {
-    let pending = this.descriptors.get(path);
-    if (!pending) { pending = this.resolveMaterial(path); this.descriptors.set(path, pending); }
-    const descriptor = await pending;
+    const descriptor = await this.describe(path);
+    if (descriptor instanceof SourceMaterialMissingIncludeError) {
+      this.block('missing-material', descriptor.includedPath, `Select the local game file containing ${descriptor.includedPath}, which ${path} patches.`);
+      return undefined;
+    }
     if (!descriptor) { this.block('missing-material', path, 'Select the local game file containing this material.'); return undefined; }
     this.originals[path] = { shader: descriptor.shader, sources: descriptor.sources, parameters: descriptor.parameters,
       proxies: descriptor.proxies, fallbackBlocks: descriptor.fallbackBlocks, selectedFallback: descriptor.selectedFallback,
