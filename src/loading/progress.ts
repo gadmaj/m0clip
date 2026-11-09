@@ -246,6 +246,7 @@ export function downloadEstimate(snapshot: LoadingSnapshot): string {
 const PHASES: ReadonlyArray<readonly [RegExp, string]> = [
   // The worker's lowercase "loading <policy name>…" may contain any word, so it goes first.
   [/^loading |polic/, 'Loading policy…'],
+  [/cached physics/i, 'Loading cached physics…'],
   [/verif/i, 'Verifying map…'],
   [/^starting/i, 'Starting scene…'],
   [/compil/i, 'Compiling physics…'],

@@ -21,6 +21,7 @@ import { fetchAsset } from '../core/prepared-assets';
 import type { RobotSpec } from '../core/types';
 import type { MapSource } from '../maps/source';
 import { authoredOptions, EntityEngine, freeJointRootBody, type SceneEntity } from './entities';
+import { modelCacheKey, type ModelCache } from './model-cache';
 
 interface BundleManifest { files: string[]; gzipFiles?: string[] }
 export interface ExtraBundle { source: MapSource; mount: string }
@@ -121,11 +122,41 @@ export class MissingBundleError extends Error {
 }
 
 let modulePromise: Promise<MainModule> | null = null;
+/** SHA-256 of the wasm binary the module was instantiated from; null when it was not read here. */
+let wasmDigest: Promise<string | null> = Promise.resolve(null);
+
+const WASM_URL = "/wasm/mujoco.wasm";
+
+/** The wasm binary, if the URL serves one. The cache keys on these exact bytes. */
+async function fetchWasm(): Promise<ArrayBuffer | null> {
+  try {
+    const response = await fetch(WASM_URL, { credentials: "same-origin" });
+    if (!response.ok) return null;
+    const bytes = await response.arrayBuffer(), magic = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength));
+    return magic.length === 4 && magic[0] === 0 && magic[1] === 0x61 && magic[2] === 0x73 && magic[3] === 0x6d ? bytes : null;
+  } catch { return null; }
+}
+
+/** Emscripten's instantiateWasm hook over `bytes`. The glue keeps its options for the module's
+ * lifetime, so the hook drops the binary once instantiation has it. */
+function instantiateOnce(bytes: ArrayBuffer, reject: (error: unknown) => void) {
+  let binary: ArrayBuffer | null = bytes;
+  return (imports: WebAssembly.Imports,
+      receive: (instance: WebAssembly.Instance, module: WebAssembly.Module) => void) => {
+    const source = binary;
+    binary = null;
+    if (!source) throw new Error("The MuJoCo wasm binary was already instantiated.");
+    WebAssembly.instantiate(source, imports).then(({ instance, module }) => receive(instance, module), reject);
+    return {};
+  };
+}
 
 /** The wasm module is a singleton — model reloads reuse it.
  * The emscripten glue is dynamic-imported from /wasm/ (copied out of
  * node_modules by the postinstall script) because vite cannot statically
- * bundle its worker bootstrap; only the *types* come from the npm package. */
+ * bundle its worker bootstrap; only the *types* come from the npm package.
+ * The binary is fetched here, once, so its digest identifies the compiler for the model
+ * cache; without a readable binary the glue loads it itself and models are not cached. */
 export function mujocoModule(): Promise<MainModule> {
   if (!modulePromise) {
     // native dynamic import, invisible to vite/rollup — the glue lives in
@@ -133,12 +164,108 @@ export function mujocoModule(): Promise<MainModule> {
     const nativeImport =
       new Function("u", "return import(u)") as (u: string) =>
         Promise<{ default: (o?: unknown) => Promise<MainModule> }>;
-    modulePromise = nativeImport("/wasm/mujoco.js").then((mod) =>
-      mod.default({
-        locateFile: (p: string) => (p.endsWith(".wasm") ? "/wasm/mujoco.wasm" : p),
-      }));
+    const binary = fetchWasm();
+    wasmDigest = binary.then(async bytes => {
+      if (!bytes) return null;
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+      return Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+    }).catch(() => null);
+    modulePromise = Promise.all([nativeImport("/wasm/mujoco.js"), binary]).then(([mod, bytes]) => {
+      const options: Record<string, unknown> = {
+        locateFile: (p: string) => (p.endsWith(".wasm") ? WASM_URL : p),
+      };
+      if (!bytes) return mod.default(options);
+      // Instantiate from the bytes already read; emscripten would otherwise download them again.
+      const { promise: failed, reject } = Promise.withResolvers<never>();
+      options.instantiateWasm = instantiateOnce(bytes, reject);
+      return Promise.race([mod.default(options), failed]);
+    });
   }
   return modulePromise;
+}
+
+/** Reported by a cached load: `cached` before an MJB loads, `compiling` if that load failed and
+ * the scene compiles instead. A plain compile reports nothing. */
+export type ModelCacheStage = 'cached' | 'compiling';
+export interface ModelCacheUse {
+  /** Whether the compile starting now may read or fill the cache. */
+  applies(): boolean;
+  stage(stage: ModelCacheStage): void;
+}
+let modelCache: (ModelCacheUse & { cache: ModelCache }) | undefined;
+
+/** Compiles go through `cache` until the returned release is called. */
+export function useModelCache(cache: ModelCache, use: Partial<ModelCacheUse> = {}): () => void {
+  const current = { cache, applies: use.applies ?? (() => true), stage: use.stage ?? (() => {}) };
+  modelCache = current;
+  return () => { if (modelCache === current) modelCache = undefined; };
+}
+
+let binaryFiles = 0;
+
+/** Saved through a MEMFS file: a Uint8Buffer would permanently grow the wasm heap by the MJB size
+ * (124 MB for R1 on Ghost); the file's memory is released when it is removed. */
+function saveBinary(mj: MainModule, model: MjModel): Uint8Array {
+  const path = `/m0clip-model-${++binaryFiles}.mjb`;
+  try {
+    mj.mj_saveModel(model, path, null);
+    return mj.FS.readFile(path);
+  } finally {
+    try { mj.FS.unlink(path); } catch { /* Not written. */ }
+  }
+}
+
+/** MuJoCo reads the MJB from MEMFS; MjVFS.addBuffer copies a 100 MB body for minutes. MEMFS owns `mjb` afterwards. */
+function loadBinary(mj: MainModule, mjb: Uint8Array): MjModel {
+  const path = `/m0clip-model-${++binaryFiles}.mjb`, vfs = new mj.MjVFS();
+  try {
+    mj.FS.writeFile(path, mjb, { canOwn: true });
+    return mj.MjModel.mj_loadBinary(path, vfs);
+  } finally {
+    vfs.delete();
+    try { mj.FS.unlink(path); } catch { /* Not written. */ }
+  }
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** Compile `scene`, or load its cached MJB when every input in `files` (absolute MEMFS paths,
+ * the scene included) is byte-identical to a cached compile with the same wasm. A compile is
+ * cached only if it read nothing outside `files` and those files did not change meanwhile. */
+async function loadModel(mj: MainModule, scene: string, files: readonly string[]): Promise<MjModel> {
+  const use = modelCache?.applies() ? modelCache : undefined, wasm = use && await wasmDigest;
+  if (!use || !wasm) return mj.MjModel.mj_loadXML(scene);
+  let inputs: (readonly [string, Uint8Array])[], key: string;
+  try {
+    inputs = files.map(path => [path, mj.FS.readFile(path)] as const);
+    key = await modelCacheKey(`${mj.mj_versionString()} ${wasm}`, scene, inputs);
+  } catch { return mj.MjModel.mj_loadXML(scene); }
+  const cached = await use.cache.get(key);
+  if (cached) {
+    use.stage('cached');
+    try { return loadBinary(mj, cached); } catch { await use.cache.remove(key); }
+    use.stage('compiling');
+  }
+  const fs = mj.FS as unknown as { open: (...args: unknown[]) => { path: string } };
+  const open = fs.open, opened = new Set<string>();
+  fs.open = function (this: unknown, ...args: unknown[]) {
+    const stream = open.apply(this, args);
+    opened.add(stream.path);
+    return stream;
+  };
+  let model: MjModel;
+  try { model = mj.MjModel.mj_loadXML(scene); } finally { fs.open = open; }
+  const keyed = new Set(files);
+  if (model && [...opened].every(path => keyed.has(path))) {
+    try {
+      if (inputs.every(([path, bytes]) => sameBytes(mj.FS.readFile(path), bytes))) void use.cache.put(key, saveBinary(mj, model));
+    } catch { /* An input vanished or the model could not be saved: nothing is cached. */ }
+  }
+  return model;
 }
 
 function mkdirTree(FS: MainModule["FS"], path: string) {
@@ -420,7 +547,8 @@ export class Engine implements EngineScope {
     const manifest = bundle.manifest;
     await mountBundle(mj.FS, "/work", modelDir, `${scene}.manifest.json`, manifest.files,
       manifest.gzipFiles ? new Set(manifest.gzipFiles) : undefined, transformXml);
-    return Engine.compileWork(mj, `/work/${bundle.scene}`, bundle.extra, bundle.modelDir, manifest.files.length);
+    return Engine.compileWork(mj, `/work/${bundle.scene}`, bundle.extra, bundle.modelDir,
+      manifest.files.map(rel => `/work/${rel}`));
   }
 
   /** Compile the world with every slot robot attached under its `${id}/` prefix. The world is the
@@ -456,19 +584,19 @@ export class Engine implements EngineScope {
     }
     try {
       const worldXml = new Map<string, string>();
-      let written: number;
+      // Every MEMFS file written for this compile: the generated world or primary bundle, then attached bundles.
+      const inputs = base === null ? [scenePath] : [];
       if (base === null) {
         worldXml.set(top, transformXml ? transformXml(top, WORLD_XML) : WORLD_XML);
-        written = 1;
       } else {
         await mountBundle(mj.FS, '/work', base.modelDir, `${base.scene}.manifest.json`, base.manifest.files,
           base.manifest.gzipFiles ? new Set(base.manifest.gzipFiles) : undefined, transformXml, worldXml);
-        written = base.manifest.files.length;
+        inputs.push(...base.manifest.files.map(rel => `/work/${rel}`));
       }
       for (const [modelDir, bundle] of bundles) {
         const gzip = new Set(bundle.files.filter(rel => bundle.compressed.get(rel)));
         await mountBundle(mj.FS, bundle.root, modelDir, bundle.index.join(', '), bundle.files, gzip, undefined, bundle.xml);
-        written += bundle.files.length;
+        inputs.push(...bundle.files.map(rel => `${bundle.root}/${rel}`));
       }
       const primary = spec.primary && { slot: spec.primary,
         rootBody: freeJointRootBody(worldXml.values(), spec.primary.robot.floating_base_joint) };
@@ -495,7 +623,7 @@ export class Engine implements EngineScope {
       if (base === null) mkdirTree(mj.FS, mountRoot);
       if (attached.length || base === null) mj.FS.writeFile(scenePath, world!);
       return await Engine.compileWork(mj, scenePath, plan.base === null ? plan.extra : plan.base.extra,
-        base === null ? null : base.modelDir, written, model => [
+        base === null ? null : base.modelDir, inputs, model => [
           ...(primary ? [describeEntity(mj, model, primary.slot, '', primary.rootBody, NO_OPTIONS)] : []),
           ...attached.map(a => describeEntity(mj, model, a.slot, a.prefix, a.rootBody, a.ignoredOptions)),
         ]);
@@ -507,15 +635,17 @@ export class Engine implements EngineScope {
     }
   }
 
-  /** Mount the map, compile `scene` (an absolute MEMFS path) and wrap it. Local map files are
+  /** Mount the map, compile `scene` (an absolute MEMFS path) and wrap it. `inputs` are the absolute
+   * MEMFS paths written for this compile; the map's files are added here. Local map files are
    * removed either way. */
   private static async compileWork(mj: MainModule, scene: string, extra: PreparedExtra | undefined,
-      modelDir: string | null, written: number,
+      modelDir: string | null, inputs: readonly string[],
       entities: (model: MjModel) => SceneEntity[] = () => []): Promise<Engine> {
     try {
       if (extra) await Engine.mountExtra(mj, extra);
-      console.log(`[engine] bundle written (${written} files), compiling`);
-      const model = mj.MjModel.mj_loadXML(scene);
+      console.log(`[engine] bundle written (${inputs.length} files), compiling`);
+      const files = [...new Set([scene, ...inputs, ...(extra?.manifest.files.map(rel => `${extra.mount}/${rel}`) ?? [])])];
+      const model = await loadModel(mj, scene, files);
       if(!model)throw new Error('MuJoCo could not compile the selected scene.');
       let data: MjData | undefined;
       try {
