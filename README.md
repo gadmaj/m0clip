@@ -71,8 +71,10 @@ from Source game files on your computer; the files are not uploaded.
   back to the selected policy. Some motions run once, then switch to their
   configured next policy; press **Run again** beside the finished line to replay
   that motion from where the robot stands.
-- The policy gallery is grouped by activity. Each card names the motion and
-  lists its robot variant, checkpoint and state number; search matches all three.
+- The policy gallery is grouped by activity. Each card names the motion, adds
+  the variant or checkpoint part that sets it apart from cards with the same
+  motion, and lists its robot variant, checkpoint and state number; search
+  matches all three.
   In each group, policies that run on the robot's current body come first;
   choosing one of the others switches the body.
 - While a gallery is open, the scene behind it holds its last frame; simulation
