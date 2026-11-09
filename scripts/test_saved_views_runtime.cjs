@@ -151,6 +151,8 @@ const {readyApp}=require('./attach-ready-app.cjs');
       return r.width>0&&r.height>0&&node.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));
     });
     const hudClear=async label=>{
+      // Resize and panel handlers apply on the next frames.
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
       assert.ok(await page.locator('#flight-hud').isVisible(),`Flight is active at ${label}`);
       const overlap=await page.evaluate(()=>{const h=document.getElementById('flight-hud').getBoundingClientRect();return [...document.querySelectorAll('.floating-window')].filter(w=>w.getClientRects().length&&getComputedStyle(w).visibility!=='hidden').map(w=>({id:w.id,r:w.getBoundingClientRect()})).filter(({r})=>r.left<h.right&&r.right>h.left&&r.top<h.bottom&&r.bottom>h.top).map(({id})=>id)});
       assert.deepEqual(overlap,[],`No window overlaps the Flight HUD at ${label}`);
@@ -164,6 +166,7 @@ const {readyApp}=require('./attach-ready-app.cjs');
         const target=page.getByRole('button',{name,exact:true});await target.scrollIntoViewIfNeeded();
         assert.ok(await receives(target),`${name} must receive pointer input at ${width}px`);
       }
+      await page.evaluate(()=>navigator.clipboard.writeText(''));
       await share.click();
       await page.waitForFunction(()=>navigator.clipboard.readText().then(value=>value.includes('#view=')));
       await page.getByRole('button',{name:'Rename Dog inspection',exact:true}).click();
