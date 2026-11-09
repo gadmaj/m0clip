@@ -8,6 +8,35 @@ import { canonicalSourcePath } from './raw-source-files';
 import { sourceAbort } from './raw-source-lzma';
 import { sourceLightingBase64 } from './raw-source-lighting-data';
 import { encodeSourceJson, type SourceJsonOptions } from './raw-source-json';
+import { Gzip } from 'fflate';
+
+/** Raw page bytes compressed between cancellation checks. */
+const GZIP_CHUNK_BYTES = 1024 * 1024;
+/** Gzip for converted lightstyle pages. CompressionStream('gzip') follows the
+ * platform zlib, whose header records the operating system, so the same map could
+ * convert to different bytes (and fingerprints) on different machines. The pinned
+ * pure-JS fflate encoder with mtime 0 writes a fixed header (OS byte 3) and the same
+ * deflate stream everywhere; any standard gzip decoder reads it. */
+export async function sourceDeterministicGzip(bytes: Uint8Array<ArrayBuffer>, maxBytes: number, signal?: AbortSignal): Promise<Blob> {
+  const parts: Blob[] = [];
+  let size = 0, lastYield = performance.now();
+  const gzip = new Gzip({ level: 6, mtime: 0 }, chunk => { size += chunk.length; parts.push(new Blob([chunk as Uint8Array<ArrayBuffer>])); });
+  for (let offset = 0; ; offset += GZIP_CHUNK_BYTES) {
+    sourceAbort(signal);
+    const end = Math.min(bytes.length, offset + GZIP_CHUNK_BYTES), final = end === bytes.length;
+    gzip.push(bytes.subarray(offset, end), final);
+    if (size > maxBytes) throw new RangeError('Source lighting encoded output limit exceeded');
+    if (final) break;
+    if (performance.now() - lastYield >= 16) {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 0);
+      await promise;
+      lastYield = performance.now();
+    }
+  }
+  sourceAbort(signal);
+  return new Blob(parts);
+}
 
 export interface SourceLightmapBinding {
   flat: number;
@@ -211,8 +240,7 @@ export async function appendSourceLightingAssets(glb: SourceGlb, materials: Sour
     sourceAbort(signal);
     if (!(rgba.buffer instanceof ArrayBuffer)) throw new TypeError('Shared Source lightstyle input is not immutable');
     const view = new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength);
-    const compressed = await new Response(new Blob([view]).stream().pipeThrough(new CompressionStream('gzip'), { signal })).blob();
-    add(file, compressed); pages[String(texture)] = file;
+    add(file, await sourceDeterministicGzip(view, maxOutputBytes - outputBytes, signal)); pages[String(texture)] = file;
   };
   for (const page of lighting.native.stylePages) {
     sourceAbort(signal);

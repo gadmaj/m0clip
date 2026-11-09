@@ -18,6 +18,7 @@ import type { LocalGameContent } from '../player/assets/local-content';
 import { validLocalMap, type LocalMapIdentity } from '../maps/source';
 import type { Appearance } from '../render/scene';
 import { validDisplay, type SceneDisplay } from '../render/display';
+import { validSourceTime } from '../render/source-clock';
 import type { LookState } from '../ui/look';
 import { validAppearance } from '../ui/view-appearance';
 import { validLook, validShotEdits, validShotLights, type ShotEdits, type ShotLight } from './post';
@@ -219,7 +220,7 @@ export function validPlayerMeta(v: unknown): v is PlayerTakeMeta {
     && (v.models === undefined || object(v.models) && (v.models.body === undefined || typeof v.models.body === 'string')
       && (v.models.view === undefined || object(v.models.view) && Object.entries(v.models.view)
         .every(([tool, path]) => PLAYER_TOOLS.includes(tool as PlayerTool) && typeof path === 'string')))
-    && (v.sourceTime === undefined || Number.isFinite(v.sourceTime)) && (v.clockStart === undefined || Number.isFinite(v.clockStart))
+    && (v.sourceTime === undefined || validSourceTime(v.sourceTime)) && (v.clockStart === undefined || Number.isFinite(v.clockStart))
     && (!(v.terrain.startsWith('map:local-') || v.localMap !== undefined) || validLocalMap(v.localMap, v.terrain))
     && (v.appearance === undefined || validAppearance(v.appearance) && (v.appearance.sourceBody === undefined || v.appearance.sourceBody === 'stock'))
     && (v.display === undefined || validDisplay(v.display)) && (v.flashlight === undefined || typeof v.flashlight === 'boolean')

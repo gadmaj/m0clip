@@ -350,6 +350,8 @@ export interface SourceWorldOptions {
   maxGeometryBytes?: number;
   /** Cumulative decoded surface vertices, including later brush models. */
   maxVertices?: number;
+  /** Import-wide brush-collision hull work (plane triples plus half-space tests), shared with later brush-model decoding. */
+  maxBrushHullWork?: number;
   /** Default uses the existing spawn-floor probe; a map-centre fallback adds a blocking spawn-unresolved requirement. */
   spawn?: { origin: readonly [number, number, number]; yaw: number };
 }

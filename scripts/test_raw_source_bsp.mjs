@@ -176,10 +176,57 @@ for (const [flags, collides, requirement] of [[0x80000000 | 0xe, false, false], 
 }
 for (const count of [129, 65536]) {
   const f = fixture();
-  f.entries.get(18).bytes.writeInt32LE(count, 4);
-  f.put(19, record(count * 8, b => { for (let i = 0; i < count; i++) b.writeUInt16LE(i % 6, i * 8); }));
+  // Brush 1 keeps its own six sides after brush 0's run, so only the side count is at fault.
+  f.entries.get(18).bytes.writeInt32LE(count, 4); f.entries.get(18).bytes.writeInt32LE(count, 12);
+  f.put(19, record((count + 6) * 8, b => { for (let i = 0; i < count + 6; i++) b.writeUInt16LE(i % 6, i * 8); }));
   const load = async () => decodeSourceWorld(await readSourceBsp(f.blob()));
-  await assert.rejects(load());
+  await assert.rejects(load(), /128-side/);
+}
+for (const first of [0, 3, 5]) {
+  // Brush 1 reuses part of brush 0's sides; repeated thousands of times such sharing kept
+  // the cubic hull search running for hours. Compiled maps never share brush sides.
+  const f = fixture(); f.entries.get(18).bytes.writeInt32LE(first, 12);
+  await assert.rejects(async () => decodeSourceWorld(await readSourceBsp(f.blob())), /Source brushes 0 and 1 share brush sides/);
+}
+{
+  // Adjacent runs, a zero-side brush inside another's range and an out-of-lump range
+  // (left for the per-brush range check) are not sharing.
+  const f = fixture(); f.entries.get(18).bytes.writeInt32LE(6, 12);
+  assert.equal((await decodeSourceWorld(await readSourceBsp(f.blob()))).collision.length, 1);
+  f.entries.get(18).bytes.writeInt32LE(2, 12); f.entries.get(18).bytes.writeInt32LE(0, 16);
+  assert.equal((await decodeSourceWorld(await readSourceBsp(f.blob()))).collision.length, 1);
+  f.entries.get(18).bytes.writeInt32LE(9, 12); f.entries.get(18).bytes.writeInt32LE(6, 16);
+  assert.equal((await decodeSourceWorld(await readSourceBsp(f.blob()))).collision.length, 1, 'Unreachable brush 1 is never range-checked');
+}
+{
+  // Hull work is import-wide: the world's box charges it, and the limit refuses with a specific error.
+  const bsp = await readSourceBsp(fixture().blob());
+  await assert.rejects(decodeSourceWorld(bsp, { maxBrushHullWork: 10 }), { name: 'RangeError', message: /more than 10 plane tests/ });
+  for (const maxBrushHullWork of [0, 1.5]) await assert.rejects(decodeSourceWorld(bsp, { maxBrushHullWork }), /brush hull work limit/);
+  assert.equal((await decodeSourceWorld(bsp, { maxBrushHullWork: 200 })).collision.length, 1);
+}
+{
+  // Spawn probing stops after SOURCE_MAX_SPAWN_CANDIDATES floorless spawns; a floored
+  // spawn after them is not reached, one within them still is.
+  const entities = (floorless, floored) => Buffer.from(`{"classname" "worldspawn"}\n${
+    '{"classname" "info_player_start" "origin" "1000 1000 32"}\n'.repeat(floorless)}${
+    floored ? '{"classname" "info_player_deathmatch" "origin" "16 16 32" "angles" "0 45 0"}\n' : ''}\0`);
+  const f = fixture();
+  f.put(0, entities(255, true));
+  let world = await decodeSourceWorld(await readSourceBsp(f.blob()));
+  assert.deepEqual([world.frame.spawnClass, world.frame.yaw, world.requirements.length], ['info_player_deathmatch', 45, 0]);
+  f.put(0, entities(256, false));
+  world = await decodeSourceWorld(await readSourceBsp(f.blob()));
+  assert.equal(world.frame.spawnClass, 'map centre');
+  assert.match(world.requirements[0].detail, /^No player spawn/, 'Exactly the limit is a complete search');
+  // The parser's 262,144-entity ceiling, counting worldspawn and the floored spawn.
+  f.put(0, entities(262142, true));
+  const crowded = await readSourceBsp(f.blob()), started = performance.now();
+  world = await decodeSourceWorld(crowded);
+  assert.equal(world.frame.spawnClass, 'map centre');
+  assert.deepEqual(world.requirements.map(r => [r.code, r.blocking]), [['spawn-unresolved', true]]);
+  assert.match(world.requirements[0].detail, /^The first 256 player spawns .* the search stops there/);
+  console.log(`262,142 floorless spawns: world decoded in ${Math.round(performance.now() - started)} ms`);
 }
 for (const [mutate] of [
   [f => f.entries.get(5).bytes.writeInt32LE(0, 4)],
