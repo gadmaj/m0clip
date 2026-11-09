@@ -104,9 +104,13 @@ export class SourceColor {
     // setRenderTarget uses target-owned viewport/scissor, whereas setViewport updates
     // the renderer's canvas settings. Retain both for callers rendering into a target.
     const outputViewport=output?.viewport.clone(),outputScissor=output?.scissor.clone(),outputScissorTest=output?.scissorTest;
-    const gl=renderer.getContext(),scissor=Array.from(gl.getParameter(gl.SCISSOR_BOX) as Int32Array),scissorTest=gl.isEnabled(gl.SCISSOR_TEST);
+    // Only a bound target needs the live GL scissor box: setRenderTarget(null) restores the canvas
+    // from the renderer's own scissor state. getParameter is a synchronous GPU round trip that waits
+    // for every queued draw, so querying it on live canvas frames stalled the page for a whole frame.
+    const gl=renderer.getContext(),scissor=output?Array.from(gl.getParameter(gl.SCISSOR_BOX) as Int32Array):null;
+    const scissorTest=output?gl.isEnabled(gl.SCISSOR_TEST):false;
     const restoreOutput=()=>{
-      if(output){output.viewport.copy(viewport);output.scissor.fromArray(scissor);output.scissorTest=scissorTest;}
+      if(output){output.viewport.copy(viewport);output.scissor.fromArray(scissor!);output.scissorTest=scissorTest;}
       renderer.setRenderTarget(output,face,mip);
       if(output){output.viewport.copy(outputViewport!);output.scissor.copy(outputScissor!);output.scissorTest=outputScissorTest!;}
     };
