@@ -1,5 +1,7 @@
-/** Compact policy-card titles from real hosted pack metadata: distinct per gallery, never the family word,
- * and every added tag is the variant and/or a verbatim part of the exact canonical checkpoint name. */
+/** Compact policy-card titles from real hosted pack metadata: distinct per gallery, no separate family word
+ * segment, and every added tag is the variant and/or a part of the exact canonical checkpoint name. Leading
+ * or trailing robot or own-variant tokens are trimmed only when titles stay distinct; otherwise the
+ * checkpoint part is copied verbatim, so `r1air`/`g1` can remain inside it. */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -21,6 +23,7 @@ function assertIdentity(entries, titles, family) {
     const variant = policyVariantLabel(entry.models);
     if (variant && (tag === variant || tag.startsWith(`${variant} · `))) tag = tag.slice(variant.length + 3);
     assert.ok(entry.name.includes(tag), `${entry.name}: tag "${tag}" quotes the canonical name`);
+    // No standalone family segment or `R1 Air`-style prefix; family text inside an exact checkpoint part stays.
     assert.ok(!compact.split(' · ').includes(family.toUpperCase()) && !compact.includes(`${family.toUpperCase()} `),
       `${entry.name}: no family word in ${compact}`);
   }
@@ -33,8 +36,13 @@ for (const [family, specs] of [['r1', ['r1', 'r1_air']], ['g1', ['g1', 'g1_air']
     const infos = entries.map(entry => policyInfo(entry, spec, false));
     const titles = compactPolicyTitles(infos, family.toUpperCase());
     assertIdentity(infos, titles, family);
-    // Shorter than the previous full label `Title (canonical/name)` for every real checkpoint.
-    for (const info of infos) assert.ok(titles.get(info.name).length < policyPresentation(info.name).label.length, info.name);
+    for (const info of infos) {
+      const compact = titles.get(info.name);
+      // Shorter than the full canonical label `Title (canonical/name)`.
+      assert.ok(compact.length < policyPresentation(info.name).label.length, info.name);
+      // The longest real title is 55 characters; anything longer is a derivation regression.
+      assert.ok(compact.length <= 56, `${info.name}: ${compact.length} characters`);
+    }
     // A searched subset keeps the titles it had: they are distinct across the whole gallery.
     const searched = infos.filter(info => /walk/.test(info.name));
     assert.ok(searched.length > 1);

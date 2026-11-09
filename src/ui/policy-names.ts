@@ -109,8 +109,11 @@ function variantCheckpointTags(list: readonly { name: string; models?: readonly 
 /** Short visible title per canonical name: the activity title alone when it is unique, otherwise the
  * title plus the least needed to tell its cards apart, in order: the variant (`Lie down · Air`), the
  * differing part of the checkpoint (`Walking · 22500amp6_cwdata_015`), or both
- * (`Kung fu routine · EDU · new_urdf_50k`). Never the family word; the canonical name stays the
- * value and accessible identity. Titles that would still repeat use the whole canonical name. */
+ * (`Kung fu routine · EDU · new_urdf_50k`). The variant omits the family word. Leading or trailing
+ * checkpoint tokens that repeat the family or the policy's own variant are trimmed only when titles stay
+ * distinct; otherwise checkpoint parts are copied verbatim, so `r1air` or `g1` can remain inside one.
+ * The canonical name stays the value and accessible identity. Titles that would still repeat use the
+ * whole canonical name. */
 export function compactPolicyTitles(entries: readonly { name: string; models?: readonly string[] }[], family = ''): Map<string, string> {
   const robot = family.toLowerCase();
   const byTitle = new Map<string, { name: string; models?: readonly string[] }[]>();
