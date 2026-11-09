@@ -61,7 +61,7 @@ export interface SourceFileSystemLimits {
   maxTotalResourceBytes: number;
   maxResources: number;
 }
-const defaultLimits: Readonly<SourceFileSystemLimits> = Object.freeze({
+export const defaultSourceFileSystemLimits: Readonly<SourceFileSystemLimits> = Object.freeze({
   maxMounts: 128, maxEntries: 262144, maxTrieNodes: 524288,
   maxPathDepth: 128, maxPathLength: 4096, maxNameLength: 255,
   maxExpandedPathChars: 16 * 1024 * 1024, maxMetadataBytes: 64 * 1024 * 1024,
@@ -74,7 +74,7 @@ class ImportBudget {
   private chars = 0;
   private metadata = 0;
   constructor(options: Partial<SourceFileSystemLimits>) {
-    this.limits = Object.freeze({ ...defaultLimits, ...options });
+    this.limits = Object.freeze({ ...defaultSourceFileSystemLimits, ...options });
     for (const [key, value] of Object.entries(this.limits)) if (!Number.isSafeInteger(value) || value < 0) fail(`invalid ${key} limit`);
   }
   metadataBytes(bytes: number) {
@@ -611,7 +611,7 @@ export class SourceFileSystem {
     if (!resource) {
       if (this.ownedResources >= this.limits.maxResources) fail('import retained resource count limit exceeded');
       const reserved = entry.bytes + (entry.workingBytes ?? Math.min(blockSize, entry.bytes));
-      if (!Number.isSafeInteger(reserved) || reserved > this.limits.maxTotalResourceBytes - this.ownedBytes) fail('import resource ownership byte limit exceeded');
+      if (!Number.isSafeInteger(reserved) || reserved > this.limits.maxTotalResourceBytes - this.ownedBytes) fail(`import resource ownership byte limit exceeded: ${canonical} needs ${reserved} bytes with ${this.limits.maxTotalResourceBytes - this.ownedBytes} of ${this.limits.maxTotalResourceBytes} left`);
       this.ownedBytes += reserved;
       this.ownedResources++;
       const controller = new AbortController();

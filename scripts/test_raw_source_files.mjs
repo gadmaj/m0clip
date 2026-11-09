@@ -228,6 +228,19 @@ sys.stdout.buffer.write(out.getvalue())`], { input: lzmaBody });
     const damagedLzma = Buffer.from(lzmaZip), lzmaData = 30 + 'materials/lzma.vmt'.length + 9 + 40;
     damagedLzma[lzmaData] ^= 0x55;
     await assert.rejects((await create([{ kind: 'zip', file: new Blob([damagedLzma]) }], {})).readFile('materials/lzma.vmt'));
+    // A chosen BSP that is itself an LZMA member keeps the default decompression
+    // working-memory bound: only stored slices lift the selection's total cap.
+    const lzmaMap = spawnSync('python3', ['-c', `
+import io, sys, zipfile
+body = b'VBSP' + (20).to_bytes(4, 'little') + bytes(32 * 1024 * 1024 - 8)
+out = io.BytesIO()
+with zipfile.ZipFile(out, 'w') as archive:
+    archive.writestr(zipfile.ZipInfo('maps/packed.bsp'), body, compress_type=zipfile.ZIP_LZMA)
+sys.stdout.buffer.write(out.getvalue())`]);
+    assert.equal(lzmaMap.status, 0, `Independent LZMA map fixture encoding failed: ${lzmaMap.stderr}`);
+    assert(lzmaMap.stdout.length < 1024 * 1024, 'The packed map fixture is small on disk');
+    await assert.rejects(selectedSourceBsp({ kind: 'source', format: 'zip', file: Object.assign(new Blob([lzmaMap.stdout]), { name: 'packed.zip' }), mapPath: 'maps/packed.bsp', name: 'Packed', game: 'Team Fortress 2', mounts: [] }),
+      /ownership byte limit/, 'A 32 MiB LZMA BSP is refused before decoder state is allocated');
     // Independently wrap raw zlib Deflate: fixed/dynamic and a stored block crossing
     // multiple bounded codec feeds must preserve exact output and native ZIP CRC.
     function deflateZip(body, compressed = deflateRawSync(body), declared = body.length, checksum = crc(body)) {

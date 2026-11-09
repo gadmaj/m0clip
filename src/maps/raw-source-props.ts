@@ -251,10 +251,10 @@ export async function readSourceStaticProps(world: SourceWorld, lumps: readonly 
     let fork=options.staticPropVariant;
     if(!fork){
       // BSP19/20 conventionally carry TF2-lineage records and BSP21/22 L4D-lineage
-      // ones. When only the other branch's stride fits the lump exactly (L4D1 is
-      // BSP20 with 68-byte version-8 records), that branch is the only reading.
-      const conventional=bsp.version>=21?'left4dead':'source2007',other=conventional==='left4dead'?'source2007':'left4dead',records=data.bytes.length-p;
-      fork=count*stride(conventional)!==records&&count*stride(other)===records?other:conventional;
+      // ones. The one evidenced exception is L4D1: BSP20 with 68-byte version-8
+      // L4D records. Other mismatches still refuse rather than guess a layout.
+      const conventional=bsp.version>=21?'left4dead':'source2007',records=data.bytes.length-p;
+      fork=bsp.version===20&&version===8&&count*stride(conventional)!==records&&count*stride('left4dead')===records?'left4dead':conventional;
     }
     const size=stride(fork);
     data.range(p,count,size);if(p+count*size!==data.bytes.length)throw new Error(`Unsupported sprp v${version}/${fork} record size; select the actual branch, not an inferred stride`);

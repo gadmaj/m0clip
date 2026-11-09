@@ -1,5 +1,5 @@
 /** Worker-only index/header operations, deliberately independent of assembly. */
-import { canonicalSourcePath, SourceFileSystem, type SourceMount } from './raw-source-files';
+import { canonicalSourcePath, defaultSourceFileSystemLimits, SourceFileSystem, type SourceMount } from './raw-source-files';
 import type { SourceFormat, SourceImportChoice, SourceInspection } from './source-import-protocol';
 
 export async function checkSourceBspHeader(file: Blob): Promise<void> {
@@ -45,13 +45,17 @@ export async function selectedSourceBsp(choice: SourceImportChoice): Promise<{ f
     return { file: choice.file, mapName, mounts: choice.mounts };
   }
   const archive: SourceMount = { kind: choice.format, file: choice.file, label: choice.file.name };
-  // This filesystem performs exactly one read: the chosen BSP. Like a directly
-  // selected BSP, a stored slice has no whole-file cap (readSourceBsp bounds each
-  // lump); a compressed member still obeys the filesystem's decompression limit.
-  const filesystem = await SourceFileSystem.create([archive], undefined, { maxTotalResourceBytes: Number.MAX_SAFE_INTEGER });
+  // This filesystem performs exactly one read: the chosen BSP, under the default
+  // limits, so a compressed member keeps its decompression working-memory bound.
+  // Only a stored slice (GMA, VPK, stored ZIP) can exceed the per-member limit; it
+  // allocates nothing, so like a directly selected BSP the total is lifted just for it
+  // (readSourceBsp bounds each lump). readFile still refuses a compressed member above it.
+  const limits = defaultSourceFileSystemLimits;
+  let filesystem = await SourceFileSystem.create([archive]);
   if (!filesystem.mapCandidates.length) throw new Error('This archive contains no Source BSP maps.');
   const candidate = filesystem.mapCandidates.find(map => map.path === path);
   if (!candidate) throw new Error('The selected BSP is not in this archive. Select a listed map explicitly.');
+  if (candidate.bytes > limits.maxResourceBytes) filesystem = await SourceFileSystem.create([archive], undefined, { maxTotalResourceBytes: Math.max(limits.maxTotalResourceBytes, 2 * candidate.bytes) });
   const file = await filesystem.readFile(path, undefined, candidate.bytes);
   if (!file) throw new Error('The selected BSP is unavailable in this archive.');
   await checkSourceBspHeader(file);
