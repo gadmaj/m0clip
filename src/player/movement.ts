@@ -4,8 +4,8 @@
  * split gravity, jump check before friction, ground friction and acceleration,
  * the capped air wish speed that allows strafing, a four-bump multi-plane slide,
  * the up/down step selection, sticking to the ground on the way down, walkable
- * normals and ceiling-safe ducking. The worker owns scheduling and button
- * combination; this module only advances one state by one tick. */
+ * normals, ceiling-safe ducking and Garry's Mod Sandbox's forward jump boost. The worker
+ * owns scheduling and button combination; this module only advances one state by one tick. */
 import {
   PLAYER_BUTTON,
   type PlayerCollisionWorld,
@@ -17,9 +17,9 @@ import {
 } from "./types";
 
 /** Garry's Mod Sandbox player defaults on the Source SDK movement rules.
- * Walk/run speeds and duck/unduck time are from Facepunch `player_sandbox.lua`; jump power and
- * crouch scale from its base `player_default.lua`; gravity 600 and friction 8 from the server
- * settings menu (`utilities_menu.lua`); the rest are Source SDK convars (`movevars_shared.cpp`),
+ * Walk/run speeds, duck/unduck time and the jump boost are from Facepunch `player_sandbox.lua`;
+ * jump power and crouch scale from its base `player_default.lua`; gravity 600 and friction 8 from the
+ * server settings menu (`utilities_menu.lua`); the rest are Source SDK convars (`movevars_shared.cpp`),
  * hulls and view heights (`gamerules.cpp`), `DIST_EPSILON` and the default tick interval. */
 export const GMOD_MOVE_PROFILE: PlayerMoveProfile = Object.freeze({
   tickInterval: 0.015,
@@ -32,6 +32,8 @@ export const GMOD_MOVE_PROFILE: PlayerMoveProfile = Object.freeze({
   airAccelerate: 10,
   airWishCap: 30,
   jumpImpulse: 200,
+  jumpBoost: 0.5,
+  duckJumpBoost: 0.1,
   walkSpeed: 200,
   runSpeed: 400,
   duckSpeedScale: 0.3,
@@ -97,7 +99,7 @@ function checkProfile(p: PlayerMoveProfile): void {
   for (const k of positive) if (!(p[k] > 0) || !Number.isFinite(p[k])) throw new RangeError(`move profile ${k} must be positive`);
   const nonNegative: (keyof PlayerMoveProfile)[] = [
     "gravity", "friction", "stopSpeed", "groundAccelerate", "airAccelerate", "airWishCap", "jumpImpulse",
-    "duckSpeedScale", "stepHeight", "skin", "duckSeconds",
+    "jumpBoost", "duckJumpBoost", "duckSpeedScale", "stepHeight", "skin", "duckSeconds",
   ];
   for (const k of nonNegative) if (!(p[k] >= 0) || !Number.isFinite(p[k])) throw new RangeError(`move profile ${k} must be non-negative`);
   if (!(p.walkableNormal > 0 && p.walkableNormal <= 1)) throw new RangeError("move profile walkableNormal must be in (0, 1]");
@@ -156,9 +158,10 @@ export class PlayerMover {
     events.jumped = false;
     events.landed = false;
     events.stepHeight = 0;
-    this.touchedGround = false;
     const wasGrounded = state.grounded;
     const buttons = cmd.buttons | 0;
+    // Sandbox StartMove: a jump pressed while on the ground earns the boost applied after the move.
+    const boostJump = wasGrounded && (buttons & PLAYER_BUTTON.jump) !== 0 && (state.oldButtons & PLAYER_BUTTON.jump) === 0;
 
     // Wish speed: run applies unless fully ducked; the stick magnitude is capped at max speed.
     const fullyDucked = state.ducked && state.duckFraction >= 1;
@@ -173,8 +176,10 @@ export class PlayerMover {
     }
 
     this.categorize();
+    // Source crops the move by the ducked hull from before this tick's duck transition.
+    const crouchCrop = state.ducked && state.grounded;
     this.duck(buttons);
-    if (state.ducked && state.grounded) {
+    if (crouchCrop) {
       fmove *= p.duckSpeedScale;
       smove *= p.duckSpeedScale;
     }
@@ -211,6 +216,8 @@ export class PlayerMover {
     v[2] -= p.gravity * 0.5 * dt;
     this.checkVelocity();
     if (state.grounded) v[2] = 0;
+    // Sandbox FinishMove: the jump boost, applied to the velocity the move ended with.
+    if (boostJump) this.sandboxJumpBoost(fx, fy, fmove, maxSpeed);
 
     // Smoothstep ease (3x² − 2x³) of the linear duck progress.
     const f = state.duckFraction;
@@ -331,6 +338,20 @@ export class PlayerMover {
     v[2] -= p.gravity * 0.5 * this.dt;
     this.checkVelocity();
     this.events.jumped = true;
+  }
+
+  /** Garry's Mod Sandbox jump boost along the flat view (fx, fy): a share of the forward move,
+   * reduced so horizontal speed ends at most (1 + share) × max speed. Past that limit the boost turns
+   * negative and slows the jump; it points backward when the player is moving backward. */
+  private sandboxJumpBoost(fx: number, fy: number, fmove: number, maxSpeed: number): void {
+    const v = this.s.velocity;
+    const share = this.s.ducked ? this.profile.duckJumpBoost : this.profile.jumpBoost;
+    let add = Math.abs(fmove * share);
+    const excess = add + Math.hypot(v[0], v[1]) - maxSpeed * (1 + share);
+    if (excess > 0) add -= excess;
+    if (v[0] * fx + v[1] * fy < 0) add = -add;
+    v[0] += fx * add;
+    v[1] += fy * add;
   }
 
   private friction(): void {
