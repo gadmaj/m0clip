@@ -16,6 +16,7 @@ export class FloatingWorkspace {
   private compactCollapsed = false;
   // The stylesheet's compact breakpoint; innerWidth can disagree with it at the boundary.
   private readonly narrow = matchMedia('(max-width: 760px)');
+  private readonly flightHud = element('flight-hud');
 
   constructor() {
     try { this.saved = JSON.parse(localStorage.getItem(STORAGE) || '{}') || {}; } catch { /* Use the default layout. */ }
@@ -130,6 +131,8 @@ export class FloatingWorkspace {
     };
     window.addEventListener('resize', relayout);
     this.narrow.addEventListener('change', relayout);
+    // Showing, hiding or resizing the Flight HUD changes the room windows may use above it.
+    new ResizeObserver(relayout).observe(this.flightHud);
   }
 
   private window(id: string, title: string, parent: HTMLElement) {
@@ -260,6 +263,12 @@ export class FloatingWorkspace {
         // Stacked controls scroll within Scene instead of covering Reference clip.
         if (gap >= 80 && below.x < x + width && below.right > x) space = Math.min(space, gap);
       }
+    }
+    // Flight controls stay on top; windows end above them and scroll their body instead.
+    const hud = this.flightHud;
+    if (!hud.hidden && hud.getClientRects().length && root.id !== 'deck') {
+      const r = hud.getBoundingClientRect();
+      if (r.left < x + width && r.right > x && r.top > y) space = Math.min(space, Math.max(barHeight, r.top - 12 - y));
     }
     root.style.setProperty('--window-space', `${space}px`);
     if (root.id === 'capture-window') {

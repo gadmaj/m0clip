@@ -144,23 +144,39 @@ const {readyApp}=require('./attach-ready-app.cjs');
     await chooseVisual(race,'robot','go2');assert.equal(await race.evaluate(()=>!!window.__app.pendingViewRestore),false);release();
     await race.waitForFunction(()=>window.__app.viewModel?.robot==='go2');await race.waitForTimeout(150);assert.equal(await race.evaluate(()=>window.__app.noclip),false);assert.equal(await race.evaluate(()=>window.__app.view.getBodyVisualState().applied),'stock');
     await raceContext.close();
-    // A restored Flight view must not put its HUD above the library's pointer targets.
+    // A restored Flight view must keep its HUD and the saved-view actions clear of each other.
     await page.getByRole('button',{name:'Dog inspection',exact:true}).click();await restored(page);
+    const receives=locator=>locator.evaluate(node=>{
+      const r=node.getBoundingClientRect();
+      return r.width>0&&r.height>0&&node.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));
+    });
+    const hudClear=async label=>{
+      assert.ok(await page.locator('#flight-hud').isVisible(),`Flight is active at ${label}`);
+      const overlap=await page.evaluate(()=>{const h=document.getElementById('flight-hud').getBoundingClientRect();return [...document.querySelectorAll('.floating-window')].filter(w=>w.getClientRects().length&&getComputedStyle(w).visibility!=='hidden').map(w=>({id:w.id,r:w.getBoundingClientRect()})).filter(({r})=>r.left<h.right&&r.right>h.left&&r.top<h.bottom&&r.bottom>h.top).map(({id})=>id)});
+      assert.deepEqual(overlap,[],`No window overlaps the Flight HUD at ${label}`);
+      for(const id of ['flight-place','flight-speed','flight-hover','flight-exit'])assert.ok(await receives(page.locator('#'+id)),`#${id} must receive pointer input at ${label}`);
+    };
     for(const width of [320,390]){
       await page.setViewportSize({width,height:844});
       await page.getByRole('navigation',{name:'Advanced panels'}).getByRole('button',{name:'Scene',exact:true}).click();
-      assert.ok(await page.locator('#flight-hud').isVisible(),'Exercise saved actions while Flight is active');
+      await hudClear(width+'px');
       for(const name of ['Dog inspection','Share Dog inspection','Rename Dog inspection','Delete Dog inspection']){
         const target=page.getByRole('button',{name,exact:true});await target.scrollIntoViewIfNeeded();
-        assert.ok(await target.evaluate(button=>{
-          const r=button.getBoundingClientRect();
-          return button.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));
-        }),`${name} must receive pointer input at ${width}px`);
+        assert.ok(await receives(target),`${name} must receive pointer input at ${width}px`);
       }
       await share.click();
+      await page.waitForFunction(()=>navigator.clipboard.readText().then(value=>value.includes('#view=')));
       await page.getByRole('button',{name:'Rename Dog inspection',exact:true}).click();
       await page.getByLabel('New name for Dog inspection',{exact:true}).press('Escape');
+      await page.getByRole('button',{name:'Delete Dog inspection',exact:true}).click();
+      const undo=page.getByRole('button',{name:'Undo delete',exact:true});await undo.scrollIntoViewIfNeeded();
+      assert.ok(await receives(undo),`Undo delete must receive pointer input at ${width}px`);
+      await undo.click();await page.getByRole('button',{name:'Dog inspection',exact:true}).waitFor();
+      await hudClear(width+'px after undo');
     }
+    // Default desktop windows end above the Flight controls too.
+    await page.setViewportSize({width:1280,height:812});
+    await hudClear('1280px');
     await page.setViewportSize(viewport);
     if(await expandScene.isVisible())await expandScene.click();
     // Compact layouts show one advanced panel at a time; Saved views lives in Scene.

@@ -104,7 +104,7 @@ option { background: var(--panel); }
 #deck.is-collapsed { height: auto !important; }
 #deck .dk-drag { margin: 0; }
 #deck .dk-tl { flex: 1 0 70px; min-height: 70px; }
-#flight-hud { left: 50%; right: auto; transform: translateX(-50%);
+#flight-hud { left: 50%; right: auto; transform: translateX(-50%); z-index: 180;
   bottom: calc(var(--scene-actions-height, 0px) + 62px);
   width: min(770px, calc(100% - 24px)); max-height: calc(100dvh - var(--scene-actions-height, 0px) - 150px);
   overflow: auto; border-radius: var(--r);
