@@ -45,6 +45,7 @@ import { sourceMapPropView, type MapSource, type SourceMapPropView } from '../ma
 import { PlayerView } from './player/view';
 import { PLAYER_VIEWMODEL_LAYER } from './player/viewmodel';
 import { SourceAnimations } from './source-animations';
+import { clampSourceTime } from './source-clock';
 import { SourceProps, type SourcePropView } from './source-props';
 export interface PreparedTerrainVisual { commit(): void; dispose(): void }
 
@@ -1101,7 +1102,8 @@ export class SceneView {
   }
 
   getSourceTime() { return this.sourceAnimationTime ?? Math.max(0, (performance.now() - this.sourceAnimationStart) / 1000); }
-  setSourceTime(time: number | null) { this.sourceAnimationTime = time; }
+  /** Review and export clocks come from recorded takes; out-of-range values clamp so no frame throws. */
+  setSourceTime(time: number | null) { this.sourceAnimationTime = time === null ? null : clampSourceTime(time); }
   getVisualRevision(){return `${this.terrainGeneration}:${this.bodyGeneration}:${this.headGeneration}:${this.editRevision}`;}
   getShotLights(): ShotLight[] { return this.shotLights.get(); }
   setShotLights(lights: readonly ShotLight[]) { this.shotLights.set(lights); ++this.editRevision; }

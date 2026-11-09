@@ -8,11 +8,11 @@ import { webcrypto } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { build } from 'esbuild';
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
-const compiled = await build({ stdin: { contents: `export * from './src/maps/raw-source-lighting'; export * from './src/maps/raw-source-lighting-glb'; export * from './src/maps/raw-source-manifest'; export * from './src/maps/raw-source-physics'; export * from './src/maps/bundle'; export * from './src/maps/source'; export * from './src/maps/source-import-finalize'; export * from './src/maps/raw-source-gltf'; export * from './src/maps/raw-source-materials'; export * from './src/maps/raw-source-vtf'; export * from './src/maps/raw-source-bsp'; export * from './src/maps/raw-source-files'; export * from './src/render/source-lightstyle-values'; export * from './src/render/source-grading'; export { SourcePVS } from './src/render/source-sky3d'; export { SourceAmbient } from './src/render/source-ambient'; export { SourceLightStyles } from './src/render/source-lightstyles'; export { DataTexture as SourceLightstyleTestTexture } from 'three';`, resolveDir: process.cwd(), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', write: false });
+const compiled = await build({ stdin: { contents: `export * from './src/maps/raw-source-lighting'; export * from './src/maps/raw-source-lighting-glb'; export * from './src/maps/raw-source-manifest'; export * from './src/maps/raw-source-physics'; export * from './src/maps/bundle'; export * from './src/maps/source'; export * from './src/maps/source-import-finalize'; export * from './src/maps/raw-source-gltf'; export * from './src/maps/raw-source-materials'; export * from './src/maps/raw-source-vtf'; export * from './src/maps/raw-source-bsp'; export * from './src/maps/raw-source-files'; export * from './src/render/source-lightstyle-values'; export * from './src/render/source-grading'; export * from './src/render/source-clock'; export { SourcePVS } from './src/render/source-sky3d'; export { SourceAmbient } from './src/render/source-ambient'; export { SourceLightStyles } from './src/render/source-lightstyles'; export { DataTexture as SourceLightstyleTestTexture } from 'three';`, resolveDir: process.cwd(), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', write: false });
 const module = { exports: {} };
 new Function('module', 'require', compiled.outputFiles[0].text)(module, createRequire(import.meta.url));
 const { buildSourceLighting, appendSourceLightingAssets, appendSourceCubemaps, composeSourceMapFiles, sourceMapLight, sourceWorldPhysicsXml, finalizeGeneratedMapBundle, registerLocalMap, SourceGlb, SourceMaterialExport, readSourceVtf, readSourceBsp, decodeSourceWorld, SourceFileSystem, SourcePVS, SourceAmbient, SourceLightStyles, sourceLightstylePatterns, sourceLightstyleValue, SourceLightstyleTestTexture, loadSourceColorLayers, sourceColorWeight, sourceColorCorrectionLut } = module.exports;
-const { finalizeSourceAssembly } = module.exports;
+const { finalizeSourceAssembly, sourceDeterministicGzip, clampSourceTime } = module.exports;
 const entity = values => ({ values, pairs: Object.entries(values) });
 function fixture({ hdr = false, displaced = false } = {}) {
   const bytes = Array.from({ length: 64 }, () => new Uint8Array());
@@ -172,6 +172,33 @@ try {
   const boundPixels=boundStyles.textures.get(packed.lightmaps[0].flat).image.data;
   assert.deepEqual([...boundPixels.subarray(at,at+4)],[252,0,0,43],'genuine gzip/style patch uses the real texture index, not CPU page zero');
   boundStyles.update(.1);assert(boundPixels[at+1]>boundPixels[at]);
+  {
+    // Lightstyle pages are gzip with a fixed header: no mtime, fixed XFL and OS byte 3,
+    // never the platform zlib's OS code, so the same map converts to the same bytes anywhere.
+    const gz=[...packed.files].filter(([path])=>path.endsWith('.rgba.gz'));
+    assert.ok(gz.length>0,'fixture packs at least one lightstyle page');
+    const againGlb=new SourceGlb(),again=await appendSourceLightingAssets(againGlb,new SourceMaterialExport(againGlb,bindingFs),withCubes,bindingLimits);
+    for(const [path,blob] of gz){
+      const bytes=Buffer.from(await blob.arrayBuffer());
+      assert.deepEqual([...bytes.subarray(0,10)],[0x1f,0x8b,8,0,0,0,0,0,0,3],`${path}: deterministic gzip header`);
+      assert.deepEqual(Buffer.from(await again.files.get(path).arrayBuffer()),bytes,`${path}: identical input gives identical bytes`);
+    }
+    // Multi-chunk pages and the existing DecompressionStream reader.
+    const page=new Uint8Array(3*1024*1024+17);for(let i=0;i<page.length;i++)page[i]=(i*2654435761>>>24)&(i&4096?255:7);
+    const first=Buffer.from(await(await sourceDeterministicGzip(page,page.length*2)).arrayBuffer());
+    assert.deepEqual(Buffer.from(await(await sourceDeterministicGzip(page.slice(),page.length*2)).arrayBuffer()),first);
+    assert.equal(first[9],3);
+    assert.deepEqual(Buffer.from(await new Response(new Blob([first]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()),Buffer.from(page));
+    await assert.rejects(sourceDeterministicGzip(page,64),RangeError,'output stays bounded while compressing');
+    const aborted=new AbortController();aborted.abort();
+    await assert.rejects(sourceDeterministicGzip(page,page.length*2,aborted.signal),{name:'AbortError'});
+  }
+  // A recorded clock outside the lightstyle range is clamped before it reaches update().
+  assert.throws(()=>boundStyles.update(-1),RangeError);
+  for(const [time,expected] of [[NaN,0],[-1,0],[-Infinity,0],[Infinity,1e9],[1e300,1e9],[12.5,12.5]]){
+    assert.equal(clampSourceTime(time),expected);boundStyles.update(clampSourceTime(time));
+  }
+  boundStyles.update(.1);
   assert.deepEqual(output.native.lightstyles,originalStyle,'packaging must not rewrite the CPU lighting owner');
   for(const texture of boundStyles.textures.values())texture.dispose();
   bindingController.abort(new Error('owned lighting cancellation'));

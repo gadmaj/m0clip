@@ -34,9 +34,16 @@ function limit(value: number | undefined, fallback: number, name: string): numbe
 function range(first: number, count: number, total: number, name: string): void {
   if (!Number.isSafeInteger(first) || !Number.isSafeInteger(count) || first < 0 || count < 0 || first > total || count > total - first) throw new Error(`Source visibility ${name}: range out of bounds`);
 }
+let lastPhaseYield = 0;
+/** Checks cancellation on every call but yields to the event loop only after about
+ * one 60 Hz frame of work, so per-displacement calls cost no clamped timer delay. */
 async function phase(signal?: AbortSignal): Promise<void> {
   sourceAbort(signal);
-  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  if (performance.now() - lastPhaseYield < 16) return;
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, 0);
+  await promise;
+  lastPhaseYield = performance.now();
   sourceAbort(signal);
 }
 class Records {
@@ -59,6 +66,8 @@ class Records {
 export async function readSourceVisibility(world: SourceWorld, options: SourceVisibilityOptions = {}): Promise<SourceVisibilityResult> {
   const { bsp, frame } = world, signal = options.signal;
   sourceAbort(signal);
+  // The first phase of every read yields, so a cancellation already queued is seen.
+  lastPhaseYield = -Infinity;
   const maxRecords = limit(options.maxRecords, 2_000_000, 'records');
   const maxMemberships = limit(options.maxMemberships, 8_000_000, 'memberships');
   const maxWork = limit(options.maxWork, 200_000_000, 'work');

@@ -22,6 +22,15 @@ const HULL_POINT_WORKING_BYTES = 128;
 const SURFACE_RECORD_BYTES = 256;
 /** Logical bytes of one collision or blocking-brush record (object, small tuples, typed-array header). */
 export const SOURCE_COLLISION_RECORD_BYTES = 128;
+/** Default import-wide brush hull work: plane triples tried plus half-space tests
+ * run. Compiled maps use a few million (24 shipped maps measured peaked near 5.4M); about
+ * 537M is a few seconds of work, while shared or 128-side brushes repeated by the
+ * thousand would otherwise keep the cubic hull search running for over an hour. */
+export const SOURCE_MAX_BRUSH_HULL_WORK = 2 ** 29;
+/** Floorless player spawns probed before the search stops with spawn-unresolved. */
+export const SOURCE_MAX_SPAWN_CANDIDATES = 256;
+/** Work between macrotask yields stays near one 60 Hz frame. */
+const PHASE_YIELD_MS = 16;
 
 type Vec3 = [number, number, number];
 export interface SourceFrame {
@@ -141,11 +150,13 @@ class Table {
 
 /** One import-owned geometry lifetime shared by the world and every later
  * brush-model decode. Retained arrays are charged before allocation and never
- * recycled; transient construction is released once its arrays are unreachable. */
+ * recycled; transient construction is released once its arrays are unreachable.
+ * Brush hull work is charged the same way and never released. */
 class GeometryBudget {
   bytes = 0;
   vertices = 0;
-  constructor(readonly maxBytes: number, readonly maxVertices: number) {}
+  hullWork = 0;
+  constructor(readonly maxBytes: number, readonly maxVertices: number, readonly maxHullWork: number) {}
   reserve(bytes: number, vertices = 0): void {
     if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > this.maxBytes - this.bytes
       || !Number.isSafeInteger(vertices) || vertices < 0 || vertices > this.maxVertices - this.vertices)
@@ -153,6 +164,11 @@ class GeometryBudget {
     this.bytes += bytes; this.vertices += vertices;
   }
   release(bytes: number): void { this.bytes -= bytes; }
+  spendHull(work: number): void {
+    if (work > this.maxHullWork - this.hullWork)
+      throw new RangeError(`Source brush collision needs more than ${this.maxHullWork.toLocaleString('en-US')} plane tests; the import stops here instead of running for minutes.`);
+    this.hullWork += work;
+  }
 }
 function geometryLimit(value: number | undefined, fallback: number, name: string): number {
   const result = value ?? fallback;
@@ -185,19 +201,27 @@ function quaternion(x: Vec3, y: Vec3, z: Vec3): [number, number, number, number]
   return [(x[1] - y[0]) / s, (z[0] + x[2]) / s, (z[1] + y[2]) / s, s / 4];
 }
 
+let lastPhaseYield = 0;
+/** Checks cancellation on every call but yields to the event loop only once
+ * PHASE_YIELD_MS have passed, so frequent calls cost no clamped timer delay. */
 async function sourcePhase(signal?: AbortSignal): Promise<void> {
+  sourceAbort(signal);
+  if (performance.now() - lastPhaseYield < PHASE_YIELD_MS) return;
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, 0);
   await promise;
+  lastPhaseYield = performance.now();
   sourceAbort(signal);
 }
 
 export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptions = {}): Promise<SourceWorld> {
   const signal = options.signal;
   sourceAbort(signal);
+  // The first phase of every world decode yields, so a cancellation already queued is seen.
+  lastPhaseYield = -Infinity;
   // Defaults match the downstream world/prop writers' 256 MiB and 4M-vertex ceilings.
   const budget = new GeometryBudget(geometryLimit(options.maxGeometryBytes, 256 * 1024 ** 2, 'geometry byte'),
-    geometryLimit(options.maxVertices, 4_000_000, 'vertex'));
+    geometryLimit(options.maxVertices, 4_000_000, 'vertex'), geometryLimit(options.maxBrushHullWork, SOURCE_MAX_BRUSH_HULL_WORK, 'brush hull work'));
   const load = async (index: number, stride: number, name: string, versions: readonly number[] = [0]) => {
     const bytes = await bsp.getLump(index, signal);
     if (bytes.length && !versions.includes(bsp.lumps[index].version)) throw new Error(`Unsupported ${name} lump version ${bsp.lumps[index].version}`);
@@ -226,6 +250,7 @@ export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptio
   const strings = await bsp.getLump(43, signal), stringTable = await load(44, 4, 'texture string table');
   const dispTags = await load(48, 2, 'displacement triangle tags');
   if (models.count === 0) throw new Error('BSP has no worldmodel 0');
+  await disjointBrushSides(brushes, sides.count, budget, signal);
   budget.reserve((faces.count + 1) * 4);
   const normalStarts = new Uint32Array(faces.count + 1);
   for (let i = 0; i < faces.count; i++) {
@@ -438,7 +463,7 @@ export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptio
     return result;
   };
   const surfaces = await decodeRawModelSurfaces(0, signal);
-  const frame = await chooseFrame(bsp, models, surfaces, options);
+  const { frame, capped: spawnCapped } = await chooseFrame(bsp, models, surfaces, options, budget);
   const theta = -frame.yaw * Math.PI / 180, cos = Math.cos(theta), sin = Math.sin(theta), scale = 0.0254;
   for (let si = 0; si < surfaces.length; si++) {
     if ((si & 127) === 0) await sourcePhase(signal);
@@ -458,7 +483,9 @@ export async function buildSourceWorld(bsp: SourceBsp, options: SourceWorldOptio
   const reachable = reachableWorld(nodes, leaves, leafbrushes, brushes.count, models.i(0, 36), signal);
   const collision: SourceCollision[] = [], skippedDegenerateBrushes: number[] = [], requirements: SourceLightingRequirement[] = [];
   if (frame.spawnClass === 'map centre') requirements.push({ code: 'spawn-unresolved', blocking: true,
-    detail: 'No player spawn (info_player_attacker, info_player_defender, info_player_start or info_player_deathmatch) has a floor within 64 units below it and 64 units of headroom. Choose a map with a reachable spawn.' });
+    detail: spawnCapped
+      ? `The first ${SOURCE_MAX_SPAWN_CANDIDATES} player spawns (info_player_attacker, info_player_defender, info_player_start, then info_player_deathmatch) have no floor within 64 units below them with 64 units of headroom, and the search stops there. Choose a map with a reachable spawn.`
+      : 'No player spawn (info_player_attacker, info_player_defender, info_player_start or info_player_deathmatch) has a floor within 64 units below it and 64 units of headroom. Choose a map with a reachable spawn.' });
   for (let at = 0; at < reachable.brushes.length; at++) {
     if ((at & 31) === 0) await sourcePhase(signal);
     const bi = reachable.brushes[at], contents = brushes.i(bi, 8);
@@ -632,6 +659,8 @@ async function brushHull(planes: Table, sides: Table, first: number, count: numb
     for (let a = 0; a < count - 2; a++) {
       if (a > 0 && (a & 7) === 0) await sourcePhase(signal);
       sourceAbort(signal);
+      // Triples tried plus half-space tests run for this first plane, charged import-wide.
+      let work = (count - 1 - a) * (count - 2 - a) / 2;
       for (let b = a + 1; b < count - 1; b++) for (let c = b + 1; c < count; c++) {
         const i = a * 4, j = b * 4, k = c * 4;
         const cx = p[j + 1] * p[k + 2] - p[j + 2] * p[k + 1], cy = p[j + 2] * p[k] - p[j] * p[k + 2], cz = p[j] * p[k + 1] - p[j + 1] * p[k];
@@ -640,9 +669,10 @@ async function brushHull(planes: Table, sides: Table, first: number, count: numb
         const x = (p[i + 3] * cx + p[j + 3] * (p[k + 1] * p[i + 2] - p[k + 2] * p[i + 1]) + p[k + 3] * (p[i + 1] * p[j + 2] - p[i + 2] * p[j + 1])) / det;
         const y = (p[i + 3] * cy + p[j + 3] * (p[k + 2] * p[i] - p[k] * p[i + 2]) + p[k + 3] * (p[i + 2] * p[j] - p[i] * p[j + 2])) / det;
         const z = (p[i + 3] * cz + p[j + 3] * (p[k] * p[i + 1] - p[k + 1] * p[i]) + p[k + 3] * (p[i] * p[j + 1] - p[i + 1] * p[j])) / det;
-        let inside = true;
-        for (let n = 0; n < count; n++) if (p[n * 4] * x + p[n * 4 + 1] * y + p[n * 4 + 2] * z > p[n * 4 + 3] + HULL_PLANE_SLACK_UNITS) { inside = false; break; }
-        if (!inside) continue;
+        let n = 0;
+        while (n < count && !(p[n * 4] * x + p[n * 4 + 1] * y + p[n * 4 + 2] * z > p[n * 4 + 3] + HULL_PLANE_SLACK_UNITS)) n++;
+        if (n < count) { work += n + 1; continue; }
+        work += count;
         const rx = Math.round(x * HULL_STEPS_PER_UNIT), ry = Math.round(y * HULL_STEPS_PER_UNIT), rz = Math.round(z * HULL_STEPS_PER_UNIT);
         const key = `${rx},${ry},${rz}`;
         if (seen.has(key)) continue;
@@ -654,6 +684,7 @@ async function brushHull(planes: Table, sides: Table, first: number, count: numb
           if (along > extent[n * 2 + 1]) extent[n * 2 + 1] = along;
         }
       }
+      budget.spendHull(work);
     }
     const vertexCount = points.length / 3;
     // Every well-conditioned vertex satisfies all planes far inside the slack, so no
@@ -669,41 +700,92 @@ async function brushHull(planes: Table, sides: Table, first: number, count: numb
   } finally { budget.release(working); }
 }
 
-async function chooseFrame(bsp: SourceBsp, models: Table, surfaces: SourceSurface[], options: SourceWorldOptions): Promise<SourceFrame> {
+/** VBSP's EmitBrushes writes every brush's sides as its own contiguous run. Shared
+ * or overlapping runs never come from a compiler and would multiply the cubic hull
+ * search, so they are refused. Ranges outside the lump stay for brushHull to refuse. */
+async function disjointBrushSides(brushes: Table, sideCount: number, budget: GeometryBudget, signal?: AbortSignal): Promise<void> {
+  const working = brushes.count * 4;
+  budget.reserve(working);
+  try {
+    const order = new Uint32Array(brushes.count);
+    let used = 0;
+    for (let bi = 0; bi < brushes.count; bi++) {
+      if ((bi & 65535) === 65535) await sourcePhase(signal);
+      const first = brushes.i(bi), count = brushes.i(bi, 4);
+      if (count > 0 && first >= 0 && first <= sideCount && count <= sideCount - first) order[used++] = bi;
+    }
+    const sorted = order.subarray(0, used).sort((a, b) => brushes.i(a) - brushes.i(b) || a - b);
+    await sourcePhase(signal);
+    // Sorted by first side, any overlap shows up between neighbours.
+    for (let k = 1; k < used; k++) {
+      const previous = sorted[k - 1], next = sorted[k];
+      if (brushes.i(previous) + brushes.i(previous, 4) > brushes.i(next))
+        throw new Error(`Source brushes ${Math.min(previous, next)} and ${Math.max(previous, next)} share brush sides; a compiled map gives every brush its own sides, so this map is refused.`);
+    }
+  } finally { budget.release(working); }
+}
+
+async function chooseFrame(bsp: SourceBsp, models: Table, surfaces: SourceSurface[], options: SourceWorldOptions, budget: GeometryBudget): Promise<{ frame: SourceFrame; capped: boolean }> {
   const common = { metresPerUnit: 0.0254 as const, up: 'Z' as const };
   if (options.spawn) {
     if (options.spawn.origin.length !== 3 || options.spawn.origin.some(v => !Number.isFinite(v)) || !Number.isFinite(options.spawn.yaw)) throw new Error('Invalid explicit Source spawn');
-    return { ...common, origin: [...options.spawn.origin], yaw: options.spawn.yaw, spawnClass: 'explicit', floorFound: false };
+    return { frame: { ...common, origin: [...options.spawn.origin], yaw: options.spawn.yaw, spawnClass: 'explicit', floorFound: false }, capped: false };
   }
-  for (const cls of ['info_player_attacker', 'info_player_defender', 'info_player_start', 'info_player_deathmatch']) {
-    for (const entity of bsp.entities) {
-      if (entity.values.classname !== cls || !entity.values.origin) continue;
-      await sourcePhase(options.signal);
-      const origin = entity.values.origin.trim().split(/\s+/).map(Number);
-      if (origin.length !== 3 || origin.some(v => !Number.isFinite(v))) throw new Error('Malformed Source player spawn origin');
-      const hits: number[] = [];
-      for (const surface of surfaces) {
-        if (surface.flags & 6) continue;
-        const p = surface.sourcePositions, indices = surface.indices;
-        for (let j = 0; j < indices.length; j += 3) {
-          const a = indices[j] * 3, b = indices[j + 1] * 3, c = indices[j + 2] * 3;
-          const ux = p[c] - p[a], uy = p[c + 1] - p[a + 1], vx = p[b] - p[a], vy = p[b + 1] - p[a + 1];
-          const dx = origin[0] - p[a], dy = origin[1] - p[a + 1], det = ux * vy - vx * uy;
-          if (Math.abs(det) < 1e-9) continue;
-          const u = (dx * vy - vx * dy) / det, v = (ux * dy - dx * uy) / det;
-          if (u >= 0 && v >= 0 && u + v <= 1) hits.push(p[a + 2] + u * (p[c + 2] - p[a + 2]) + v * (p[b + 2] - p[a + 2]));
+  // Each probed spawn scans the floor triangles; per-surface XY bounds skip faces that
+  // cannot contain it. The padding is far wider than barycentric rounding, so every
+  // triangle the exact test below could accept is still tested.
+  let bounds: Float64Array | undefined, probed = 0;
+  const boundsBytes = surfaces.length * 32, pad = 0.01;
+  try {
+    for (const cls of ['info_player_attacker', 'info_player_defender', 'info_player_start', 'info_player_deathmatch']) {
+      for (const entity of bsp.entities) {
+        if (entity.values.classname !== cls || !entity.values.origin) continue;
+        if (probed === SOURCE_MAX_SPAWN_CANDIDATES) return { frame: centreFrame(models), capped: true };
+        await sourcePhase(options.signal);
+        const origin = entity.values.origin.trim().split(/\s+/).map(Number);
+        if (origin.length !== 3 || origin.some(v => !Number.isFinite(v))) throw new Error('Malformed Source player spawn origin');
+        probed++;
+        if (!bounds) {
+          budget.reserve(boundsBytes);
+          bounds = new Float64Array(surfaces.length * 4);
+          for (let si = 0; si < surfaces.length; si++) {
+            const p = surfaces[si].sourcePositions;
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (let j = 0; j < p.length; j += 3) {
+              minX = Math.min(minX, p[j]); maxX = Math.max(maxX, p[j]); minY = Math.min(minY, p[j + 1]); maxY = Math.max(maxY, p[j + 1]);
+            }
+            bounds[si * 4] = minX - pad; bounds[si * 4 + 1] = minY - pad; bounds[si * 4 + 2] = maxX + pad; bounds[si * 4 + 3] = maxY + pad;
+          }
         }
+        const hits: number[] = [];
+        for (let si = 0; si < surfaces.length; si++) {
+          const surface = surfaces[si];
+          if (surface.flags & 6) continue;
+          if (origin[0] < bounds[si * 4] || origin[1] < bounds[si * 4 + 1] || origin[0] > bounds[si * 4 + 2] || origin[1] > bounds[si * 4 + 3]) continue;
+          const p = surface.sourcePositions, indices = surface.indices;
+          for (let j = 0; j < indices.length; j += 3) {
+            const a = indices[j] * 3, b = indices[j + 1] * 3, c = indices[j + 2] * 3;
+            const ux = p[c] - p[a], uy = p[c + 1] - p[a + 1], vx = p[b] - p[a], vy = p[b + 1] - p[a + 1];
+            const dx = origin[0] - p[a], dy = origin[1] - p[a + 1], det = ux * vy - vx * uy;
+            if (Math.abs(det) < 1e-9) continue;
+            const u = (dx * vy - vx * dy) / det, v = (ux * dy - dx * uy) / det;
+            if (u >= 0 && v >= 0 && u + v <= 1) hits.push(p[a + 2] + u * (p[c + 2] - p[a + 2]) + v * (p[b + 2] - p[a + 2]));
+          }
+        }
+        let floor = -Infinity;
+        for (const h of hits) if (h <= origin[2] + 16 && h >= origin[2] - 64) floor = Math.max(floor, h);
+        if (!Number.isFinite(floor) || hits.some(h => h > floor + 4 && h < floor + 64)) continue;
+        const angles = entity.values.angles?.trim().split(/\s+/).map(Number);
+        const yaw = angles ? angles[1] : 0;
+        if (!Number.isFinite(yaw)) throw new Error('Malformed Source player spawn angles');
+        return { frame: { ...common, origin: [origin[0], origin[1], floor], yaw, spawnClass: cls, floorFound: true }, capped: false };
       }
-      let floor = -Infinity;
-      for (const h of hits) if (h <= origin[2] + 16 && h >= origin[2] - 64) floor = Math.max(floor, h);
-      if (!Number.isFinite(floor) || hits.some(h => h > floor + 4 && h < floor + 64)) continue;
-      const angles = entity.values.angles?.trim().split(/\s+/).map(Number);
-      const yaw = angles ? angles[1] : 0;
-      if (!Number.isFinite(yaw)) throw new Error('Malformed Source player spawn angles');
-      return { ...common, origin: [origin[0], origin[1], floor], yaw, spawnClass: cls, floorFound: true };
     }
-  }
-  return { ...common, origin: [(models.f(0) + models.f(0, 12)) / 2, (models.f(0, 4) + models.f(0, 16)) / 2, (models.f(0, 8) + models.f(0, 20)) / 2], yaw: 0, spawnClass: 'map centre', floorFound: false };
+    return { frame: centreFrame(models), capped: false };
+  } finally { if (bounds) budget.release(boundsBytes); }
+}
+function centreFrame(models: Table): SourceFrame {
+  return { metresPerUnit: 0.0254, up: 'Z', origin: [(models.f(0) + models.f(0, 12)) / 2, (models.f(0, 4) + models.f(0, 16)) / 2, (models.f(0, 8) + models.f(0, 20)) / 2], yaw: 0, spawnClass: 'map centre', floorFound: false };
 }
 
 function appendDisplacementCollision(surface: SourceSurface, frame: SourceFrame, cos: number, sin: number, output: SourceCollision[], budget: GeometryBudget): void {
