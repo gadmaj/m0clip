@@ -8,7 +8,7 @@ import type { PackInfo, PolicyInfo } from "../sim/protocol";
 import { TERRAINS, type MapEntry, type TerrainName } from "../sim/terrain";
 import type { SceneMode } from "../player/types";
 import { mapEntryLabel, TERRAIN_LABELS } from './launch';
-import { policyPresentation, policySections, policyVariantRank } from './policy-names';
+import { compactPolicyTitles, policyPresentation, policySections, policyVariantLabel } from './policy-names';
 import { TerrainPicker } from './terrain-picker';
 import { VisualPicker } from './visual-picker';
 import { previewImage, staticPreviewOptions, policyPreview } from './preview-catalog';
@@ -571,18 +571,20 @@ export class Panel {
       return;
     }
     // Activity sections (one Locomotion section across R1 / R1 Air / R1 EDU); within a section the policies
-    // for the running Air or EDU body first, then the rest. The variant, canonical name and FSM State are card detail.
+    // for the running Air or EDU body first, then the rest. Card titles say only what tells them apart; the
+    // variant, canonical name and FSM State are card detail, and the family-qualified identity is accessible.
     const fam = robot.toUpperCase() || "G1";
-    const variants = [`${fam} Air`, `${fam} Air + EDU`, `${fam} EDU`, ""];
+    const titles = compactPolicyTitles(entries, fam);
     for (const [g, list] of policySections(entries, robotSpec)) {
       const grp = document.createElement("optgroup");
       grp.label = g;
       for (const e of list) {
-        const presentation = policyPresentation(e.name);
-        const option = new Option(presentation.title, e.name);
-        option.dataset.label=presentation.title;
+        const presentation = policyPresentation(e.name), variant = policyVariantLabel(e.models);
+        const state = e.fsmId===undefined?'':`State ${e.fsmId}`;
+        const option = new Option(titles.get(e.name) ?? presentation.title, e.name);
         option.dataset.previewRobot=e.previewRobot;
-        option.dataset.detail=[variants[policyVariantRank(e.models)], e.name, e.fsmId===undefined?'':`State ${e.fsmId}`].filter(Boolean).join(' · ');
+        option.dataset.detail=[variant, e.name, state].filter(Boolean).join(' · ');
+        option.dataset.identity=[variant&&`${fam} ${variant}`, e.name, state].filter(Boolean).join(' · ');
         option.title = presentation.description;
         grp.appendChild(option);
       }
