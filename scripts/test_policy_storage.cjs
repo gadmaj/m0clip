@@ -46,7 +46,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
         };
         fixture.raw = async (version, store, id) => {
           const db = await new Promise((resolve, reject) => { const request = indexedDB.open('r1-policy-packs', version); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
-          try { return await new Promise((resolve, reject) => { const request = db.transaction(store).objectStore(store).get(id); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); }); } finally { db.close(); }
+          // Resolve only after the transaction finishes: closing a connection whose read is still committing leaves it open in Chrome, which blocks the next upgrade.
+          try { return await new Promise((resolve, reject) => { const transaction = db.transaction(store), request = transaction.objectStore(store).get(id); transaction.oncomplete = () => resolve(request.result); transaction.onabort = () => reject(transaction.error ?? request.error); }); } finally { db.close(); }
         };
       });
       return { context, page };
