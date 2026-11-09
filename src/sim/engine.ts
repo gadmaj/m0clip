@@ -127,26 +127,38 @@ let wasmDigest: Promise<string | null> = Promise.resolve(null);
 
 const WASM_URL = "/wasm/mujoco.wasm";
 
-/** The wasm binary, if the URL serves one. The cache keys on these exact bytes. */
-async function fetchWasm(): Promise<ArrayBuffer | null> {
+/** One wasm response: `response` streams to the compiler while `bytes`, a copy of the same body,
+ * is hashed. The cache keys on these exact bytes. */
+interface WasmSource { response: Response; bytes: Promise<ArrayBuffer> }
+
+/** The wasm response, unless the URL fails or serves a page (a fixture or misconfigured host);
+ * then the glue loads the binary itself. */
+async function fetchWasm(): Promise<WasmSource | null> {
   try {
     const response = await fetch(WASM_URL, { credentials: "same-origin" });
-    if (!response.ok) return null;
-    const bytes = await response.arrayBuffer(), magic = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength));
-    return magic.length === 4 && magic[0] === 0 && magic[1] === 0x61 && magic[2] === 0x73 && magic[3] === 0x6d ? bytes : null;
+    if (!response.ok || (response.headers.get("content-type") ?? "").includes("text/html")) {
+      void response.body?.cancel();
+      return null;
+    }
+    const bytes = response.clone().arrayBuffer();
+    bytes.catch(() => {});
+    return { response, bytes };
   } catch { return null; }
 }
 
-/** Emscripten's instantiateWasm hook over `bytes`. The glue keeps its options for the module's
- * lifetime, so the hook drops the binary once instantiation has it. */
-function instantiateOnce(bytes: ArrayBuffer, reject: (error: unknown) => void) {
-  let binary: ArrayBuffer | null = bytes;
+/** Emscripten's instantiateWasm hook over `source`: streaming compile, or the copied bytes if the
+ * host's MIME type refuses streaming. The glue keeps its options for the module's lifetime, so
+ * the hook drops the source once instantiation has it. */
+function instantiateOnce(wasm: WasmSource, reject: (error: unknown) => void) {
+  let source: WasmSource | null = wasm;
   return (imports: WebAssembly.Imports,
       receive: (instance: WebAssembly.Instance, module: WebAssembly.Module) => void) => {
-    const source = binary;
-    binary = null;
-    if (!source) throw new Error("The MuJoCo wasm binary was already instantiated.");
-    WebAssembly.instantiate(source, imports).then(({ instance, module }) => receive(instance, module), reject);
+    const current = source;
+    source = null;
+    if (!current) throw new Error("The MuJoCo wasm binary was already instantiated.");
+    WebAssembly.instantiateStreaming(current.response, imports)
+      .catch(() => current.bytes.then(bytes => WebAssembly.instantiate(bytes, imports)))
+      .then(({ instance, module }) => receive(instance, module), reject);
     return {};
   };
 }
@@ -164,20 +176,20 @@ export function mujocoModule(): Promise<MainModule> {
     const nativeImport =
       new Function("u", "return import(u)") as (u: string) =>
         Promise<{ default: (o?: unknown) => Promise<MainModule> }>;
-    const binary = fetchWasm();
-    wasmDigest = binary.then(async bytes => {
-      if (!bytes) return null;
-      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    const wasm = fetchWasm();
+    wasmDigest = wasm.then(async source => {
+      if (!source) return null;
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await source.bytes));
       return Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
     }).catch(() => null);
-    modulePromise = Promise.all([nativeImport("/wasm/mujoco.js"), binary]).then(([mod, bytes]) => {
+    modulePromise = Promise.all([nativeImport("/wasm/mujoco.js"), wasm]).then(([mod, source]) => {
       const options: Record<string, unknown> = {
         locateFile: (p: string) => (p.endsWith(".wasm") ? WASM_URL : p),
       };
-      if (!bytes) return mod.default(options);
-      // Instantiate from the bytes already read; emscripten would otherwise download them again.
+      if (!source) return mod.default(options);
+      // Instantiate from the response already requested; emscripten would otherwise download it again.
       const { promise: failed, reject } = Promise.withResolvers<never>();
-      options.instantiateWasm = instantiateOnce(bytes, reject);
+      options.instantiateWasm = instantiateOnce(source, reject);
       return Promise.race([mod.default(options), failed]);
     });
   }
@@ -187,16 +199,13 @@ export function mujocoModule(): Promise<MainModule> {
 /** Reported by a cached load: `cached` before an MJB loads, `compiling` if that load failed and
  * the scene compiles instead. A plain compile reports nothing. */
 export type ModelCacheStage = 'cached' | 'compiling';
-export interface ModelCacheUse {
-  /** Whether the compile starting now may read or fill the cache. */
-  applies(): boolean;
-  stage(stage: ModelCacheStage): void;
-}
-let modelCache: (ModelCacheUse & { cache: ModelCache }) | undefined;
+/** Called as a compile starts: null keeps it out of the cache, otherwise where its stages go. */
+export type ModelCacheBegin = () => ((stage: ModelCacheStage) => void) | null;
+let modelCache: { cache: ModelCache; begin: ModelCacheBegin } | undefined;
 
 /** Compiles go through `cache` until the returned release is called. */
-export function useModelCache(cache: ModelCache, use: Partial<ModelCacheUse> = {}): () => void {
-  const current = { cache, applies: use.applies ?? (() => true), stage: use.stage ?? (() => {}) };
+export function useModelCache(cache: ModelCache, begin: ModelCacheBegin = () => () => {}): () => void {
+  const current = { cache, begin };
   modelCache = current;
   return () => { if (modelCache === current) modelCache = undefined; };
 }
@@ -233,34 +242,57 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
+/** Stands in for a compile's own MEMFS mount root in its cache key. `<` cannot occur in an MJCF
+ * attribute value, so no authored file text becomes another's. */
+const KEYED_ROOT = '/scenes/<root>';
+
+/** Key material for one input: under `root`, its path and any MJCF reference to the root use
+ * KEYED_ROOT, so the same scene composed under another per-call root has the same key. */
+function keyedInput(path: string, bytes: Uint8Array, root: string | undefined): readonly [string, Uint8Array] {
+  if (!root) return [path, bytes];
+  const prefix = `${root}/`, keyedPath = path.startsWith(prefix) ? KEYED_ROOT + path.slice(root.length) : path;
+  if (!path.endsWith('.xml')) return [keyedPath, bytes];
+  const text = new TextDecoder().decode(bytes);
+  return [keyedPath, text.includes(prefix) ? new TextEncoder().encode(text.replaceAll(prefix, `${KEYED_ROOT}/`)) : bytes];
+}
+
 /** Compile `scene`, or load its cached MJB when every input in `files` (absolute MEMFS paths,
- * the scene included) is byte-identical to a cached compile with the same wasm. A compile is
- * cached only if it read nothing outside `files` and those files did not change meanwhile. */
-async function loadModel(mj: MainModule, scene: string, files: readonly string[]): Promise<MjModel> {
-  const use = modelCache?.applies() ? modelCache : undefined, wasm = use && await wasmDigest;
-  if (!use || !wasm) return mj.MjModel.mj_loadXML(scene);
+ * the scene included) is byte-identical to a cached compile with the same wasm. `root` is this
+ * compile's own mount root, if it has one. A compile is cached only if it opened or checked
+ * nothing outside `files` and those files did not change meanwhile. */
+async function loadModel(mj: MainModule, scene: string, files: readonly string[], root?: string): Promise<MjModel> {
+  const use = modelCache, stage = use?.begin(), wasm = stage && await wasmDigest;
+  if (!use || !stage || !wasm) return mj.MjModel.mj_loadXML(scene);
   let inputs: (readonly [string, Uint8Array])[], key: string;
   try {
     inputs = files.map(path => [path, mj.FS.readFile(path)] as const);
-    key = await modelCacheKey(`${mj.mj_versionString()} ${wasm}`, scene, inputs);
+    key = await modelCacheKey(`${mj.mj_versionString()} ${wasm}`, keyedInput(scene, new Uint8Array(), root)[0],
+      inputs.map(([path, bytes]) => keyedInput(path, bytes, root)));
   } catch { return mj.MjModel.mj_loadXML(scene); }
   const cached = await use.cache.get(key);
   if (cached) {
-    use.stage('cached');
+    stage('cached');
     try { return loadBinary(mj, cached); } catch { await use.cache.remove(key); }
-    use.stage('compiling');
+    stage('compiling');
   }
-  const fs = mj.FS as unknown as { open: (...args: unknown[]) => { path: string } };
-  const open = fs.open, opened = new Set<string>();
+  // MuJoCo's asset cache re-checks an unchanged file with stat alone, so both are traced.
+  const fs = mj.FS as unknown as { open: (...args: unknown[]) => { path: string };
+    stat: (path: string, ...args: unknown[]) => unknown; lookupPath: (path: string) => { path: string } };
+  const { open, stat } = fs, read = new Set<string>();
   fs.open = function (this: unknown, ...args: unknown[]) {
     const stream = open.apply(this, args);
-    opened.add(stream.path);
+    read.add(stream.path);
     return stream;
   };
+  fs.stat = function (this: unknown, path: string, ...args: unknown[]) {
+    const result = stat.call(this, path, ...args);
+    try { read.add(fs.lookupPath(path).path); } catch { read.add(path); }
+    return result;
+  };
   let model: MjModel;
-  try { model = mj.MjModel.mj_loadXML(scene); } finally { fs.open = open; }
+  try { model = mj.MjModel.mj_loadXML(scene); } finally { fs.open = open; fs.stat = stat; }
   const keyed = new Set(files);
-  if (model && [...opened].every(path => keyed.has(path))) {
+  if (model && [...read].every(path => keyed.has(path))) {
     try {
       if (inputs.every(([path, bytes]) => sameBytes(mj.FS.readFile(path), bytes))) void use.cache.put(key, saveBinary(mj, model));
     } catch { /* An input vanished or the model could not be saved: nothing is cached. */ }
@@ -548,7 +580,7 @@ export class Engine implements EngineScope {
     await mountBundle(mj.FS, "/work", modelDir, `${scene}.manifest.json`, manifest.files,
       manifest.gzipFiles ? new Set(manifest.gzipFiles) : undefined, transformXml);
     return Engine.compileWork(mj, `/work/${bundle.scene}`, bundle.extra, bundle.modelDir,
-      manifest.files.map(rel => `/work/${rel}`));
+      { files: manifest.files.map(rel => `/work/${rel}`) });
   }
 
   /** Compile the world with every slot robot attached under its `${id}/` prefix. The world is the
@@ -623,7 +655,7 @@ export class Engine implements EngineScope {
       if (base === null) mkdirTree(mj.FS, mountRoot);
       if (attached.length || base === null) mj.FS.writeFile(scenePath, world!);
       return await Engine.compileWork(mj, scenePath, plan.base === null ? plan.extra : plan.base.extra,
-        base === null ? null : base.modelDir, inputs, model => [
+        base === null ? null : base.modelDir, { files: inputs, root: mountRoot }, model => [
           ...(primary ? [describeEntity(mj, model, primary.slot, '', primary.rootBody, NO_OPTIONS)] : []),
           ...attached.map(a => describeEntity(mj, model, a.slot, a.prefix, a.rootBody, a.ignoredOptions)),
         ]);
@@ -635,17 +667,17 @@ export class Engine implements EngineScope {
     }
   }
 
-  /** Mount the map, compile `scene` (an absolute MEMFS path) and wrap it. `inputs` are the absolute
-   * MEMFS paths written for this compile; the map's files are added here. Local map files are
-   * removed either way. */
+  /** Mount the map, compile `scene` (an absolute MEMFS path) and wrap it. `inputs.files` are the
+   * absolute MEMFS paths written for this compile, the map's are added here; `inputs.root` is the
+   * compile's own mount root, if any. Local map files are removed either way. */
   private static async compileWork(mj: MainModule, scene: string, extra: PreparedExtra | undefined,
-      modelDir: string | null, inputs: readonly string[],
+      modelDir: string | null, inputs: { files: readonly string[]; root?: string },
       entities: (model: MjModel) => SceneEntity[] = () => []): Promise<Engine> {
     try {
       if (extra) await Engine.mountExtra(mj, extra);
-      console.log(`[engine] bundle written (${inputs.length} files), compiling`);
-      const files = [...new Set([scene, ...inputs, ...(extra?.manifest.files.map(rel => `${extra.mount}/${rel}`) ?? [])])];
-      const model = await loadModel(mj, scene, files);
+      console.log(`[engine] bundle written (${inputs.files.length} files), compiling`);
+      const files = [...new Set([scene, ...inputs.files, ...(extra?.manifest.files.map(rel => `${extra.mount}/${rel}`) ?? [])])];
+      const model = await loadModel(mj, scene, files, inputs.root);
       if(!model)throw new Error('MuJoCo could not compile the selected scene.');
       let data: MjData | undefined;
       try {

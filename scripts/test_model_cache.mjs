@@ -25,11 +25,18 @@ const file=resolve('node_modules/.cache/model-cache-test.mjs');await mkdir(resol
 await writeFile(file,built.outputFiles[0].text.replaceAll('"/wasm/mujoco.js"',JSON.stringify(pathToFileURL(join(pub,'wasm/mujoco.js')).href)));
 const {Engine,mujocoModule,useModelCache,ModelCache,IndexedDbModelStore,modelCacheKey,lruEvictions,terrainTransform,mapSource,getSpec}=await import(pathToFileURL(file));
 
-/** A ModelStore in memory, cloning bodies as IndexedDB does. */
+/** A ModelStore in memory, cloning bodies as IndexedDB does. A write past `quota` aborts whole. */
 class MemoryStore{
   entries=new Map();bodies=new Map();
+  constructor(quota=Infinity){this.quota=quota;}
   async read(key){const entry=this.entries.get(key),body=this.bodies.get(key);return entry&&body?{entry:{...entry},body:body.slice()}:undefined;}
-  async write(entry,body,evict){for(const key of evict([...this.entries.values()].map(e=>({...e})))){this.entries.delete(key);this.bodies.delete(key);}this.entries.set(entry.key,{...entry});this.bodies.set(entry.key,body.slice());}
+  async write(entry,body,evict){
+    const evicted=new Set(evict([...this.entries.values()].map(e=>({...e}))));
+    let total=body.byteLength;for(const [key,stored] of this.bodies)if(!evicted.has(key)&&key!==entry.key)total+=stored.byteLength;
+    if(total>this.quota)throw new DOMException('The quota has been exceeded.','QuotaExceededError');
+    for(const key of evicted){this.entries.delete(key);this.bodies.delete(key);}
+    this.entries.set(entry.key,{...entry});this.bodies.set(entry.key,body.slice());
+  }
   async touch(key,used){const entry=this.entries.get(key);if(entry)entry.used=used;}
   async remove(key){this.entries.delete(key);this.bodies.delete(key);}
   get total(){let sum=0;for(const body of this.bodies.values())sum+=body.byteLength;return sum;}
@@ -41,8 +48,10 @@ mj.MjModel.mj_loadBinary=function(...args){calls.binary++;return mj_loadBinary.a
 let clock=0,applies=true;const stages=[];
 function use(store,maxBytes){
   const cache=new ModelCache(store,maxBytes,()=>++clock);
-  return {cache,release:useModelCache(cache,{applies:()=>applies,stage:stage=>stages.push(stage)})};
+  return {cache,release:useModelCache(cache,()=>applies?stage=>stages.push(stage):null)};
 }
+/** The model's MJB bytes, saved the way the engine saves them. */
+function mjbOf(model){mj.mj_saveModel(model,'/test-model.mjb',null);try{return Buffer.from(mj.FS.readFile('/test-model.mjb'));}finally{mj.FS.unlink('/test-model.mjb');}}
 const sceneXml=(name,xml)=>xml;
 async function compile(cache,transform=sceneXml){
   calls.xml=calls.binary=0;stages.length=0;
@@ -67,6 +76,30 @@ for(const changed of [
   modelCacheKey('rt','/w/scene.xml',[base[0],['/w/b.stl',new Uint8Array([4,5])]]),
   modelCacheKey('rt','/w/scene.xml',[base[0]]),
 ])assert.notEqual(await changed,k0);
+
+{ // MuJoCo's asset cache re-checks an unchanged file with stat alone. A compile that stat-ed a file
+  // outside its inputs is never stored, so swapping that file can never load a stale model. Runs
+  // first, while the asset cache holds only this file.
+  const store=new MemoryStore(),{cache,release}=use(store),stray='/work/stray.STL';
+  const withStray=(name,text)=>name==='scene.xml'
+    ?text.replace('</mujoco>',`<asset><mesh name="stray" file="${stray}"/></asset><worldbody><body pos="3 3 1"><geom type="mesh" mesh="stray"/></body></worldbody></mujoco>`):text;
+  const opens=new Map(),open=mj.FS.open;
+  mj.FS.open=function(...args){const stream=open.apply(this,args);opens.set(stream.path,(opens.get(stream.path)??0)+1);return stream;};
+  try{
+    try{mj.FS.mkdir('/work');}catch{/* Already mounted. */}
+    mj.FS.writeFile(stray,await readFile(join(pub,'assets/models/r1/meshes/head_yaw_link.STL')));
+    applies=false;const warm=await compile(cache,withStray);applies=true;warm.engine.dispose();
+    opens.clear();
+    const traced=await compile(cache,withStray);
+    assert.deepEqual([traced.xml,traced.binary],[1,0]);assert.equal(store.entries.size,0,'a compile that read an unkeyed file is not stored');
+    assert.equal(opens.get(stray)??0,0,'the second compile only stat-ed the unchanged stray file');
+    const ngeom=traced.engine.model.ngeom;traced.engine.dispose();
+    mj.FS.writeFile(stray,await readFile(join(pub,'assets/models/r1/meshes/left_elbow_link.STL')));
+    const swapped=await compile(cache,withStray);
+    assert.deepEqual([swapped.xml,swapped.binary],[1,0],'the swapped file compiles; nothing stale is loaded');
+    assert.equal(swapped.engine.model.ngeom,ngeom);swapped.engine.dispose();
+  }finally{mj.FS.open=open;try{mj.FS.unlink(stray);}catch{}release();}
+}
 
 // Without a cache: the reference compile.
 const reference=await compile(null);
@@ -121,6 +154,40 @@ const referenceShape=shape(reference.engine.model),referenceQpos=qposAfter(refer
     assert.ok(qposAfter(undecodable.engine).equals(referenceQpos));undecodable.engine.dispose();
     assert.equal(store.entries.get(entry.key).sha256,entry.sha256,'the undecodable entry was replaced');
   }finally{release();}
+}
+
+{ // Composed worlds mount under a new /scenes/N root per call; identical compositions still hit.
+  const store=new MemoryStore(),{cache,release}=use(store);
+  const world=async slots=>{calls.xml=calls.binary=0;stages.length=0;
+    const engine=await Engine.createScene({slots});await cache.idle();return {engine,xml:calls.xml,binary:calls.binary,stages:[...stages]};};
+  try{
+    const empty=[await world([]),await world([]),await world([])];
+    assert.deepEqual(empty.map(run=>[run.xml,run.binary]),[[1,0],[0,1],[0,1]],'an empty Player world compiles once');
+    assert.equal(store.entries.size,1);
+    for(const run of empty)run.engine.dispose();
+    const slots=[{id:'a',robot:getSpec('r1')}];
+    const first=await world(slots),second=await world(slots);
+    assert.deepEqual([first.xml,first.binary,second.xml,second.binary,second.stages],[1,0,0,1,['cached']]);
+    assert.equal(store.entries.size,2);
+    assert.deepEqual(second.engine.entities,first.engine.entities,'entities describe the cached model identically');
+    // The model compiled under another root is byte-identical to the cached one: the root is not part of it.
+    applies=false;const fresh=await world(slots);applies=true;
+    assert.equal(fresh.xml,1);assert.ok(mjbOf(fresh.engine.model).equals(mjbOf(second.engine.model)));
+    assert.ok(qposAfter(second.engine).equals(qposAfter(fresh.engine)));
+    const other=await world([{id:'b',robot:getSpec('r1')}]);
+    assert.deepEqual([other.xml,other.binary],[1,0],'another slot id is another scene');
+    for(const run of [first,second,fresh,other])run.engine.dispose();
+  }finally{release();}
+}
+
+{ // Quota: one retry evicts every other entry in the same write; a refused retry keeps them all.
+  const store=new MemoryStore(10),cache=new ModelCache(store,100,()=>++clock),body=n=>new Uint8Array(n).fill(n);
+  assert.equal(await cache.put('a',body(4)),true);assert.equal(await cache.put('b',body(4)),true);
+  assert.equal(await cache.put('c',body(8)),true,'the retry made room');
+  assert.deepEqual([...store.entries.keys()],['c']);
+  assert.equal(await cache.put('d',body(2)),true);
+  assert.equal(await cache.put('e',body(12)),false,'beyond the quota even alone');
+  assert.deepEqual([...store.entries.keys()].sort(),['c','d'],'a refused retry left the entries in place');
 }
 
 { // Size cap: least recently used entries go first; the total never exceeds the cap.

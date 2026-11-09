@@ -73,13 +73,20 @@ export class ModelCache {
   }
 
   /** Store `body` under `key`, evicting least recently used entries to stay within `maxBytes`.
-   * Runs in the background; false when the body is too large or storage refused it. */
+   * If the browser's quota refuses it, one retry evicts every other entry in the same transaction,
+   * so a refused retry leaves them all in place. Runs in the background; false when the body is
+   * too large or storage refused it. */
   put(key: string, body: Uint8Array): Promise<boolean> {
     const write = (async () => {
       if (body.byteLength > this.maxBytes) return false;
       try {
         const entry: StoredModel = { key, bytes: body.byteLength, sha256: await sha256(body), used: this.now() };
-        await this.store.write(entry, body, entries => lruEvictions(entries, key, body.byteLength, this.maxBytes));
+        try {
+          await this.store.write(entry, body, entries => lruEvictions(entries, key, body.byteLength, this.maxBytes));
+        } catch (error) {
+          if ((error as { name?: unknown } | null)?.name !== 'QuotaExceededError') throw error;
+          await this.store.write(entry, body, entries => entries.map(other => other.key).filter(other => other !== key));
+        }
         return true;
       } catch { return false; }
     })();
