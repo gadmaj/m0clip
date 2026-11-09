@@ -611,7 +611,7 @@ export class SourceFileSystem {
     if (!resource) {
       if (this.ownedResources >= this.limits.maxResources) fail('import retained resource count limit exceeded');
       const reserved = entry.bytes + (entry.workingBytes ?? Math.min(blockSize, entry.bytes));
-      if (!Number.isSafeInteger(reserved) || reserved > this.limits.maxTotalResourceBytes - this.ownedBytes) fail(`import resource ownership byte limit exceeded: ${canonical} needs ${reserved} bytes with ${this.limits.maxTotalResourceBytes - this.ownedBytes} of ${this.limits.maxTotalResourceBytes} left`);
+      if (!Number.isSafeInteger(reserved) || reserved > this.limits.maxTotalResourceBytes - this.ownedBytes) fail(`import resource ownership byte limit exceeded: ${canonical} needs ${reserved} bytes with ${this.limits.maxTotalResourceBytes - this.ownedBytes} of ${this.limits.maxTotalResourceBytes} left${entry.inflates ? '; store it uncompressed in the archive' : ''}`);
       this.ownedBytes += reserved;
       this.ownedResources++;
       const controller = new AbortController();
