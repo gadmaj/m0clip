@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from source_models import StudioModel, qangle
+from source_models import StudioModel, entity_props, qangle
 
 
 class SourceModelTests(unittest.TestCase):
@@ -43,6 +43,17 @@ class SourceModelTests(unittest.TestCase):
             def read(self, path): return {'.mdl': mdl, '.vvd': vvd, '.vtx': vtx}[Path(path).suffix]
         with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
             StudioModel(FS(), 'models/test.mdl')
+
+    def test_entity_baseline_visibility(self):
+        # Rise's hop_takeoff is StartDisabled over hop_idle at the same origin; only the idle copy draws.
+        frog = dict(classname='prop_dynamic', model='models/nt/props_vehicles/rabbitfrog_dynamic.mdl', origin='760.402 -270.006 -223.232')
+        ents = [dict(frog, StartDisabled='1', DefaultAnim='takeoff_A'), dict(frog, DefaultAnim='idle'),
+                dict(frog, startdisabled='0'), dict(frog, rendermode='10'), dict(frog, rendermode='6'),
+                dict(frog, rendermode='1', renderamt='0'), dict(frog, rendermode='0', renderamt='0'),
+                dict(frog, rendermode='1', renderamt='256'), dict(classname='info_target', origin='0 0 0')]
+        props = entity_props(dict(ents=ents))
+        self.assertEqual([p.baseline_visible for p in props], [False, True, True, False, False, False, True, False])
+        self.assertEqual(props[0].animation, 'takeoff_A')
 
     def test_ghost_export_inventory(self):
         path = Path(__file__).resolve().parent.parent / 'public/assets/maps/nt_ghost_ctg/props-report.json'

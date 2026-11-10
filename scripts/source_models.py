@@ -40,6 +40,7 @@ class Prop:
     classname: str = 'prop_static'
     animation: str = ''
     leaves: tuple[int, ...] = ()
+    baseline_visible: bool = True
 
 
 def static_props(bsp) -> list[Prop]:
@@ -72,6 +73,21 @@ def static_props(bsp) -> list[Prop]:
     return []
 
 
+def entity_value(e, key: str, default: str = '') -> str:
+    """Source KeyValues keys are case-insensitive (StartDisabled and startdisabled)."""
+    return next((v for k, v in e.items() if k.lower() == key), default)
+
+
+def baseline_visible(e) -> bool:
+    """Initial entity draw state, as raw-source-props' baselineVisible: StartDisabled and
+    rendermode none/environmental never draw; another non-normal mode at zero alpha is invisible."""
+    def number(key: str, default: float) -> float:
+        text = entity_value(e, key).strip()
+        return float(text) if text else default
+    mode = int(number('rendermode', 0))
+    return number('startdisabled', 0) == 0 and mode not in (6, 10) and (mode == 0 or int(number('renderamt', 255)) & 255 != 0)
+
+
 def entity_props(m) -> list[Prop]:
     result = []
     for e in m['ents']:
@@ -80,7 +96,8 @@ def entity_props(m) -> list[Prop]:
         result.append(Prop(e['model'].lower().replace('\\', '/'), vector('origin'), vector('angles'),
             skin=int(e.get('skin', '0')), body=int(e.get('body', '0')),
             scale=float(e.get('modelscale', '1')), solid=int(e.get('solid', '6')),
-            cast_shadow=e.get('disableshadows', '0') != '1', classname=e['classname'], animation=e.get('DefaultAnim', '')))
+            cast_shadow=e.get('disableshadows', '0') != '1', classname=e['classname'], animation=e.get('DefaultAnim', ''),
+            baseline_visible=baseline_visible(e)))
     return result
 
 

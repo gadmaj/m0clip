@@ -45,6 +45,7 @@ import { sourceMapPropView, type MapSource, type SourceMapPropView } from '../ma
 import { PlayerView } from './player/view';
 import { PLAYER_VIEWMODEL_LAYER } from './player/viewmodel';
 import { SourceAnimations } from './source-animations';
+import { applySourceBaseline } from './source-baseline';
 import { clampSourceTime } from './source-clock';
 import { SourceProps, type SourcePropView } from './source-props';
 export interface PreparedTerrainVisual { commit(): void; dispose(): void }
@@ -1512,6 +1513,7 @@ export class SceneView {
     const [gltf, propGltf, visibilityData, mapManifest, grading, sourceStyles, ambientData] = await Promise.all(work).catch(async error=>{await Promise.allSettled(work);throw error;});
     report('preparing materials', 0, 0);
     if (!current()) throw new DOMException('Map loading cancelled.','AbortError');
+    applySourceBaseline(source.isLocal ? null : source.id, propGltf ? [gltf, propGltf] : [gltf]);
     const animations = gltf.animations.length || propGltf?.animations.length
       ? context.own(new SourceAnimations(propGltf ? [gltf, propGltf] : [gltf])) : null;
     const level = propView?.levelScreenFade, viewer = this.sourcePropView.viewScreenFade;
