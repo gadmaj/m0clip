@@ -291,15 +291,17 @@ def convert(map_dir: Path, bsp, fs, workers=8):
                                    indices=attr['indices'], material=materials[model.material(mesh, prop.skin)]))
             triangles += len(mesh.triangles)
         if not primitives: continue
+        # Initially disabled entities stay in the document but never draw: the viewer
+        # does not run the map logic that would enable them (source-baseline.ts).
         extras = dict(sourceProp=prop.model, sourceClass=prop.classname, sourceStaticIndex=prop.static_index,
                       castShadow=prop.cast_shadow, skin=prop.skin, body=prop.body, solid=prop.solid,
                       sourceLighting=dict(cube=cache[0].tolist(), lights=cache[1]),
                       sourceCubeFaces=full_materials.nearest_cube(light_origin), sourceOrigin=origin.tolist(),
-                      sourceYaw=manifest['spawn_yaw'])
+                      sourceYaw=manifest['spawn_yaw'], sourceBaselineVisible=prop.baseline_visible)
         node = glb.node(f'{prop.classname}:{i}:{Path(prop.model).stem}', primitives, transform, extras)
         if animation: glb.skin(node, *animation)
         restored.append(dict(index=i, model=prop.model, classname=prop.classname,
-                             position=transform[:3, 3].tolist(), source_origin=prop.origin.tolist()))
+                             position=transform[:3, 3].tolist(), source_origin=prop.origin.tolist(), visible=prop.baseline_visible))
         if i % 250 == 0: print(f'  props {i+1}/{len(props)}', file=sys.stderr, flush=True)
     brush_count = brush_triangles = 0
     if brush_faces:
@@ -346,7 +348,8 @@ def convert(map_dir: Path, bsp, fs, workers=8):
     extras_report = export_extras(glb, full_materials, m, rotation, origin)
     extras_report['detail_sprites'] = export_details(glb, full_materials, bsp, m, rotation, origin)
     report = dict(**extras_report, requested=len(props), restored=len(restored), static=sum(p['classname']=='prop_static' for p in restored),
-                  entities=sum(p['classname']!='prop_static' for p in restored), unique_models=len(models),
+                  entities=sum(p['classname']!='prop_static' for p in restored), initially_hidden=sum(not p['visible'] for p in restored),
+                  unique_models=len(models),
                   triangles=triangles, materials=len(material_names), textured=len(textures),
                   detail_materials=sum('detailIndex' in r.get('extras', {}).get('sourceMaterial', {}) for r in glb.json['materials']),
                   missing_models=failures, missing_textures=[n for n in material_names if n not in textures],
