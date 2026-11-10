@@ -1,15 +1,20 @@
 /** Initially disabled Source props never draw: one renderable per animated map object.
  * node scripts/test_source_baseline.mjs [--maps public/assets/maps] [--bsp assets/bsp-cache]
  * --maps checks every converted map document the viewer loads; --bsp additionally
- * proves the released-data table equals the BSP entity lumps' disabled studio models. */
+ * proves the released-data table equals the BSP entity lumps' studio models that stay
+ * disabled after map start, using the raw-source importer's own map-start rule. */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { build } from 'esbuild';
 import * as THREE from 'three';
 
-const result = await build({ entryPoints: ['src/render/source-baseline.ts'], bundle: true, platform: 'node', format: 'esm', write: false });
-const { applySourceBaseline } = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'));
+const bundle = async entry => {
+  const result = await build({ entryPoints: [entry], bundle: true, platform: 'node', format: 'esm', write: false, external: ['three'] });
+  return import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'));
+};
+const { applySourceBaseline } = await bundle('src/render/source-baseline.ts');
+const { sourceStartupInputs, sourceInitiallyDisabled } = await bundle('src/maps/raw-source-props.ts');
 const option = name => { const i = process.argv.indexOf(name); return i < 0 ? undefined : process.argv[i + 1]; };
 
 const FROG = 'models/nt/props_vehicles/rabbitfrog_dynamic.mdl';
@@ -30,7 +35,24 @@ const visible = (document, name) => {
   return found;
 };
 
-// Rise: hop_takeoff (StartDisabled) shares hop_idle's origin and model; hopperland is disabled alone.
+// Raw-source importer: StartDisabled props stay disabled unless logic_auto enables them at map start.
+{
+  const entity = pairs => ({ pairs, values: Object.fromEntries(pairs) });
+  const frog = (name, extra = [['StartDisabled', '1']]) => entity([['classname', 'prop_dynamic'], ['targetname', name], ['model', FROG], ...extra]);
+  const entities = [
+    frog('hop_takeoff'), frog('hop_idle', []), frog('hopperland'), frog('Bounced'), frog('spawned'), frog('wild'), frog('never'), frog('relayed'),
+    entity([['classname', 'logic_auto'], ['OnNewGame', 'hop_takeoff,Enable,,10,1'], ['OnNewGame', 'HopperLand,Enable,,0,1'],
+      ['OnMapSpawn', 'bounced\x1bTurnOn\x1b\x1b0\x1b-1'], ['OnMapSpawn', 'bounced,TurnOff,,0,-1'], ['onmapspawn', 'spawned,TurnOn,,,'],
+      ['OnNewGame', 'wil*,Enable,,0,1'], ['OnNewGame', 'never,Enable,,0,0'], ['OnLoadGame', 'never,Enable,,0,1']]),
+    entity([['classname', 'logic_relay'], ['OnTrigger', 'relayed,Enable,,0,1']]),
+  ];
+  const startup = sourceStartupInputs(entities);
+  assert.deepEqual([...startup], [['hopperland', ['enable']], ['bounced', ['turnon', 'turnoff']], ['spawned', ['turnon']]]);
+  assert.deepEqual(entities.slice(0, 8).map(e => sourceInitiallyDisabled(e, startup)), [true, false, false, true, false, true, true, true]);
+}
+
+// Rise: hop_takeoff (StartDisabled, enabled after 10 s) shares hop_idle's origin and model;
+// hopperland is StartDisabled but enabled at delay 0, so the released-data table omits it.
 const rise = (extra = {}) => documentOf([
   { name: 'prop_static:3:crate', extras: { sourceProp: 'models/crate.mdl', sourceClass: 'prop_static', ...extra }, position: [20.43245596, -2.511551999999999, 0.019507200000000016] },
   { name: 'prop_dynamic:813:rabbitfrog_dynamic', extras: { sourceProp: FROG, sourceClass: 'prop_dynamic', ...extra },
@@ -42,9 +64,9 @@ const rise = (extra = {}) => documentOf([
 ]);
 {
   const document = rise();
-  assert.equal(applySourceBaseline('nt_rise_ctg', [document]), 2);
+  assert.equal(applySourceBaseline('nt_rise_ctg', [document]), 1);
   assert.equal(visible(document, 'prop_dynamic:847:rabbitfrog_dynamic'), false, 'disabled take-off copy is hidden');
-  assert.equal(visible(document, 'prop_dynamic:813:rabbitfrog_dynamic'), false, 'disabled landing copy is hidden');
+  assert.equal(visible(document, 'prop_dynamic:813:rabbitfrog_dynamic'), true, 'landing craft enabled at map start stays');
   assert.equal(visible(document, 'prop_dynamic:848:rabbitfrog_dynamic'), true, 'idle twin stays');
   assert.equal(visible(document, 'prop_static:3:crate'), true);
 }
@@ -129,10 +151,13 @@ function doubled(document) {
       pairs.push([roots[i].userData.name, roots[j].userData.name]);
   return pairs;
 }
-/** Entity KeyValues in lump order, with Python dict(pairs) last-key-wins semantics. */
+/** Raw-source SourceEntity records: ordered pairs (outputs included), last key wins in values. */
 function bspEntities(bytes) {
   const offset = bytes.readInt32LE(8), length = bytes.readInt32LE(12), text = bytes.subarray(offset, offset + length).toString('latin1');
-  return [...text.matchAll(/\{([^}]*)\}/g)].map(block => Object.fromEntries([...block[1].matchAll(/"([^"]*)"\s+"([^"]*)"/g)].map(m => [m[1], m[2]])));
+  return [...text.matchAll(/\{([^}]*)\}/g)].map(block => {
+    const pairs = [...block[1].matchAll(/"([^"]*)"\s+"([^"]*)"/g)].map(m => [m[1], m[2]]);
+    return { pairs, values: Object.fromEntries(pairs) };
+  });
 }
 function staticPropCount(bytes) {
   const offset = bytes.readInt32LE(8 + 35 * 16), lumps = bytes.readInt32LE(offset);
@@ -145,13 +170,14 @@ function staticPropCount(bytes) {
   }
   return 0;
 }
-const value = (entity, key) => Object.entries(entity).find(([name]) => name.toLowerCase() === key)?.[1]?.trim() || undefined;
-const baselineVisible = entity => {
+const value = (entity, key) => Object.entries(entity.values).find(([name]) => name.toLowerCase() === key)?.[1]?.trim() || undefined;
+/** The converters' baseline rule, with the raw-source importer's own map-start inputs. */
+const baselineVisible = (entity, startup) => {
   const mode = Math.trunc(Number(value(entity, 'rendermode') ?? 0));
-  return Number(value(entity, 'startdisabled') ?? 0) === 0 && mode !== 6 && mode !== 10 && (mode === 0 || (Math.trunc(Number(value(entity, 'renderamt') ?? 255)) & 255) !== 0);
+  return !sourceInitiallyDisabled(entity, startup) && mode !== 6 && mode !== 10 && (mode === 0 || (Math.trunc(Number(value(entity, 'renderamt') ?? 255)) & 255) !== 0);
 };
 
-let documents = 0, hiddenTotal = 0, doubledBefore = 0;
+let documents = 0, hiddenTotal = 0, doubledBefore = 0, startupEnabled = 0;
 for (const id of readdirSync(maps).sort()) {
   const manifestFile = join(maps, id, 'manifest.json');
   if (!existsSync(manifestFile)) continue;
@@ -166,12 +192,21 @@ for (const id of readdirSync(maps).sort()) {
   if (!bsps) continue;
   const bsp = join(bsps, `z.noclip.website_NeoTokyo_NeotokyoSource_maps_${id}.bsp`);
   assert(existsSync(bsp), `${id}: BSP missing from --bsp`);
-  const bytes = readFileSync(bsp), base = staticPropCount(bytes);
-  const expected = bspEntities(bytes).filter(entity => (entity.model ?? '').toLowerCase().endsWith('.mdl'))
-    .flatMap((entity, k) => baselineVisible(entity) ? [] : [`${entity.classname}:${base + k}:${entity.model.toLowerCase().replaceAll('\\', '/').split('/').pop().slice(0, -4)}`]);
+  const bytes = readFileSync(bsp), base = staticPropCount(bytes), entities = bspEntities(bytes), startup = sourceStartupInputs(entities);
+  const models = entities.filter(entity => (entity.values.model ?? '').toLowerCase().endsWith('.mdl'))
+    .map((entity, k) => ({ entity, node: `${entity.values.classname}:${base + k}:${entity.values.model.toLowerCase().replaceAll('\\', '/').split('/').pop().slice(0, -4)}` }));
+  const expected = models.filter(({ entity }) => !baselineVisible(entity, startup)).map(({ node }) => node);
   const actual = after.scene.children.filter(object => !object.visible).map(object => object.userData.name);
-  assert.deepEqual(actual.sort(), expected.sort(), `${id}: hidden placements equal the BSP's disabled studio entities`);
+  assert.deepEqual(actual.sort(), expected.sort(), `${id}: hidden placements equal the BSP's studio entities disabled after map start`);
+  // StartDisabled props logic_auto enables at delay 0 (landing craft, Bullet's train) must draw.
+  for (const { entity, node } of models) {
+    if (Number(value(entity, 'startdisabled') ?? 0) === 0 || sourceInitiallyDisabled(entity, startup)) continue;
+    const object = after.scene.children.find(child => child.userData.name === node);
+    assert(object?.visible, `${id}: ${node} is enabled at map start and must stay visible`);
+    startupEnabled++;
+  }
 }
 assert(documents > 0, 'no converted map documents found');
 assert(doubledBefore > 0, 'the released data is expected to contain doubled animated placements before the baseline');
-console.log(`converted map data: ${documents} documents, ${doubledBefore} doubled animated pairs before, ${hiddenTotal} disabled placements hidden${bsps ? ', table equals BSP entity lumps' : ''}: ok`);
+if (bsps) assert.equal(startupEnabled, 7, 'Bullet timer and six hopperland craft are enabled at map start');
+console.log(`converted map data: ${documents} documents, ${doubledBefore} doubled animated pairs before, ${hiddenTotal} disabled placements hidden${bsps ? `, ${startupEnabled} map-start-enabled kept visible, table equals BSP entity lumps` : ''}: ok`);

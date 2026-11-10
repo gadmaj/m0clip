@@ -35,6 +35,7 @@ export interface SourcePropPlacement {
 }
 export interface SourceEntityRender {
   mode: number; effect: number; color: SourceModelVector; amount: number;
+  /** StartDisabled after logic_auto's undelayed map-start inputs (sourceStartupInputs). */
   initiallyDisabled: boolean; renderFx: string; castShadow: boolean; receiveShadow: boolean;
 }
 export interface SourceEntityAnimation {
@@ -112,7 +113,38 @@ function integer(values: Readonly<Record<string,string>>,key:string,fallback:num
 function entityAngles(e: Readonly<Record<string,string>>): SourceModelVector {
   if(e.angles)return vector(e,'angles');const yaw=scalar(e,'angle',0);return yaw===-1?[-90,0,0]:yaw===-2?[90,0,0]:[0,yaw,0];
 }
-function entityRender(entity: SourceEntity): SourceEntityRender {
+/** Inputs that logic_auto sends at map start (OnMapSpawn/OnNewGame, no delay), in
+ * authored order, keyed by lower-case target. NeoTokyo enables its StartDisabled
+ * landing craft and skybox train this way; delayed take-off copies are not enabled.
+ * Wildcard and contextual targets are not resolved. scripts/source_models.py mirrors this. */
+export function sourceStartupInputs(entities: readonly SourceEntity[]): Map<string, string[]> {
+  const inputs = new Map<string, string[]>();
+  for (const entity of entities) {
+    if (entity.values.classname !== 'logic_auto') continue;
+    for (const [key, value] of entity.pairs) {
+      if (!['onmapspawn', 'onnewgame'].includes(key.toLowerCase())) continue;
+      const parts = value.includes('\x1b') ? value.split('\x1b') : value.includes('\\x1b') ? value.split('\\x1b') : value.split(',');
+      if (parts.length !== 5) continue;
+      const target = parts[0].trim().toLowerCase(), action = parts[1].trim().toLowerCase();
+      const delay = Number(parts[3].trim() || 0), times = Number(parts[4].trim() || -1);
+      if (!target || target.includes('*') || target.startsWith('!') || !(delay <= 0) || times === 0) continue;
+      const actions = inputs.get(target);
+      if (actions) actions.push(action); else inputs.set(target, [action]);
+    }
+  }
+  return inputs;
+}
+/** StartDisabled, then Enable/TurnOn and Disable/TurnOff map-start inputs in order. */
+export function sourceInitiallyDisabled(entity: SourceEntity, startup: ReadonlyMap<string, readonly string[]>): boolean {
+  const e = entity.values;
+  let disabled = scalar(e, 'StartDisabled', scalar(e, 'startdisabled', 0)) !== 0;
+  for (const action of e.targetname ? startup.get(e.targetname.toLowerCase()) ?? [] : []) {
+    if (action === 'enable' || action === 'turnon') disabled = false;
+    else if (action === 'disable' || action === 'turnoff') disabled = true;
+  }
+  return disabled;
+}
+function entityRender(entity: SourceEntity, startup: ReadonlyMap<string, readonly string[]>): SourceEntityRender {
   const e=entity.values,color:SourceModelVector=[255,255,255];let amount=255;
   // Source applies both color32 and renderamt to the same alpha byte in key order.
   for(const [key,text] of entity.pairs){
@@ -127,7 +159,7 @@ function entityRender(entity: SourceEntity): SourceEntityRender {
       amount=Math.trunc(value)&255;
     }
   }
-  return {mode:integer(e,'rendermode',0),effect:integer(e,'renderfx',0),color,amount,initiallyDisabled:scalar(e,'StartDisabled',scalar(e,'startdisabled',0))!==0,renderFx:e.renderfx??'',castShadow:scalar(e,'disableshadows',0)===0,receiveShadow:scalar(e,'disablereceiveshadows',0)===0};
+  return {mode:integer(e,'rendermode',0),effect:integer(e,'renderfx',0),color,amount,initiallyDisabled:sourceInitiallyDisabled(entity,startup),renderFx:e.renderfx??'',castShadow:scalar(e,'disableshadows',0)===0,receiveShadow:scalar(e,'disablereceiveshadows',0)===0};
 }
 const staticRender=():SourceEntityRender=>({mode:0,effect:0,color:[255,255,255],amount:255,initiallyDisabled:false,renderFx:'',castShadow:true,receiveShadow:true});
 
@@ -318,8 +350,9 @@ export async function readSourceProps(world: SourceWorld, filesystem: Pick<Sourc
     if(!targetMap){targetMap=new Map();for(const other of world.bsp.entities){const name=other.values.targetname;if(name!==undefined&&!targetMap.has(name))targetMap.set(name,other);}}
     return targetMap;
   };
+  const startup=sourceStartupInputs(world.bsp.entities);
   for(let i=0;i<world.bsp.entities.length;i++){
-    const entity=world.bsp.entities[i],e=entity.values,classname=e.classname??'',origin=vector(e,'origin'),angles=entityAngles(e),render=entityRender(entity),model=e.model??'';
+    const entity=world.bsp.entities[i],e=entity.values,classname=e.classname??'',origin=vector(e,'origin'),angles=entityAngles(e),render=entityRender(entity,startup),model=e.model??'';
     const kind:SourceEntityVisual['kind']=model.toLowerCase().endsWith('.mdl')?'studio-model':model.startsWith('*')?'brush':/sprite|glow/.test(classname)?'sprite':/^(?:keyframe_rope|move_rope)$/.test(classname)?'rope':/^(?:env_|light|sky_|color_correction)/.test(classname)?'environment':'unclassified';
     entities.push({entityIndex:i,entity,kind,sourceOrigin:origin,sourceAngles:angles,render});
     if(kind==='studio-model'){

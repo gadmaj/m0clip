@@ -78,26 +78,55 @@ def entity_value(e, key: str, default: str = '') -> str:
     return next((v for k, v in e.items() if k.lower() == key), default)
 
 
-def baseline_visible(e) -> bool:
-    """Initial entity draw state, as raw-source-props' baselineVisible: StartDisabled and
-    rendermode none/environmental never draw; another non-normal mode at zero alpha is invisible."""
+def startup_inputs(entity_pairs) -> dict[str, list[str]]:
+    """Inputs logic_auto sends at map start (OnMapSpawn/OnNewGame, no delay), in authored
+    order, keyed by lower-case target, as raw-source-props sourceStartupInputs. NeoTokyo enables
+    its StartDisabled landing craft and skybox train this way; delayed take-off copies stay off."""
+    def number(text: str, default: float) -> float:
+        try: return float(text.strip()) if text.strip() else default
+        except ValueError: return float('nan')
+    inputs: dict[str, list[str]] = {}
+    for pairs in entity_pairs:
+        if dict(pairs).get('classname') != 'logic_auto': continue
+        for key, value in pairs:
+            if key.lower() not in ('onmapspawn', 'onnewgame'): continue
+            parts = value.split('\x1b') if '\x1b' in value else value.split('\\x1b') if '\\x1b' in value else value.split(',')
+            if len(parts) != 5: continue
+            target, action = parts[0].strip().lower(), parts[1].strip().lower()
+            delay, times = number(parts[3], 0), number(parts[4], -1)
+            if not target or '*' in target or target.startswith('!') or not delay <= 0 or times == 0: continue
+            inputs.setdefault(target, []).append(action)
+    return inputs
+
+
+def baseline_visible(e, startup: dict[str, list[str]]) -> bool:
+    """Initial entity draw state, as raw-source-props' baselineVisible: StartDisabled (after
+    map-start Enable/TurnOn and Disable/TurnOff inputs) and rendermode none/environmental never
+    draw; another non-normal mode at zero alpha is invisible."""
     def number(key: str, default: float) -> float:
         text = entity_value(e, key).strip()
         return float(text) if text else default
+    disabled = number('startdisabled', 0) != 0
+    for action in startup.get(e.get('targetname', '').lower(), []) if e.get('targetname') else []:
+        if action in ('enable', 'turnon'): disabled = False
+        elif action in ('disable', 'turnoff'): disabled = True
     mode = int(number('rendermode', 0))
-    return number('startdisabled', 0) == 0 and mode not in (6, 10) and (mode == 0 or int(number('renderamt', 255)) & 255 != 0)
+    return not disabled and mode not in (6, 10) and (mode == 0 or int(number('renderamt', 255)) & 255 != 0)
 
 
 def entity_props(m) -> list[Prop]:
+    """Studio-model entities; needs parse()'s entity_pairs, since ents keeps one output per key."""
     result = []
-    for e in m['ents']:
+    startup = startup_inputs(m['entity_pairs'])
+    for pairs in m['entity_pairs']:
+        e = dict(pairs)
         if not e.get('model', '').lower().endswith('.mdl'): continue
         vector = lambda k: np.array([float(v) for v in e.get(k, '0 0 0').split()])
         result.append(Prop(e['model'].lower().replace('\\', '/'), vector('origin'), vector('angles'),
             skin=int(e.get('skin', '0')), body=int(e.get('body', '0')),
             scale=float(e.get('modelscale', '1')), solid=int(e.get('solid', '6')),
             cast_shadow=e.get('disableshadows', '0') != '1', classname=e['classname'], animation=e.get('DefaultAnim', ''),
-            baseline_visible=baseline_visible(e)))
+            baseline_visible=baseline_visible(e, startup)))
     return result
 
 

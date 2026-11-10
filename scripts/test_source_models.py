@@ -45,14 +45,20 @@ class SourceModelTests(unittest.TestCase):
             StudioModel(FS(), 'models/test.mdl')
 
     def test_entity_baseline_visibility(self):
-        # Rise's hop_takeoff is StartDisabled over hop_idle at the same origin; only the idle copy draws.
-        frog = dict(classname='prop_dynamic', model='models/nt/props_vehicles/rabbitfrog_dynamic.mdl', origin='760.402 -270.006 -223.232')
-        ents = [dict(frog, StartDisabled='1', DefaultAnim='takeoff_A'), dict(frog, DefaultAnim='idle'),
-                dict(frog, startdisabled='0'), dict(frog, rendermode='10'), dict(frog, rendermode='6'),
-                dict(frog, rendermode='1', renderamt='0'), dict(frog, rendermode='0', renderamt='0'),
-                dict(frog, rendermode='1', renderamt='256'), dict(classname='info_target', origin='0 0 0')]
-        props = entity_props(dict(ents=ents))
-        self.assertEqual([p.baseline_visible for p in props], [False, True, True, False, False, False, True, False])
+        # Rise: hop_takeoff is StartDisabled over hop_idle and enabled only after 10 s, so only the idle
+        # copy draws; logic_auto enables hopperland at map start (delay 0), so it draws.
+        frog = [('classname', 'prop_dynamic'), ('model', 'models/nt/props_vehicles/rabbitfrog_dynamic.mdl'), ('origin', '760.402 -270.006 -223.232')]
+        pairs = [frog + [('StartDisabled', '1'), ('targetname', 'hop_takeoff'), ('DefaultAnim', 'takeoff_A')],
+                 frog + [('targetname', 'hop_idle'), ('DefaultAnim', 'idle')],
+                 frog + [('StartDisabled', '1'), ('targetname', 'hopperland')],
+                 frog + [('StartDisabled', '1'), ('targetname', 'Bounced')],
+                 frog + [('startdisabled', '0')], frog + [('rendermode', '10')], frog + [('rendermode', '6')],
+                 frog + [('rendermode', '1'), ('renderamt', '0')], frog + [('rendermode', '0'), ('renderamt', '0')],
+                 frog + [('rendermode', '1'), ('renderamt', '256')], [('classname', 'info_target'), ('origin', '0 0 0')],
+                 [('classname', 'logic_auto'), ('OnNewGame', 'hop_takeoff,Enable,,10,1'), ('OnMapSpawn', 'hopperland,Enable,,0,1'),
+                  ('OnNewGame', 'bounced\x1bTurnOn\x1b\x1b0\x1b-1'), ('OnNewGame', 'bounced,TurnOff,,0,-1'), ('OnNewGame', 'hop_idle,Enable,,0,0')]]
+        props = entity_props(dict(entity_pairs=pairs))
+        self.assertEqual([p.baseline_visible for p in props], [False, True, True, False, True, False, False, False, True, False])
         self.assertEqual(props[0].animation, 'takeoff_A')
 
     def test_ghost_export_inventory(self):

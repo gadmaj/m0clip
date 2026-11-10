@@ -1,8 +1,10 @@
 /** Source's initial entity draw state for converted map props. A StartDisabled
- * prop_dynamic (or rendermode none) never draws until map logic enables it, and
- * m0clip does not run map logic. NeoTokyo maps pair such props with a visible
- * copy at the same origin: a disabled take-off/landing "rabbitfrog" over its idle
- * twin. Drawing both doubles the craft and its clip flies through the idle copy.
+ * prop_dynamic (or rendermode none) does not draw unless map logic enables it, and
+ * m0clip does not run map logic beyond logic_auto's undelayed map-start inputs.
+ * NeoTokyo pairs a disabled take-off "rabbitfrog", enabled 10 s into the round, with
+ * a visible idle copy at the same origin. Drawing both doubles the craft and its
+ * clip flies through the idle copy. Landing craft and Bullet's skybox train are also
+ * StartDisabled but logic_auto enables them at delay 0, so they draw.
  *
  * Hidden placements stay loaded (their clips still bind); the root is invisible,
  * so it never draws, is never picked and never enters camera collision.
@@ -28,38 +30,22 @@ export interface SourceBaselineDocument {
 const EPSILON = 1e-6;
 const RABBITFROG = 'models/nt/props_vehicles/rabbitfrog_dynamic.mdl';
 const takeoff = { loop: false, duration: 9.966666221618652 }, takeoffShort = { loop: false, duration: 9.699999809265137 };
-const landing = { loop: false, duration: 8.666666984558105 }, landingA = { loop: false, duration: 10 };
 const frog = (node: string, position: LegacyHidden['position'], clip: LegacyHidden['clip']): LegacyHidden =>
   ({ node: `prop_dynamic:${node}:rabbitfrog_dynamic`, prop: RABBITFROG, position, clip });
 
-/** Every StartDisabled studio-model entity in the released maps' BSP entity lumps,
- * identified by converted node name, model, origin and clip. */
+/** Every studio-model entity in the released maps' BSP entity lumps that is still
+ * disabled after map start, identified by converted node name, model, origin and clip.
+ * Not listed: StartDisabled props logic_auto enables at delay 0 (Bullet's timer train;
+ * hopperland/hopperland2 on Dawn, Dusk, Decom, Rise and Saitama). */
 const LEGACY_HIDDEN: Readonly<Record<string, readonly LegacyHidden[]>> = {
-  nt_bullet_tdm: [{ node: 'prop_dynamic:421:bullettrain01', prop: 'models/nt/props_skybox/bullettrain01.mdl',
-    position: [7.711439999999997, 118.67518048, -3.2258], clip: { loop: true, duration: 40 } }], // timer: run
-  nt_dawn_ctg: [frog('732', [44.861734, 79.2988, -0.31282640000000006], landingA)], // hopperland
-  nt_decom_ctg: [
-    frog('566', [163.41497787095233, 34.56949593805573, 4.049332397839419], landing), // hopperland2
-    frog('572', [4.882565253025308, -17.68050785628337, 1.8079093978394192], landing), // hopperland
-  ],
-  nt_dusk_ctg: [frog('725', [44.861734, 79.2988, -0.31282640000000006], landingA)], // hopperland
+  // Take-off copies: logic_auto enables them only after 10 s, over an idle twin.
   nt_engage_ctg: [
     frog('863', [63.2076206, 115.63959599999998, 0.22270720000000002], takeoffShort), // hop_takeoff
     frog('865', [9.2795598, 7.782305999999997, 0.22270720000000002], takeoffShort), // hop_takeoff3
     frog('880', [59.0316066, 108.71047600000001, 0.019507200000000016], takeoff), // hop_takeoff1
     frog('883', [5.322696999999999, 4.086351999999997, 0.019507200000000016], takeoff), // hop_takeoff4
   ],
-  nt_rise_ctg: [
-    frog('813', [19.634845159999998, 32.007200399999995, 7.741112279999999], landing), // hopperland
-    frog('847', [20.43245596, -2.511551999999999, 0.019507200000000016], takeoff), // hop_takeoff
-  ],
-  nt_saitama_ctg: [
-    { node: 'prop_dynamic:1047:light1_off', prop: 'models/nt/props_light/light1_off.mdl',
-      position: [61.141863999999984, 52.158216740000015, -4.201973769169019], clip: null },
-    { node: 'prop_dynamic:1048:light1_off', prop: 'models/nt/props_light/light1_off.mdl',
-      position: [43.260263999999985, 52.97101674000001, -4.201973769169019], clip: null },
-    frog('1092', [7.948929999999994, 7.530416740000001, -0.8368293691690195], landingA), // hopperland
-  ],
+  nt_rise_ctg: [frog('847', [20.43245596, -2.511551999999999, 0.019507200000000016], takeoff)], // hop_takeoff
   nt_shrine_ctg: [
     frog('785', [112.14922959999998, -100.94902339999999, 0.01370575584914413], takeoff), // hop_takeoff1
     frog('786', [120.79564359999998, -93.81667799999998, 0.16610575584914414], takeoffShort), // hop_takeoff
@@ -69,6 +55,13 @@ const LEGACY_HIDDEN: Readonly<Record<string, readonly LegacyHidden[]>> = {
   nt_skyline_ctg: [
     frog('1623', [-3.8924484000000246, 122.35891199999999, 2.8643072], takeoff), // hop_takeoff4
     frog('1624', [-3.0251908000000234, 115.17271859999998, 2.8643072], takeoffShort), // hop_takeoff3
+  ],
+  // Untargeted "off" lamp models: no entity ever enables them.
+  nt_saitama_ctg: [
+    { node: 'prop_dynamic:1047:light1_off', prop: 'models/nt/props_light/light1_off.mdl',
+      position: [61.141863999999984, 52.158216740000015, -4.201973769169019], clip: null },
+    { node: 'prop_dynamic:1048:light1_off', prop: 'models/nt/props_light/light1_off.mdl',
+      position: [43.260263999999985, 52.97101674000001, -4.201973769169019], clip: null },
   ],
 };
 
