@@ -191,6 +191,7 @@ for (const [message, label] of [
   ['loading Planar walk v2…', 'Loading policy…'], ['Planning selected scene assets…', 'Planning scene…'],
   ['Planning the Player world…', 'Planning scene…'], ['compiling MuJoCo model (wasm)…', 'Compiling physics…'],
   ['compiling MuJoCo model (wasm, G1 Air 23-DOF)…', 'Compiling physics…'], ['Preparing map physics…', 'Preparing physics…'],
+  ['Loading cached physics…', 'Loading cached physics…'],
   ['Preparing robot and map visuals…', 'Preparing visuals…'], ['Preparing player and map visuals…', 'Preparing visuals…'],
   ['Some future worker step…', 'Loading scene…'],
 ]) assert.equal(loadingPhase(message), label, message);
