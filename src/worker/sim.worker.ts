@@ -17,6 +17,7 @@ import { robotFamily as fam, modelKey, policyInfo, specFor, selectRobotPolicy, t
 import type { FromWorker, ToWorker, SceneIdentity } from "../sim/protocol";
 import { renderModelFromEngine } from '../sim/render-model';
 import { createFrameGeometryLayout, copyMovingGeometry } from '../sim/geometry-frames';
+import { LiveFramePublisher } from '../sim/live-frames';
 import { PreparedAssets, httpAssetKey, usePreparedAssets } from '../core/prepared-assets';
 import { StartupGate } from '../core/startup-gate';
 import { driverAssetUrls, selectedDriverAssets } from '../core/driver-assets';
@@ -58,9 +59,12 @@ function parseTrajCsv(text: string):
 /** Between a "busy" post and the message that ends it on the page (ready, error, a terrain result
  * or the page cancelling a map change, which hides the overlay itself). */
 let busyShown = false;
+/** Each model's frames also go to its shared mailbox; posting them all keeps the stream complete. */
+const liveFrames = new LiveFramePublisher();
 const post = (m: FromWorker, transfer: Transferable[] = []) => {
   if (m.t === 'busy') busyShown = true;
   else if (m.t === 'ready' || m.t === 'error' || m.t === 'terrainPrepared' || m.t === 'terrainFailed') busyShown = false;
+  liveFrames.annotate(m);
   (self as unknown as Worker).postMessage(m, transfer);
 };
 

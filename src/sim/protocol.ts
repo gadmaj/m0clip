@@ -150,13 +150,15 @@ export type FromWorker =
   | { t: 'robotPlacementFailed'; msg: string }
   /** The robot command with this request finished, successfully or not; its status was posted first. */
   | { t: 'robotSettled'; request: number }
-  | { t: "model"; desc: RenderModel; geometry: FrameGeometryLayout }
+  /** `live`: the shared mailbox (sim/live-frames) that also carries this model's frames, when isolated. */
+  | { t: "model"; desc: RenderModel; geometry: FrameGeometryLayout; live?: SharedArrayBuffer }
   | { t: 'terrainPrepared'; request: number; scene:SceneIdentity }
   | { t: 'terrainFailed'; request: number; msg: string }
   /** Geom rows are ascending original IDs excluding `model.geometry.fixedIds`; qpos is complete.
-   * `clock` advances by each posted simulation step, preserving recorded time under load. */
+   * `clock` advances by each posted simulation step, preserving recorded time under load.
+   * `seq` numbers the frame in its model's live mailbox. */
   | { t: "frame"; xpos: Float32Array; xmat: Float32Array; baseX: number; baseY: number;
-      hoistAnchor?: [number, number, number] | null; clock: number; qpos: Float64Array; player?: PlayerSimFrame }
+      hoistAnchor?: [number, number, number] | null; clock: number; qpos: Float64Array; player?: PlayerSimFrame; seq?: number }
   | { t: 'playerStatus'; tool: PlayerTool; availableTools: PlayerTool[]; spawnRobot: string; robotCount: number; maxRobots: number;
       /** Robot variants an imported policy pack can actually run; only these are offered to spawn. */
       spawnRobots: string[];

@@ -17,7 +17,8 @@ import { SceneView, type Appearance, type HeadVisual } from "./render/scene";
 import { SceneCamera } from './render/scene-camera';
 import type { FromWorker, InspectMsg, RenderModel, StatusMsg, ToWorker, SceneIdentity } from "./sim/protocol";
 import type { FsmState } from "./sim/fsm";
-import { FrameGeometryBuffer } from './sim/geometry-frames';
+import { FrameGeometryBuffer, type FrameGeometryLayout } from './sim/geometry-frames';
+import { LiveFrameIntake, type LiveFrame } from './sim/live-frames';
 import { isTerrain, listMaps, mapId, type TerrainName } from "./sim/terrain";
 import { Panel, type StatusRow } from "./ui/panel";
 import { LookPanel, type MapLight, type LookState } from "./ui/look";
@@ -220,6 +221,11 @@ class App {
   private velRangeKey = "";
   private lastFrame: { xpos: Float32Array; xmat: Float32Array } | null = null;
   private liveGeometry: FrameGeometryBuffer | null = null;
+  private liveLayout: FrameGeometryLayout | null = null;
+  /** A robot take's own rows: the live view may already show newer frames than the message it records. */
+  private recordGeometry: FrameGeometryBuffer | null = null;
+  /** The model's frames, each taken once from its shared mailbox (read every animation frame) or its message. */
+  private frameIntake = new LiveFrameIntake(null);
   private baseXY: [number, number] = [0, 0];
   private baseZ = 0.7;
   private noclip = false;
@@ -1023,8 +1029,40 @@ class App {
     this.view.controls.target.copy(camera.position).add(this.playerAim);
   }
 
+  /** Live state from one simulation frame: from the mailbox or its message, whichever is first. */
+  private frameArrived(m: LiveFrame) {
+    if (this.viewModel !== this.model) return;   // reviewing another model's take
+    if (!this.liveGeometry) throw new Error('A simulation frame arrived without its geometry layout.');
+    this.liveGeometry.apply(m.xpos, m.xmat);
+    this.lastFrame = this.liveGeometry;
+    this.resolveFirstFrame?.(); this.resolveFirstFrame = null;
+    for (const resolve of this.liveFrameWaiters.splice(0)) resolve();
+    if (this.model?.mode === 'player') return this.playerFrameArrived(m);
+    this.baseXY = [m.baseX, m.baseY];
+    this.baseZ = this.model && this.model.baseQadr >= 0 ? m.qpos[this.model.baseQadr + 2] : this.followZ;
+    if (!this.timeline.isOpen) this.view.setHoist(m.hoistAnchor ?? null);
+  }
+
+  private recordRobotFrame(m: LiveFrame) {
+    const rec = this.rec!, geometry = this.recordGeometry!;
+    // Recording consumes the original-ID view; compact transferred buffers are no longer needed.
+    geometry.apply(m.xpos, m.xmat);
+    m.xpos = geometry.xpos; m.xmat = geometry.xmat;
+    rec.push(m, this.command, this.camPose());
+    this.recCheckpoint?.changed();this.updateRecordingInfo();
+    if (rec.elapsed >= MAX_TAKE_S) this.stopRecording(`Stopped at the ${MAX_TAKE_S / 60} min limit.`);
+  }
+
+  /** Chrome defers posted messages after input until a frame is presented, so a held key on a slow
+   * renderer would hold back every frame message; the mailbox reaches the page on each animation
+   * frame instead. A Player take records in the live path, so it takes every frame in order. */
+  private drainLiveFrames() {
+    try { this.frameIntake.drain(this.playerRec !== null, frame => this.frameArrived(frame)); }
+    catch (error) { this.showOverlay(`Scene could not load: ${error instanceof Error ? error.message : error}`, 'error'); }
+  }
+
   /** One worker tick batch: position, look sync, presentation and the Player take frame. */
-  private playerFrameArrived(m: Extract<FromWorker, { t: 'frame' }>) {
+  private playerFrameArrived(m: LiveFrame) {
     const frame = m.player, sourceFrame = this.model!.sourceFrame, geometry = this.liveGeometry!;
     if (!frame || !sourceFrame) throw new Error('A Player frame arrived without its player state or map frame.');
     this.playerFrame = frame;
@@ -1524,11 +1562,12 @@ class App {
 
   private beginRecording() {
     const m = this.model;
-    if (!m || !this.liveGeometry || this.exporting) return;
+    if (!m || !this.liveGeometry || !this.liveLayout || this.exporting) return;
     if (this.timeline.isOpen) this.closeReview();
     if (m.mode === 'player') { this.beginPlayerRecording(m, this.liveGeometry); return; }
     const s = this.status;
     this.recModel = m;
+    this.recordGeometry = new FrameGeometryBuffer(m.ngeom, this.liveLayout);
     this.rec = new TakeRecorder({
       robot: m.robot!, model: s?.model, terrain: m.terrain??this.panel.terrain, localMap:mapSource(m.terrain??this.panel.terrain)?.identity, sourceTime: this.view.getSourceTime(), appearance: this.view.getAppearance(), sourceHead: this.view.getSourceHead(), look: this.look.getState(), display: this.explore.getDisplay(), flashlight: this.flashlight, lights: this.view.getShotLights(), robotFade: this.view.getRobotFadeState(), policy: s?.policy ?? "-",
       created: new Date().toISOString(), ngeom: m.ngeom, nq: m.nq, baseQadr: m.baseQadr, hinges: m.hinges,
@@ -1597,7 +1636,7 @@ class App {
     if (this.playerRec) { this.stopPlayerRecording(why); return; }
     const rec = this.rec;
     if (!rec) return;
-    this.rec = null;
+    this.rec = null; this.recordGeometry = null;
     const checkpoint=this.recCheckpoint;this.recCheckpoint=null;
     void checkpoint?.stop();
     this.panel.setRecording(false);
@@ -2568,6 +2607,9 @@ class App {
         }
         this.model = m.desc;
         this.liveGeometry = new FrameGeometryBuffer(m.desc.ngeom, m.geometry);
+        this.liveLayout = m.geometry;
+        // Frames of this model come only after it: through its own mailbox, or messages posted after this one.
+        this.frameIntake = LiveFrameIntake.forModel(m);
         if (m.desc.mode === 'player') {
           // Spawn and remove rebuild the same world: the take continues in a new layout epoch.
           const rec = this.playerRec;
@@ -2586,26 +2628,13 @@ class App {
         // the quadruped so its body doesn't sit at the bottom of the frame
         this.followZ = m.desc.mode === 'player' ? PLAYER_FOLLOW_Z : m.desc.robot!.startsWith("go2") ? 0.35 : 0.7;
         return;
-      case "frame":
-        if (this.viewModel !== this.model) return;   // reviewing another model's take
-        if (!this.liveGeometry) throw new Error('A simulation frame arrived without its geometry layout.');
-        this.liveGeometry.apply(m.xpos, m.xmat);
-        this.lastFrame = this.liveGeometry;
-        this.resolveFirstFrame?.(); this.resolveFirstFrame = null;
-        for (const resolve of this.liveFrameWaiters.splice(0)) resolve();
-        if (this.model?.mode === 'player') return this.playerFrameArrived(m);
-        this.baseXY = [m.baseX, m.baseY];
-        this.baseZ = this.model && this.model.baseQadr >= 0 ? m.qpos[this.model.baseQadr + 2] : this.followZ;
-        if (!this.timeline.isOpen) this.view.setHoist(m.hoistAnchor ?? null);
-        if (this.rec) {
-          // Recording consumes the original-ID view; compact transferred buffers are no longer needed.
-          m.xpos = this.liveGeometry.xpos; m.xmat = this.liveGeometry.xmat;
-          this.rec.push(m, this.command, this.camPose());
-          this.recCheckpoint?.changed();this.updateRecordingInfo();
-          const e = this.rec.elapsed;
-          if (e >= MAX_TAKE_S) this.stopRecording(`Stopped at the ${MAX_TAKE_S / 60} min limit.`);
-        }
+      case "frame": {
+        const live = this.frameIntake.accept(m.seq);   // false: the mailbox already delivered it
+        if (live) this.frameArrived(m);
+        // Robot takes record every posted frame, in order with the worker's status reports.
+        if (this.rec && this.viewModel === this.model) this.recordRobotFrame(m);
         return;
+      }
       case 'playerStatus':
         this.applyPlayerStatus(m);
         return;
@@ -2981,6 +3010,7 @@ class App {
       const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
       last = now;
       requestAnimationFrame(tick);
+      this.drainLiveFrames();
       if(this.screenshotIsCurrent&&!this.screenshotIsCurrent())this.cancelScreenshot(this.exporting
         ?'An export started. Take another screenshot after it finishes.':undefined);
       if (this.player) this.updatePlayerHud(this.player);
