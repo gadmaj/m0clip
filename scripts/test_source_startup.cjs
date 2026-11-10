@@ -205,10 +205,12 @@ async function runCase(name, page, proxy, run, gates, directory, cdp, events) {
   if (name === 'slow') for (const step of [1, 2, 3]) { await delay(200); await shot(cdp, directory, `morph-step${step}`); }
   if (name === 'reduced-change') await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.locator('#launch-load-stage[data-game="pong"]').waitFor({ timeout: 10000 }); const pong = await snapshot(page);
-  const centerDelta = { x: pong.stage.x + pong.stage.width / 2 - (before.stage.x + before.stage.width / 2), y: pong.stage.y + pong.stage.height / 2 - (before.stage.y + before.stage.height / 2) };
-  fs.writeFileSync(path.join(directory, 'phase-proof.json'), JSON.stringify({ before, morph, pieces, pong, centerDelta }, null, 2));
+  // Loading content is top-anchored (launch.css, c6c577f): the court must open from the meter's own top edge and width, never jump.
+  const anchorDelta = { x: pong.stage.x - before.stage.x, y: pong.stage.y - before.stage.y, width: pong.stage.width - before.stage.width };
+  fs.writeFileSync(path.join(directory, 'phase-proof.json'), JSON.stringify({ before, morph, pieces, pong, anchorDelta }, null, 2));
   await shot(cdp, directory, 'revealed-court');
-  assert.ok(Math.abs(centerDelta.x) <= 1 && Math.abs(centerDelta.y) <= 1, `Actual progress/court center must stay in place: ${JSON.stringify(centerDelta)}`);
+  assert.ok(Object.values(anchorDelta).every(value => Math.abs(value) <= 1), `Actual progress/court anchor must stay in place: ${JSON.stringify(anchorDelta)}`);
+  assert.ok(pong.stage.height > before.stage.height && Math.abs(morph.stage.y - before.stage.y) <= 1, 'The court must grow from the meter in place, including mid-morph');
   if (name === 'reduced-change') assert.equal(await page.locator('#launch-pong-pause').getAttribute('aria-pressed'), 'false');
   assert.ok(run.resources.some(resource => resource.held && resource.bytes > 0), 'Long control delivers real asset bytes before its deliberate pause');
   const interaction = await game(page, directory, cdp, name === 'slow');

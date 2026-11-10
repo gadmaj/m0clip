@@ -7,7 +7,8 @@ import { listPacks, deletePack, deleteAllPacks, loadPack, importAny, packEntries
          revokePack, type PackMetadata } from "../packs";
 import { installDefaultPacks } from '../packs/defaults';
 import { releasePolicySessions } from '../core/policy';
-import { Engine, MissingBundleError, type PreparedEngine } from "../sim/engine";
+import { Engine, MissingBundleError, useModelCache, type PreparedEngine } from "../sim/engine";
+import { IndexedDbModelStore, ModelCache } from '../sim/model-cache';
 import { SimFSM, type FsmState } from "../sim/fsm";
 import { isTerrain, mapId, terrainTransform, type TerrainName } from "../sim/terrain";
 import { getSpec, SPECS } from "../robots";
@@ -54,8 +55,14 @@ function parseTrajCsv(text: string):
   return { rows: Float32Array.from(out), nRows: out.length / nCols, nCols };
 }
 
-const post = (m: FromWorker, transfer: Transferable[] = []) =>
+/** Between a "busy" post and the message that ends it on the page (ready, error, a terrain result
+ * or the page cancelling a map change, which hides the overlay itself). */
+let busyShown = false;
+const post = (m: FromWorker, transfer: Transferable[] = []) => {
+  if (m.t === 'busy') busyShown = true;
+  else if (m.t === 'ready' || m.t === 'error' || m.t === 'terrainPrepared' || m.t === 'terrainFailed') busyShown = false;
   (self as unknown as Worker).postMessage(m, transfer);
+};
 
 let loadingGeneration: number | undefined;
 let loadingEpoch = 0;
@@ -64,6 +71,18 @@ let releasePrepared: (() => void) | undefined;
 let terrainEpoch=0;
 let stagedTerrain: {request:number;baseRobot:string;robot:string;terrain:TerrainName;source:MapSource|null;engine:Engine;scene:SceneIdentity;selection?:RobotPolicySelection}|undefined;
 const startupGate = new StartupGate();
+
+// Compiled models are kept in IndexedDB for compiles a person waits on behind a busy message (scene
+// loads, map and robot changes). Player spawns recompile silently and would churn 100 MB entries.
+// A stage replaces that message only while it still shows and no newer load or map change began.
+if (typeof indexedDB !== 'undefined') useModelCache(new ModelCache(new IndexedDbModelStore()), () => {
+  if (!busyShown) return null;
+  const loading = loadingEpoch, terrain = terrainEpoch;
+  return stage => {
+    if (busyShown && loading === loadingEpoch && terrain === terrainEpoch)
+      post({ t: 'busy', msg: stage === 'cached' ? 'Loading cached physics…' : 'compiling MuJoCo model (wasm)…' });
+  };
+});
 
 function finishLoading(generation: number) {
   if (generation !== loadingGeneration) return;
@@ -1222,7 +1241,7 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
     void serializeWork(() => sim.init(message, epoch));
     return;
   }
-  if(ev.data.t==='cancelTerrain'){++terrainEpoch;stagedTerrain?.engine.dispose();stagedTerrain=undefined;return;}
+  if(ev.data.t==='cancelTerrain'){++terrainEpoch;busyShown=false;stagedTerrain?.engine.dispose();stagedTerrain=undefined;return;}
   if(ev.data.t==='terrain'){
     const message=ev.data,epoch=++terrainEpoch;
     if(!message.commit){stagedTerrain?.engine.dispose();stagedTerrain=undefined;}

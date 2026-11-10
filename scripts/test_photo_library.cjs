@@ -176,7 +176,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
       equal(await trackHashes((await library.open(ids[2])).take), await trackHashes(take), 'V2 completed-track conversion retains all geometry and six other arrays');
       check(await hash((await photos.open(ids[0])).png) === await hash(a), 'Successful V2 upgrade preserves original PNG Blob');
       await new fixture.RecordingRecovery(library).remove(draftId);
-      await photos.save({ id: ids[1], name: 'Blue tile / right', created: '2026-10-20T12:02:00Z', robot: 'r1', terrain: 'flat', png: b });
+      await photos.save({ id: ids[1], name: 'Blue tile / right', created: '2026-10-20T12:02:00Z', mode: 'robot', robot: 'r1', terrain: 'flat', png: b });
       const info = await photos.list();
       check(info.length === 2, 'Both captures retained');
       const thumbs = await Promise.all(ids.slice(0, 2).map(async id => {
@@ -261,7 +261,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     assert.equal(download.suggestedFilename(), 'Red tile _ left.png');
     assert.equal(createHash('sha256').update(await readFile(await download.path())).digest('hex'), expected.originals[0], 'PNG backup downloads exact original bytes');
     await page.evaluate(async () => {
-      await gallery.photos.save({ id: 'photo-deferred', name: 'Deferred capture', created: new Date().toISOString(), robot: 'r1', terrain: 'flat', png: await picture() });
+      await gallery.photos.save({ id: 'photo-deferred', name: 'Deferred capture', created: new Date().toISOString(), mode: 'robot', robot: 'r1', terrain: 'flat', png: await picture() });
       gallery.dialog.refresh();
       check(!document.querySelector('.shot-library-photo').hidden, 'Background retention refresh does not replace the open original');
     });
