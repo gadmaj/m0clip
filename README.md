@@ -5,9 +5,9 @@ record clips. It all runs in Chrome; the server only hosts files.
 
 **[Try it at m0clip.com](https://m0clip.com)**
 
-![A Unitree R1 on m0clip’s reflective Flat grid terrain](readme-assets/screenshot-flat-r1.png)
+![Animation: m0clip replays a recorded take of a Unitree R1 walking on the NeoTokyo map Ghost, with the take timeline open below. The R1 fades into a Gingerbread Man taking the same steps, then the timeline and controls fade out while the camera circles the character.](readme-assets/hero.gif)
 
-<sub>An R1 on the built-in Flat terrain, saved with the <b>Screenshot</b> button.</sub>
+<sub>One recorded take on Ghost, replayed as the R1 and then as Gingerbread Man. The character changes only the body you see; the R1 walking policy still drives it.</sub>
 
 m0clip started from Konstantin Severov’s
 [unitree-mujoco-web](https://github.com/legion1581/unitree-mujoco-web) and draws
@@ -35,6 +35,10 @@ the walking policies.
 4. **Export.** **Timeline** replays the take. From there, export video, a motion
    CSV or a GLB scene for Blender; **Camera / output** sets the camera, lens and
    format. **Screenshot** downloads a PNG and keeps a copy in **Shots**.
+
+![A Unitree R1 on m0clip’s reflective Flat grid terrain](readme-assets/screenshot-flat-r1.png)
+
+<sub>An R1 on the built-in Flat terrain, saved with the <b>Screenshot</b> button.</sub>
 
 Takes, screenshots and imported policies stay in your browser for that site.
 Download anything you want to keep before clearing site data.
@@ -443,8 +447,8 @@ attribution, and list them in
 - **MuJoCo, Three.js, ONNX Runtime and Mediabunny contributors**: physics,
   rendering, inference and media export.
 - **Game, robot and character creators**: keep each asset’s notices and
-  attribution when you build or redistribute. The screenshots show map previews
-  from the NEOTOKYO° mod and
+  attribution when you build or redistribute. The screenshots and animation show
+  the NEOTOKYO° mod’s Ghost map and map previews, and
   [Rigged Gingerbread Man](https://opengameart.org/content/rigged-gingerbread-man)
   by Elegant Crow ([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)).
 
