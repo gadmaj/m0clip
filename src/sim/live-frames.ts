@@ -201,16 +201,20 @@ export class LiveFrameIntake {
   }
 
   /** Delivers mailbox frames the messages have not. `inOrder` delivers each in turn and leaves any
-   * the mailbox no longer holds intact to its message; otherwise only the newest frame is delivered. */
-  drain(inOrder: boolean, deliver: (frame: LiveFrame) => void): void {
+   * the mailbox no longer holds intact to its message; otherwise only the newest frame is delivered.
+   * `deliver` returns false for a frame it did not take: the mailbox offers it again, and its message
+   * is still accepted. A frame whose delivery throws counts as taken. */
+  drain(inOrder: boolean, deliver: (frame: LiveFrame) => boolean): void {
     const reader = this.reader;
     if (!reader) return;
     const latest = reader.latest();
     for (let seq = inOrder ? this.next : latest; seq >= this.next && seq <= latest; seq++) {
       const frame = reader.read(seq);
       if (!frame) return;
-      this.next = seq + 1;
-      deliver(frame);
+      let taken = true;
+      try { taken = deliver(frame); }
+      finally { if (taken) this.next = seq + 1; }
+      if (!taken) return;
     }
   }
 }

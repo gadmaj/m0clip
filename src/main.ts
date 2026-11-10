@@ -1029,9 +1029,10 @@ class App {
     this.view.controls.target.copy(camera.position).add(this.playerAim);
   }
 
-  /** Live state from one simulation frame: from the mailbox or its message, whichever is first. */
-  private frameArrived(m: LiveFrame) {
-    if (this.viewModel !== this.model) return;   // reviewing another model's take
+  /** Live state from one simulation frame: from the mailbox or its message, whichever is first.
+   * False when the frame was not taken, so the mailbox offers it again and its message still counts. */
+  private frameArrived(m: LiveFrame): boolean {
+    if (this.viewModel !== this.model) return false;   // reviewing another model's take
     if (!this.liveGeometry) throw new Error('A simulation frame arrived without its geometry layout.');
     this.liveGeometry.apply(m.xpos, m.xmat);
     this.lastFrame = this.liveGeometry;
@@ -1041,6 +1042,7 @@ class App {
     this.baseXY = [m.baseX, m.baseY];
     this.baseZ = this.model && this.model.baseQadr >= 0 ? m.qpos[this.model.baseQadr + 2] : this.followZ;
     if (!this.timeline.isOpen) this.view.setHoist(m.hoistAnchor ?? null);
+    return true;
   }
 
   private recordRobotFrame(m: LiveFrame) {
@@ -1061,8 +1063,9 @@ class App {
     catch (error) { this.showOverlay(`Scene could not load: ${error instanceof Error ? error.message : error}`, 'error'); }
   }
 
-  /** One worker tick batch: position, look sync, presentation and the Player take frame. */
-  private playerFrameArrived(m: LiveFrame) {
+  /** One worker tick batch: position, look sync, presentation and the Player take frame. False before
+   * the Player view and its actors are ready: the take would miss the frame. */
+  private playerFrameArrived(m: LiveFrame): boolean {
     const frame = m.player, sourceFrame = this.model!.sourceFrame, geometry = this.liveGeometry!;
     if (!frame || !sourceFrame) throw new Error('A Player frame arrived without its player state or map frame.');
     this.playerFrame = frame;
@@ -1075,22 +1078,23 @@ class App {
       input.setHoldingObject(frame.grab !== null);
     }
     const view = this.view.player;
-    if (!view) return;
+    if (!view) return false;
     // Animation advances by simulated time only, so review and export replay the same poses.
     const delta = this.playerClock === null ? 0 : m.clock - this.playerClock;
     this.playerClock = m.clock;
-    if (!this.playerActorsReadyFor(view)) { view.hideActors(); return; }
+    if (!this.playerActorsReadyFor(view)) { view.hideActors(); return false; }
     // Output setup previews a static shot camera, which must not carry the player's view model.
     view.showViewModel = !this.dialog.isOpen || this.shot.mode === 'viewport';
     view.showBody = !view.showViewModel;
     const presentation = view.present(frame, m.clock, delta);
     const rec = this.playerRec;
-    if (!rec) return;
+    if (!rec) return true;
     m.xpos = geometry.xpos; m.xmat = geometry.xmat;
     try { rec.push(m, this.playerInputSent ? this.playerSentInput : null, this.camPose(), presentation); }
-    catch (error) { this.stopRecording(`Stopped: ${error instanceof Error ? error.message : error}`); return; }
+    catch (error) { this.stopRecording(`Stopped: ${error instanceof Error ? error.message : error}`); return true; }
     this.recCheckpoint?.changed(); this.updateRecordingInfo();
     if (rec.elapsed >= MAX_TAKE_S) this.stopRecording(`Stopped at the ${MAX_TAKE_S / 60} min limit.`);
+    return true;
   }
 
   private applyPlayerStatus(s: Extract<FromWorker, { t: 'playerStatus' }>) {

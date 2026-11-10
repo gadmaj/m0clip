@@ -59,7 +59,7 @@ try {
     publisher.annotate(model); publisher.annotate(frame);
     assert.equal('live' in model, false); assert.equal('seq' in frame, false);
     const intake = LiveFrameIntake.forModel(model), seen = [];
-    intake.drain(true, f => seen.push(f)); intake.drain(false, f => seen.push(f));
+    intake.drain(true, f => seen.push(f) > 0); intake.drain(false, f => seen.push(f) > 0);
     assert.deepEqual(seen, []);
     assert.equal(intake.accept(undefined), true); assert.equal(intake.accept(undefined), true);
     ok('without cross-origin isolation or SharedArrayBuffer every frame arrives by message only');
@@ -181,7 +181,7 @@ try {
   {
     const writer = new LiveFrameWriter({ moving: 1, nq: 1, player: false }, 4);
     const intake = new LiveFrameIntake(new LiveFrameReader(writer.buffer, { moving: 1, nq: 1 }));
-    const seen = [], take = f => seen.push(f.seq);
+    const seen = [], take = f => seen.push(f.seq) > 0;
     intake.drain(false, take); intake.drain(true, take);
     assert.deepEqual(seen, [], 'nothing written');
     for (let v = 0; v < 3; v++) writer.write(robotFrame(1, 1, v));
@@ -206,6 +206,44 @@ try {
   }
 
   {
+    // App refuses frames before the Player view and actors are ready (after a spawn or remove), or while
+    // Timeline reviews another model. A refused mailbox frame must stay available to its message.
+    const writer = new LiveFrameWriter({ moving: 1, nq: 1, player: true }, 64);
+    const intake = new LiveFrameIntake(new LiveFrameReader(writer.buffer, { moving: 1, nq: 1 }));
+    const recorded = [], queue = [];
+    let ready = false, refused = 0;
+    const deliver = f => { if (!ready) { refused++; return false; } recorded.push(f.seq); return true; };
+    const write = n => { for (let i = 0; i < n; i++) { const seq = writer.write({ ...robotFrame(1, 1, queue.length), player: playerState(1) }); queue.push(seq); } };
+    const messages = () => { for (const seq of queue.splice(0)) if (intake.accept(seq)) deliver({ seq }); };
+    write(10);
+    intake.drain(true, deliver); intake.drain(false, deliver);
+    write(10);
+    intake.drain(true, deliver);
+    assert.deepEqual(recorded, []); assert.equal(refused, 3);
+    // The actors become ready; the deferred messages arrive before the next animation frame.
+    ready = true;
+    const pending = queue.splice(0, 15);
+    for (const seq of pending) if (intake.accept(seq)) deliver({ seq });
+    intake.drain(true, deliver);
+    messages();
+    assert.deepEqual(recorded, Array.from({ length: 20 }, (_, i) => i), 'refused frames recorded from their messages');
+    // Refused again, then ready before the messages: the mailbox delivers them, the messages are dropped.
+    ready = false;
+    const second = writer.write({ ...robotFrame(1, 1, 20), player: playerState(1) });
+    for (let i = 0; i < 9; i++) writer.write({ ...robotFrame(1, 1, 21 + i), player: playerState(1) });
+    intake.drain(true, deliver); intake.drain(false, deliver);
+    ready = true;
+    intake.drain(true, deliver);
+    for (let seq = second; seq < second + 10; seq++) assert.equal(intake.accept(seq), false);
+    assert.deepEqual(recorded, Array.from({ length: 30 }, (_, i) => i), 'no gaps, no duplicates');
+    // A delivery that throws counts as taken, so a failing frame is not offered every animation frame.
+    writer.write({ ...robotFrame(1, 1, 30), player: playerState(1) });
+    assert.throws(() => intake.drain(true, () => { throw new Error('bad frame'); }), /bad frame/);
+    assert.equal(intake.accept(30), false);
+    ok('frames App refuses stay available to the mailbox and their messages');
+  }
+
+  {
     // Randomized interleavings of worker writes, message deliveries and animation frames.
     let seed = 7;
     const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
@@ -227,7 +265,7 @@ try {
         } else {
           const recording = taken.length >= recordFrom;
           if (recording && recordStart < 0) recordStart = taken.length;
-          intake.drain(recording, f => taken.push(f.seq));
+          intake.drain(recording, f => taken.push(f.seq) > 0);
         }
       }
       for (let i = 1; i < taken.length; i++) assert.ok(taken[i] > taken[i - 1], 'never twice, never backwards');
@@ -272,7 +310,7 @@ try {
       if (copy) assert.deepStrictEqual(copy, m, `mailbox frame ${m.seq} equals its message`);
       if (intake.accept(m.seq)) present(m, 'message');
     } };
-    const raf = () => intake.drain(recording, f => present(f, 'mailbox'));
+    const raf = () => intake.drain(recording, f => { present(f, 'mailbox'); return true; });
     const hold = (forward, thirdPerson) => world.input({ sequence: ++sequence, yaw: 0, pitch: 0, forward, side: 0, held: 0, pressed: 0, reset: false, thirdPerson });
     await world.wake(now, false);
     for (let i = 0; i < 5; i++) { now += tickMs; await world.wake(now, false); }
