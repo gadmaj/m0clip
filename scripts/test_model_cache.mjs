@@ -25,20 +25,21 @@ const file=resolve('node_modules/.cache/model-cache-test.mjs');await mkdir(resol
 await writeFile(file,built.outputFiles[0].text.replaceAll('"/wasm/mujoco.js"',JSON.stringify(pathToFileURL(join(pub,'wasm/mujoco.js')).href)));
 const {Engine,mujocoModule,useModelCache,ModelCache,IndexedDbModelStore,modelCacheKey,lruEvictions,terrainTransform,mapSource,getSpec}=await import(pathToFileURL(file));
 
-/** A ModelStore in memory, cloning bodies as IndexedDB does. A write past `quota` aborts whole. */
+/** A ModelStore in memory, cloning bodies as IndexedDB does. Like Chrome, a write's quota check
+ * counts the stored bytes before the write's own deletes; a write past `quota` aborts whole. */
 class MemoryStore{
   entries=new Map();bodies=new Map();
   constructor(quota=Infinity){this.quota=quota;}
   async read(key){const entry=this.entries.get(key),body=this.bodies.get(key);return entry&&body?{entry:{...entry},body:body.slice()}:undefined;}
   async write(entry,body,evict){
-    const evicted=new Set(evict([...this.entries.values()].map(e=>({...e}))));
-    let total=body.byteLength;for(const [key,stored] of this.bodies)if(!evicted.has(key)&&key!==entry.key)total+=stored.byteLength;
-    if(total>this.quota)throw new DOMException('The quota has been exceeded.','QuotaExceededError');
+    const evicted=evict([...this.entries.values()].map(e=>({...e})));
+    if(this.total+body.byteLength>this.quota)throw new DOMException('The quota has been exceeded.','QuotaExceededError');
     for(const key of evicted){this.entries.delete(key);this.bodies.delete(key);}
     this.entries.set(entry.key,{...entry});this.bodies.set(entry.key,body.slice());
   }
   async touch(key,used){const entry=this.entries.get(key);if(entry)entry.used=used;}
   async remove(key){this.entries.delete(key);this.bodies.delete(key);}
+  async removeOthers(key){for(const other of [...this.entries.keys(),...this.bodies.keys()])if(other!==key){this.entries.delete(other);this.bodies.delete(other);}}
   get total(){let sum=0;for(const body of this.bodies.values())sum+=body.byteLength;return sum;}
 }
 
@@ -180,14 +181,15 @@ const referenceShape=shape(reference.engine.model),referenceQpos=qposAfter(refer
   }finally{release();}
 }
 
-{ // Quota: one retry evicts every other entry in the same write; a refused retry keeps them all.
+{ // Quota: deletes in the refused write's own transaction free nothing, so the other entries are
+  // removed in a committed transaction of their own and the write is retried once.
   const store=new MemoryStore(10),cache=new ModelCache(store,100,()=>++clock),body=n=>new Uint8Array(n).fill(n);
   assert.equal(await cache.put('a',body(4)),true);assert.equal(await cache.put('b',body(4)),true);
-  assert.equal(await cache.put('c',body(8)),true,'the retry made room');
+  assert.equal(await cache.put('c',body(8)),true,'the retry after a separate eviction made room');
   assert.deepEqual([...store.entries.keys()],['c']);
   assert.equal(await cache.put('d',body(2)),true);
-  assert.equal(await cache.put('e',body(12)),false,'beyond the quota even alone');
-  assert.deepEqual([...store.entries.keys()].sort(),['c','d'],'a refused retry left the entries in place');
+  assert.equal(await cache.put('e',body(12)),false,'beyond the quota even alone: one retry, then refused');
+  assert.equal(store.entries.size,0);
 }
 
 { // Size cap: least recently used entries go first; the total never exceeds the cap.
@@ -206,7 +208,7 @@ const referenceShape=shape(reference.engine.model),referenceQpos=qposAfter(refer
 
 { // Storage failures are misses: no IndexedDB (Node), or a store that refuses every call.
   const refusing={read:async()=>{throw new DOMException('quota','QuotaExceededError');},write:async()=>{throw new DOMException('quota','QuotaExceededError');},
-    touch:async()=>{throw Error('x');},remove:async()=>{throw Error('x');}};
+    touch:async()=>{throw Error('x');},remove:async()=>{throw Error('x');},removeOthers:async()=>{throw Error('x');}};
   for(const store of [new IndexedDbModelStore(),refusing]){
     const {cache,release}=use(store);
     try{

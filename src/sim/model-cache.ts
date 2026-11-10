@@ -21,6 +21,8 @@ export interface ModelStore {
   write(entry: StoredModel, body: Uint8Array, evict: (entries: StoredModel[]) => string[]): Promise<void>;
   touch(key: string, used: number): Promise<void>;
   remove(key: string): Promise<void>;
+  /** In one committed transaction: remove every entry and body except `key`'s. */
+  removeOthers(key: string): Promise<void>;
 }
 
 async function sha256(bytes: Uint8Array | string): Promise<string> {
@@ -73,19 +75,22 @@ export class ModelCache {
   }
 
   /** Store `body` under `key`, evicting least recently used entries to stay within `maxBytes`.
-   * If the browser's quota refuses it, one retry evicts every other entry in the same transaction,
-   * so a refused retry leaves them all in place. Runs in the background; false when the body is
-   * too large or storage refused it. */
+   * If the browser's quota refuses it, every other entry is removed in its own committed
+   * transaction (Chrome's commit-time quota check does not credit deletes in the same one) and
+   * the write is retried once. Runs in the background; false when the body is too large or
+   * storage refused it. */
   put(key: string, body: Uint8Array): Promise<boolean> {
     const write = (async () => {
       if (body.byteLength > this.maxBytes) return false;
       try {
         const entry: StoredModel = { key, bytes: body.byteLength, sha256: await sha256(body), used: this.now() };
+        const evict = (entries: StoredModel[]) => lruEvictions(entries, key, body.byteLength, this.maxBytes);
         try {
-          await this.store.write(entry, body, entries => lruEvictions(entries, key, body.byteLength, this.maxBytes));
+          await this.store.write(entry, body, evict);
         } catch (error) {
           if ((error as { name?: unknown } | null)?.name !== 'QuotaExceededError') throw error;
-          await this.store.write(entry, body, entries => entries.map(other => other.key).filter(other => other !== key));
+          await this.store.removeOthers(key);
+          await this.store.write(entry, body, evict);
         }
         return true;
       } catch { return false; }
@@ -175,6 +180,15 @@ export class IndexedDbModelStore implements ModelStore {
     const tx = (await this.open()).transaction([ENTRIES, BODIES], 'readwrite'), complete = finished(tx);
     tx.objectStore(ENTRIES).delete(key);
     tx.objectStore(BODIES).delete(key);
+    await complete;
+  }
+
+  async removeOthers(key: string) {
+    const tx = (await this.open()).transaction([ENTRIES, BODIES], 'readwrite'), complete = finished(tx);
+    const entries = tx.objectStore(ENTRIES), bodies = tx.objectStore(BODIES);
+    const [entryKeys, bodyKeys] = await Promise.all([done(entries.getAllKeys()), done(bodies.getAllKeys())]) as IDBValidKey[][];
+    for (const other of entryKeys) if (other !== key) entries.delete(other);
+    for (const other of bodyKeys) if (other !== key) bodies.delete(other);
     await complete;
   }
 }

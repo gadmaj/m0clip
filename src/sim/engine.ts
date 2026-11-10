@@ -147,8 +147,10 @@ async function fetchWasm(): Promise<WasmSource | null> {
 }
 
 /** Emscripten's instantiateWasm hook over `source`: streaming compile, or the copied bytes if the
- * host's MIME type refuses streaming. The glue keeps its options for the module's lifetime, so
- * the hook drops the source once instantiation has it. */
+ * host's MIME type refuses streaming. If the body itself failed, both copies fail; the binary is
+ * then downloaded once more, like the glue would, and its digest stays null so nothing is cached.
+ * The glue keeps its options for the module's lifetime, so the hook drops the source once
+ * instantiation has it. */
 function instantiateOnce(wasm: WasmSource, reject: (error: unknown) => void) {
   let source: WasmSource | null = wasm;
   return (imports: WebAssembly.Imports,
@@ -157,7 +159,13 @@ function instantiateOnce(wasm: WasmSource, reject: (error: unknown) => void) {
     source = null;
     if (!current) throw new Error("The MuJoCo wasm binary was already instantiated.");
     WebAssembly.instantiateStreaming(current.response, imports)
-      .catch(() => current.bytes.then(bytes => WebAssembly.instantiate(bytes, imports)))
+      .catch(() => current.bytes.then(
+        bytes => WebAssembly.instantiate(bytes, imports),
+        async () => {
+          const response = await fetch(WASM_URL, { credentials: "same-origin" });
+          if (!response.ok) throw new Error(`MuJoCo wasm download failed (${response.status}).`);
+          return WebAssembly.instantiate(await response.arrayBuffer(), imports);
+        }))
       .then(({ instance, module }) => receive(instance, module), reject);
     return {};
   };
