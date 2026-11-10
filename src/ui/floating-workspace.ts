@@ -6,6 +6,22 @@ interface FloatingPanel {
   placement: Placement; home: () => Placement; rank: number; activator?: HTMLButtonElement;
 }
 const element = (id: string) => document.getElementById(id)!;
+interface Span { left: number; right: number }
+
+/** Height a notice at the workspace top may use: one window title bar must still fit between
+ * it and the floor (12 px above the dock) or a visible Flight HUD. */
+export function noticeRoom(workspaceTop: number, floor: number, barHeight: number, hudTop: number | null): number {
+  const end = hudTop === null ? floor : Math.min(floor, hudTop - 12);
+  return Math.max(0, end - workspaceTop - barHeight - 12);
+}
+
+/** Displayed top of a window: below a visible notice sharing its columns, and never so low
+ * that its title bar passes the floor. */
+export function windowTop(workspaceTop: number, floor: number, barHeight: number, span: Span, notice: (Span & { bottom: number }) | null): number {
+  const below = notice && span.left < notice.right && span.right > notice.left;
+  const head = below ? Math.max(workspaceTop, notice.bottom + 12) : workspaceTop;
+  return Math.min(head, Math.max(12, floor - barHeight));
+}
 
 export class FloatingWorkspace {
   private panels = new Map<string, FloatingPanel>();
@@ -17,8 +33,11 @@ export class FloatingWorkspace {
   // The stylesheet's compact breakpoint; innerWidth can disagree with it at the boundary.
   private readonly narrow = matchMedia('(max-width: 760px)');
   private readonly flightHud = element('flight-hud');
+  /** A transient notice at the workspace top, such as the storage prompt; windows start below it. */
+  private readonly notice: HTMLElement;
 
-  constructor() {
+  constructor(notice: HTMLElement) {
+    this.notice = notice;
     try { this.saved = JSON.parse(localStorage.getItem(STORAGE) || '{}') || {}; } catch { /* Use the default layout. */ }
     const menu = element('panel'), original = [...menu.children] as HTMLElement[];
     const play = this.window('play-window', 'Play', menu);
@@ -88,6 +107,7 @@ export class FloatingWorkspace {
       const app = element('app');
       app.style.setProperty('--scene-actions-height', `${this.dockHeight}px`);
       app.style.setProperty('--workspace-top', `${this.workspaceTop}px`);
+      this.placeNotice();
       for (const panel of this.panels.values()) this.apply(panel);
     };
     sizeWorkspace();
@@ -126,6 +146,7 @@ export class FloatingWorkspace {
       new ResizeObserver(() => this.apply(panel)).observe(panel.root);
     }
     const relayout = () => {
+      this.placeNotice();
       for (const panel of this.panels.values()) this.apply(panel);
       syncVisibility();
     };
@@ -133,6 +154,16 @@ export class FloatingWorkspace {
     this.narrow.addEventListener('change', relayout);
     // Showing, hiding or resizing the Flight HUD changes the room windows may use above it.
     new ResizeObserver(relayout).observe(this.flightHud);
+    // Showing or dismissing the notice moves the windows under it.
+    new ResizeObserver(relayout).observe(notice);
+  }
+
+  /** Sizes the notice whether or not it is shown, so showing it never resizes it again. */
+  private placeNotice() {
+    const hud = this.flightHud.hidden || !this.flightHud.getClientRects().length ? null : this.flightHud.getBoundingClientRect().top;
+    const bar = (this.panels.get('play-window')?.root.querySelector<HTMLElement>('.floating-titlebar')?.offsetHeight || 44) + 2;
+    const room = noticeRoom(this.workspaceTop, innerHeight - this.dockHeight - 24, bar, hud);
+    this.notice.style.setProperty('--notice-room', `${room}px`);
   }
 
   private window(id: string, title: string, parent: HTMLElement) {
@@ -247,8 +278,10 @@ export class FloatingWorkspace {
     const width = root.getBoundingClientRect().width || Math.min(304, innerWidth - 24);
     const bottom = innerHeight - this.dockHeight - 24;
     const barHeight = (root.querySelector<HTMLElement>('.floating-titlebar')!.offsetHeight || 44) + 2;
-    const top = Math.min(this.workspaceTop, Math.max(12, bottom - barHeight));
     const x = compact ? 12 : Math.max(12, Math.min(placement.x, innerWidth - width - 12));
+    // The notice stays above windows (z-index); windows sharing its columns start below it.
+    const notice = this.notice.getClientRects().length ? this.notice.getBoundingClientRect() : null;
+    const top = windowTop(this.workspaceTop, bottom, barHeight, { left: x, right: x + width }, notice);
     // Clamp the displayed position, not remembered desktop coordinates.
     const height = root.id === 'deck' && !collapsed
       ? Math.min(Number.parseFloat(root.style.height) || (this.narrow.matches ? 340 : 270), bottom - top)

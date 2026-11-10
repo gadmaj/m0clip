@@ -529,7 +529,7 @@ class App {
         }
       },
     });
-    new FloatingWorkspace();
+    new FloatingWorkspace(storageConsent.prompt);
     let controlsBeforeGallery = true;
     window.addEventListener('visual-picker-open', () => {
       controlsBeforeGallery = this.view.controls.enabled;

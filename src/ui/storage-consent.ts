@@ -17,7 +17,8 @@ const STATUS: Record<StorageState, string> = {
 /** Optional origin-wide eviction protection; never changes the saved-library records. */
 export class StorageConsent {
   readonly helpSection = document.createElement('section');
-  private readonly prompt = document.createElement('aside');
+  /** The return-visit prompt; FloatingWorkspace keeps windows below it. */
+  readonly prompt = document.createElement('aside');
   private readonly helpStatus = document.createElement('p');
   private readonly promptStatus = document.createElement('p');
   private readonly helpAction = document.createElement('button');
